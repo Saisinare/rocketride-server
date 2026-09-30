@@ -2852,6 +2852,27 @@ export class RocketRideClient extends DAPClient {
 		return (body as any)?.pins ?? [];
 	}
 
+	/**
+	 * Register (or clear) a per-user dev overlay for an app module: the
+	 * served app list is overridden with the given entry URL for THIS
+	 * user's connections — the App Builder's "built"/dev preview plumbing.
+	 * The overlay is scoped to the REGISTERING connection and dies with it
+	 * (a reconnected client re-registers).
+	 *
+	 * @param options - Overlay registration:
+	 *   - moduleId: the MF container name (required)
+	 *   - url: entry URL — http(s) or server-relative like
+	 *     '/apps/<appId>/v<N>/remoteEntry.js' (required unless unregister)
+	 *   - appId: the app id (defaults to moduleId)
+	 *   - session: preview-session nonce for embedded routing
+	 *   - name/description/appVersion/icon: display metadata for synthetic tiles
+	 *   - unregister: true removes this connection's override
+	 * @returns {registered} or {unregistered} echoing the moduleId
+	 */
+	async registerDev(options: { moduleId: string; url?: string; appId?: string; session?: string; name?: string; description?: string; appVersion?: string; icon?: string; unregister?: boolean }): Promise<{ registered?: string; unregistered?: string }> {
+		return (await this.call('rrext_deploy_app', { subcommand: 'register_dev', ...options })) as any;
+	}
+
 	// (appEntry is RETIRED: versions serve from stable constructed URLs —
 	// /apps/<appId>/v<N>/remoteEntry.js — with entitlement enforced per
 	// request by the serve route, so there is nothing to mint.)

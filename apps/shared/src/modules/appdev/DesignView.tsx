@@ -25,23 +25,24 @@
 // =============================================================================
 
 /**
- * The DESIGN view: `Preview | Code | Components | Events | Console | Errors`
- * as pill-switched panes of ONE workspace (the Status-screen idiom — pills
+ * The DESIGN view: `Preview | Components | Events | Console | Errors` as
+ * pill-switched panes of ONE workspace (the Status-screen idiom — pills
  * switch the lens, never the context: the dev session, watch state, and
  * accumulated feeds persist across pane switches). Components is the one
  * deliberate stretch of that idiom: a stateless reference pane (the stock
- * component gallery) rather than a lens on the session.
+ * component gallery) rather than a lens on the session. The Code surface
+ * is NOT a pill — it is a top-level activity view owned by
+ * AppBuilderScreen (web hosts only).
  *
- * Host differences ride the capability flags: the Code pill exists only
- * when `hasCodePane` (web); the native-files strip renders only when
- * `hasNativeFiles` (VSCode); Debug only when `canDebug`. The preview and
- * code surfaces themselves are HOST-PROVIDED slots — this view owns the
+ * Host differences ride the capability flags: the native-files strip
+ * renders only when `hasNativeFiles` (VSCode); Debug only when `canDebug`.
+ * The preview surface itself is a HOST-PROVIDED slot — this view owns the
  * chrome (toolbar, DEV badge, pills) and the feed panes.
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Hand, Monitor, RotateCw, Settings, Smartphone, Tablet } from 'lucide-react';
-import { ToggleGroup } from 'shell';
+import { AnchoredPopup, ToggleGroup } from 'shell';
 import { ComponentGallery } from './gallery';
 import { LogList, LOG_LIST_CAP } from './LogList';
 import type { LogListRow } from './LogList';
@@ -57,8 +58,6 @@ export interface IDesignViewProps {
 	host: IAppBuilderHost;
 	/** The live preview surface (host-owned iframe wrapper). */
 	previewPane?: React.ReactNode;
-	/** The Code pane surface (web host: file tree + Monaco). */
-	codePane?: React.ReactNode;
 }
 
 // =============================================================================
@@ -219,18 +218,10 @@ const styles: Record<string, React.CSSProperties> = {
 		opacity: 0.45,
 		cursor: 'default',
 	},
-	// Anchor for the gear's dropdown, mirroring layoutBtnWrap.
-	gearWrap: {
-		position: 'relative',
-		display: 'inline-flex',
-	},
 	// The gear dropdown — devtools-style overflow menu, right-aligned under
-	// its button. Same visual grammar as resMenu.
+	// its button (positioning is AnchoredPopup's job — chrome only here).
+	// Same visual grammar as resMenu.
 	gearMenu: {
-		position: 'absolute',
-		top: '100%',
-		right: 0,
-		zIndex: 40,
 		minWidth: 180,
 		padding: '6px 0',
 		background: 'var(--rr-bg-paper)',
@@ -254,23 +245,13 @@ const styles: Record<string, React.CSSProperties> = {
 		cursor: 'pointer',
 		userSelect: 'none',
 	},
-	// Full-viewport click-catcher that closes the gear menu on outside click.
-	gearBackdrop: {
-		position: 'fixed',
-		inset: 0,
-		zIndex: 39,
-	},
-	// Anchor for a layout button's hover resolution menu.
+	// Hover anchor for a layout button's resolution menu.
 	layoutBtnWrap: {
-		position: 'relative',
 		display: 'inline-flex',
 	},
-	// The hover resolution menu — floats below its button, above the canvas.
+	// The hover resolution menu — floats below its button (positioning is
+	// AnchoredPopup's job — chrome only here).
 	resMenu: {
-		position: 'absolute',
-		top: '100%',
-		left: 0,
-		zIndex: 40,
 		minWidth: 170,
 		padding: '4px 0',
 		background: 'var(--rr-bg-paper)',
@@ -514,7 +495,7 @@ const styles: Record<string, React.CSSProperties> = {
  *
  * @param props - See {@link IDesignViewProps}.
  */
-export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane, codePane }) => {
+export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane }) => {
 	const caps = host.capabilities;
 
 	// ── Pane state — the active lens ─────────────────────────────────────
@@ -557,6 +538,34 @@ export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane, code
 
 	// Which layout button's resolution menu is open (hover).
 	const [openMenu, setOpenMenu] = useState<PreviewLayout | null>(null);
+	const closeMenus = useCallback(() => setOpenMenu(null), []);
+
+	// Popup anchors — the res menus and the gear menu render through
+	// AnchoredPopup (portalled + viewport-clamped), positioned off these.
+	const desktopBtnRef = useRef<HTMLSpanElement>(null);
+	const tabletBtnRef = useRef<HTMLSpanElement>(null);
+	const phoneBtnRef = useRef<HTMLSpanElement>(null);
+	const layoutBtnRefs: Record<PreviewLayout, React.RefObject<HTMLSpanElement>> = { desktop: desktopBtnRef, tablet: tabletBtnRef, phone: phoneBtnRef };
+	const gearBtnRef = useRef<HTMLButtonElement>(null);
+
+	// Hover grace timer: the portalled menu is no longer a DOM child of its
+	// trigger, so crossing the gap between them fires the trigger's
+	// mouseleave — a short delay lets the pointer land on the menu before
+	// the leave closes it.
+	const menuLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const cancelMenuClose = useCallback(() => {
+		if (menuLeaveTimer.current) clearTimeout(menuLeaveTimer.current);
+		menuLeaveTimer.current = null;
+	}, []);
+	const scheduleMenuClose = useCallback(() => {
+		cancelMenuClose();
+		menuLeaveTimer.current = setTimeout(() => setOpenMenu(null), 150);
+	}, [cancelMenuClose]);
+	const openMenuFor = useCallback((l: PreviewLayout) => {
+		cancelMenuClose();
+		setOpenMenu(l);
+	}, [cancelMenuClose]);
+	useEffect(() => cancelMenuClose, [cancelMenuClose]);
 
 	// Hand tool: while ON, a transparent overlay covers the whole canvas so
 	// pan drags work ANYWHERE — including over the app, whose iframe
@@ -575,6 +584,7 @@ export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane, code
 
 	// The gear (overflow options) dropdown.
 	const [gearOpen, setGearOpen] = useState(false);
+	const closeGear = useCallback(() => setGearOpen(false), []);
 
 	// Live pane dimensions for the device fit math. Guard against 0×0: the
 	// preview pane stays MOUNTED under display:none while other pills are
@@ -641,14 +651,13 @@ export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane, code
 	const [watch, setWatch] = useState<WatchStatus | null>(null);
 	useEffect(() => host.subscribeWatch?.((s) => setWatch(s)), [host.subscribeWatch]);
 
-	// ── Pill menu — Code only where the host has a Code pane. Errors and
-	//    events fold into Console (one log), so no pills of their own.
-	const pillOptions = useMemo(() => {
-		const options: Array<{ id: DesignPane; label: string }> = [{ id: 'preview', label: 'Preview' }];
-		if (caps.hasCodePane) options.push({ id: 'code', label: 'Code' });
-		options.push({ id: 'components', label: 'Components' }, { id: 'console', label: 'Console' });
-		return options;
-	}, [caps.hasCodePane]);
+	// ── Pill menu — Errors and events fold into Console (one log), so no
+	//    pills of their own. Code lives up on the activity strip, not here.
+	const pillOptions = useMemo<Array<{ id: DesignPane; label: string }>>(() => [
+		{ id: 'preview', label: 'Preview' },
+		{ id: 'components', label: 'Components' },
+		{ id: 'console', label: 'Console' },
+	], []);
 
 	/** Switch panes, mounting the Components gallery on its first visit. */
 	const selectPane = (id: DesignPane): void => {
@@ -890,17 +899,18 @@ export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane, code
 								return (
 									<span
 										key={l}
+										ref={layoutBtnRefs[l]}
 										style={styles.layoutBtnWrap}
-										onMouseEnter={() => setOpenMenu(l)}
-										onMouseLeave={() => setOpenMenu((m) => (m === l ? null : m))}
+										onMouseEnter={() => openMenuFor(l)}
+										onMouseLeave={scheduleMenuClose}
 									>
 										<button
 											style={layout === l ? { ...styles.layoutBtn, ...styles.toolBtnOn } : styles.layoutBtn}
 											title={`${label} layout: ${selected.name} ${selected.width} x ${selected.height} (hover for resolutions)`}
 											onClick={() => setLayout(l)}
 										>{icon}</button>
-										{openMenu === l && (
-											<div style={styles.resMenu}>
+										<AnchoredPopup anchorRef={layoutBtnRefs[l]} open={openMenu === l} onClose={closeMenus} style={styles.resMenu}>
+											<div onMouseEnter={cancelMenuClose} onMouseLeave={scheduleMenuClose}>
 												{DEVICE_PRESETS[l].map((p, i) => (
 													<button
 														key={p.name}
@@ -916,7 +926,7 @@ export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane, code
 													</button>
 												))}
 											</div>
-										)}
+										</AnchoredPopup>
 									</span>
 								);
 							})}
@@ -977,52 +987,46 @@ export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane, code
 						><Hand size={14} /></button>
 						{/* Gear — the devtools-style overflow menu for the options
 						    that are not part of the geometry cluster. */}
-						<span style={styles.gearWrap}>
-							<button
-								style={gearOpen ? { ...styles.layoutBtn, ...styles.toolBtnOn } : styles.layoutBtn}
-								title="Preview options"
-								onClick={() => setGearOpen((o) => !o)}
-							><Settings size={14} /></button>
-							{gearOpen && (
-								<>
-									<div style={styles.gearBackdrop} onClick={() => setGearOpen(false)} />
-									<div style={styles.gearMenu}>
-										{host.setInheritAuth && (
-											<label style={styles.gearMenuRow} title="Hand this window's signed-in session to the preview. Unchecked: the preview runs its own OAuth sign-in.">
-												<input
-													type="checkbox"
-													checked={inheritAuth}
-													onChange={(e) => {
-														setInheritAuth(e.target.checked);
-														host.setInheritAuth?.(e.target.checked);
-													}}
-													style={styles.inheritAuthBox}
-												/>
-												Inherit Auth
-											</label>
-										)}
-										{host.setPreviewTheme && (
-											<button
-												style={styles.gearMenuRow}
-												onClick={() => applyTheme(previewTheme === 'light' ? 'dark' : 'light')}
-											>Theme: {previewTheme === 'light' ? 'Light' : 'Dark'}</button>
-										)}
-										{host.reloadPreview && (
-											<button
-												style={styles.gearMenuRow}
-												onClick={() => { host.reloadPreview?.(); setGearOpen(false); }}
-											>Reload</button>
-										)}
-										{caps.canDebug && host.debug && (
-											<button
-												style={styles.gearMenuRow}
-												onClick={() => { host.debug?.(); setGearOpen(false); }}
-											>Debug (F5)</button>
-										)}
-									</div>
-								</>
+						<button
+							ref={gearBtnRef}
+							style={gearOpen ? { ...styles.layoutBtn, ...styles.toolBtnOn } : styles.layoutBtn}
+							title="Preview options"
+							onClick={() => setGearOpen((o) => !o)}
+						><Settings size={14} /></button>
+						<AnchoredPopup anchorRef={gearBtnRef} open={gearOpen} onClose={closeGear} align="end" style={styles.gearMenu}>
+							{host.setInheritAuth && (
+								<label style={styles.gearMenuRow} title="Hand this window's signed-in session to the preview. Unchecked: the preview runs its own OAuth sign-in.">
+									<input
+										type="checkbox"
+										checked={inheritAuth}
+										onChange={(e) => {
+											setInheritAuth(e.target.checked);
+											host.setInheritAuth?.(e.target.checked);
+										}}
+										style={styles.inheritAuthBox}
+									/>
+									Inherit Auth
+								</label>
 							)}
-						</span>
+							{host.setPreviewTheme && (
+								<button
+									style={styles.gearMenuRow}
+									onClick={() => applyTheme(previewTheme === 'light' ? 'dark' : 'light')}
+								>Theme: {previewTheme === 'light' ? 'Light' : 'Dark'}</button>
+							)}
+							{host.reloadPreview && (
+								<button
+									style={styles.gearMenuRow}
+									onClick={() => { host.reloadPreview?.(); setGearOpen(false); }}
+								>Reload</button>
+							)}
+							{caps.canDebug && host.debug && (
+								<button
+									style={styles.gearMenuRow}
+									onClick={() => { host.debug?.(); setGearOpen(false); }}
+								>Debug (F5)</button>
+							)}
+						</AnchoredPopup>
 					</div>
 					<div style={styles.previewSurface}>
 						<div ref={screenRef} style={styles.previewScreen}>
@@ -1067,14 +1071,6 @@ export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane, code
 						</div>
 					</div>
 				</div>
-			)}
-
-			{/* PANE: CODE — host slot (web only). KEPT MOUNTED while other
-			    panes are active: the compiler/linker live inside it, and the
-			    preview needs the project compiled without ever visiting the
-			    Code pill (RocketApp's keep-editors-mounted pattern). */}
-			{caps.hasCodePane && (
-				<div style={{ ...styles.paneHost, display: pane === 'code' ? 'flex' : 'none' }}>{codePane}</div>
 			)}
 
 			{/* PANE: COMPONENTS — the stock component gallery. Mounted on

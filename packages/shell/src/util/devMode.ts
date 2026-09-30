@@ -40,6 +40,9 @@
 
 import React from 'react';
 import * as ReactDom from 'react-dom';
+import * as ReactJsxRuntime from 'react/jsx-runtime';
+import * as ReactJsxDevRuntime from 'react/jsx-dev-runtime';
+import * as rocketride from 'rocketride';
 import { ConnectionManager } from '../connection/connection';
 import { isDevHooksEnabled, isEmbeddedDevShell } from './devGate';
 import { registerLocalApp, unregisterLocalApp, invalidateAppDescriptor, registerDevRemote } from './appLoader';
@@ -58,15 +61,23 @@ export { isDevHooksEnabled };
  * Consumed by same-origin embedders via iframe.contentWindow.__rrShellDev.
  */
 export interface RrShellDevApi {
-	/** API version — bump on breaking changes so embedders can feature-gate. */
-	version: 1;
+	/**
+	 * API version — bump on additions/breaking changes so embedders can
+	 * feature-gate. v2: share scope grew 'react/jsx-runtime',
+	 * 'react/jsx-dev-runtime' (automatic-JSX dev links), and 'rocketride'
+	 * (the SDK singleton, matching the MF share scope).
+	 */
+	version: 2;
 	/** Registers a local descriptor loader for an app (see appLoader). */
 	registerLocalApp: typeof registerLocalApp;
 	/** Removes a local descriptor loader (see appLoader). */
 	unregisterLocalApp: typeof unregisterLocalApp;
 	/** Evicts an app's cached descriptor; active apps reload + remount. */
 	invalidateApp: typeof invalidateAppDescriptor;
-	/** Returns the host's live shared modules (react, react-dom, shell, shared). */
+	/**
+	 * Returns the host's live shared modules (react, react-dom, the jsx
+	 * runtimes, shell, rocketride).
+	 */
 	getShareScope: () => Record<string, unknown> | undefined;
 }
 
@@ -183,16 +194,22 @@ export async function installDevHooks(): Promise<void> {
 	const shellUi = await import('../index');
 
 	// Anchor the share scope on globalThis (see DEV_SHARE_SCOPE_KEY note).
+	// The jsx runtimes ride along so automatic-JSX dev links resolve them to
+	// the shell's copies (whose internal 'react' is the shared singleton), and
+	// 'rocketride' hands out the SAME SDK singleton the MF share scope serves.
 	const scope: Record<string, unknown> = {
 		'react': React,
 		'react-dom': ReactDom,
+		'react/jsx-runtime': ReactJsxRuntime,
+		'react/jsx-dev-runtime': ReactJsxDevRuntime,
 		'shell': shellUi,
+		'rocketride': rocketride,
 	};
 	Reflect.set(globalThis, DEV_SHARE_SCOPE_KEY, scope);
 
 	// Expose the dev API for same-origin embedders and the browser console.
 	window.__rrShellDev = {
-		version: 1,
+		version: 2,
 		registerLocalApp,
 		unregisterLocalApp,
 		invalidateApp: invalidateAppDescriptor,

@@ -230,6 +230,60 @@ class AppsMixin(DAPClient):
         body = await self.call('rrext_deploy_app', subcommand='where', appId=app_id)
         return body.get('pins', [])
 
+    async def register_dev(
+        self,
+        module_id: str,
+        *,
+        url: Optional[str] = None,
+        app_id: Optional[str] = None,
+        session: Optional[str] = None,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        app_version: Optional[str] = None,
+        icon: Optional[str] = None,
+        unregister: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Register (or clear) a per-user dev overlay for an app module: the
+        served app list is overridden with the given entry URL for THIS
+        user's connections — the App Builder's "built"/dev preview plumbing.
+        The overlay is scoped to the registering connection and dies with it
+        (a reconnected client re-registers).
+
+        Args:
+            module_id: The MF container name.
+            url: Entry URL — http(s) or server-relative like
+                '/apps/<appId>/v<N>/remoteEntry.js'. Required unless unregister.
+            app_id: The app id (defaults to module_id).
+            session: Preview-session nonce for embedded routing.
+            name: Display name for synthetic tiles.
+            description: Display description for synthetic tiles.
+            app_version: Display version for synthetic tiles.
+            icon: data:image/... icon for synthetic tiles.
+            unregister: True removes this connection's override.
+
+        Returns:
+            Dict with ``registered`` or ``unregistered`` echoing the module id.
+        """
+        args: Dict[str, Any] = {'subcommand': 'register_dev', 'moduleId': module_id}
+        if url is not None:
+            args['url'] = url
+        if app_id is not None:
+            args['appId'] = app_id
+        if session is not None:
+            args['session'] = session
+        if name is not None:
+            args['name'] = name
+        if description is not None:
+            args['description'] = description
+        if app_version is not None:
+            args['appVersion'] = app_version
+        if icon is not None:
+            args['icon'] = icon
+        if unregister:
+            args['unregister'] = True
+        return await self.call('rrext_deploy_app', **args)
+
     # (app_entry is RETIRED: versions serve from stable constructed URLs —
     # /apps/<appId>/v<N>/remoteEntry.js — with entitlement enforced per
     # request by the serve route, so there is nothing to mint.)

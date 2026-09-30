@@ -78,5 +78,6 @@ export default function MyApp() {
 	props: [
 		{ name: 'AppLayout sidebar', type: 'ReactNode', dir: 'in', note: 'The scrolling portion of the sidebar column. Present = two-column app; absent = one-column, no sidebar chrome.' },
 		{ name: 'useSidebarCollapsed', type: '() => boolean', dir: 'out', note: 'Read inside the sidebar node: true while the sidebar is on the icon rail. Returns false when no provider is mounted.' },
+		{ name: 'SidebarCollapsedGate', type: '{ children: ReactNode }', dir: 'in', note: 'Stock wrapper that renders its children only while the sidebar is expanded - for free-form content with no icon-rail form.' },
 	],
 };

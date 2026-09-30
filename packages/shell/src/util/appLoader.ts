@@ -295,6 +295,13 @@ export function registerLocalApp(id: string, load: () => Promise<AppDescriptor>,
 		});
 		localAppsListener?.();
 	}
+	// Release any descriptor loads holding for this app's dev registration:
+	// a local registration satisfies the embedded preview's wait exactly like
+	// a dev-remote one (the web App Builder injects linked descriptors, never
+	// an MF remote, so the dev-remote wait must not outlive it).
+	devRegisteredApps.add(id);
+	for (const release of devRemoteWaiters.get(id) ?? []) release();
+	devRemoteWaiters.delete(id);
 	console.log(`[appLoader] Local override registered for "${id}"`);
 }
 
@@ -396,11 +403,7 @@ export function registerDevRemote(appId: string, moduleId: string, name: string,
 			}),
 		{ name, moduleId },
 	);
-	// Release any descriptor loads holding for this registration (embedded
-	// previews pause the locked app's first load until the dev remote exists).
-	devRegisteredApps.add(appId);
-	for (const release of devRemoteWaiters.get(appId) ?? []) release();
-	devRemoteWaiters.delete(appId);
+	// registerLocalApp above released the dev-remote wait for this app.
 	invalidateAppDescriptor(appId);
 }
 

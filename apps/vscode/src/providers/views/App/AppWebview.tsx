@@ -25,8 +25,8 @@ import 'shell/themes/rocketride-default.css';
 import '../../../themes/rocketride-vscode.css';
 import '../../styles/root.css';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { AppBuilderScreen } from 'shared/modules/appdev';
-import type { AppBuilderStage, AppErrorRow, AppEventRow, AppHistoryEntry, AppSummary, AppVersionInfo, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus } from 'shared/modules/appdev';
+import { AppBuilderScreen, toRungPins, toVersionInfos } from 'shared/modules/appdev';
+import type { AppBuilderCapabilities, AppBuilderStage, AppErrorRow, AppEventRow, AppHistoryEntry, AppSummary, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus, WirePin, WireRailEntry } from 'shared/modules/appdev';
 import { useMessaging } from '../hooks/useMessaging';
 
 // =============================================================================
@@ -40,7 +40,7 @@ type IncomingMessage =
 			type: 'appdev:init';
 			app: AppSummary;
 			previewUrl: string;
-			capabilities: { hasCodePane: boolean; hasNativeFiles: boolean; canDebug: boolean; hasReviewLadder: boolean };
+			capabilities: AppBuilderCapabilities;
 			stage?: AppBuilderStage;
 			prefs?: Record<string, unknown>;
 	  }
@@ -56,84 +56,9 @@ type IncomingMessage =
 	| { type: 'appdev:accountChanged' }
 	| { type: 'appdev:result'; id: number; ok: boolean; value?: unknown; error?: string };
 
-// Wire shapes for the publish-ladder RPC (mirrors the SDK's return rows)
-interface WireRailEntry {
-	registryVersion: number;
-	appVersion: string;
-	sha256: string;
-	publishedAt: number;
-	author: string;
-	message: string;
-	rungs?: string[];
-	state?: string;
-	buildStatus?: string;
-}
-interface WirePin {
-	rung: string;
-	handle: string;
-	version: number;
-	appVersion: string;
-	state: string;
-	deployedAt?: number;
-	// Serving truth (#2461) — absent from older servers.
-	enabled?: boolean;
-	serving?: boolean;
-	reason?: string;
-	servesYou?: boolean;
-}
-interface WireHistoryRow {
-	seq: number;
-	at: number;
-	action: string;
-	teamId?: string | null;
-	version?: number | null;
-	actor?: { userId?: string; display?: string; email?: string } | null;
-	data?: {
-		side?: string;
-		message?: string;
-		audience?: { type?: string; id?: string; name?: string; handle?: string };
-		previousVersion?: number;
-		comment?: string;
-		from?: string;
-		to?: string;
-	} | null;
-}
-
-// =============================================================================
-// HISTORY PROJECTIONS — one 'history' RPC, two view shapes
-// =============================================================================
-
-/**
- * Normalizes raw history rows (oldest-first from the bridge) into the shared
- * AppHistoryEntry shape — SQL nulls become absent fields so the views only
- * deal in one vocabulary.
- *
- * @param rows - Raw bridge rows, oldest first.
- * @returns The Dashboard's history entries, oldest first.
- */
-function toHistoryEntries(rows: WireHistoryRow[]): AppHistoryEntry[] {
-	return rows.map((r) => ({
-		seq: r.seq,
-		at: r.at,
-		action: r.action,
-		version: r.version ?? undefined,
-		actor: r.actor ?? undefined,
-		data: r.data
-			? {
-					side: r.data.side === 'admin' || r.data.side === 'developer' ? r.data.side : undefined,
-					message: r.data.message,
-					// The audience marker is what separates a PUBLISH row (bind
-					// to a rung) from the bare registry-write DEPLOY row.
-					audience: r.data.audience,
-					previousVersion: r.data.previousVersion,
-					comment: r.data.comment,
-					from: r.data.from,
-					to: r.data.to,
-				}
-			: undefined,
-	}));
-}
-
+// Wire shapes + projections (WireRailEntry/WirePin/WireHistoryRow,
+// toVersionInfos/toRungPins/toHistoryEntries) live in shared appdev/wire —
+// one mapping for this bridge host and the web host's direct SDK calls.
 
 // Bridge RPC bound — generous because publish builds are the slowest
 // legitimate call; a host that never answers must not pend forever.
@@ -805,22 +730,7 @@ const AppWebview: React.FC = () => {
 			revealFiles: capabilities.hasNativeFiles ? () => sendMessage({ type: 'appdev:reveal' }) : undefined,
 
 			// ── Deploy (the publish ladder) — all data over the RPC lane ────
-			listVersions: async () => {
-				const rail = await rpc<WireRailEntry[]>('listVersions');
-				return rail.map((v) => ({
-					// The registry int is the row identity end-to-end; the semver is
-					// display-only (may repeat across deploys, '' on legacy rows).
-					registryVersion: v.registryVersion,
-					version: v.appVersion || '',
-					author: v.author,
-					publishedAt: v.publishedAt,
-					sha: v.sha256,
-					message: v.message,
-					rungs: (v.rungs ?? []).filter((r): r is 'personal' | 'team' | 'public' => r === 'personal' || r === 'team' || r === 'public'),
-					state: (v.state || undefined) as AppVersionInfo['state'],
-					buildStatus: v.buildStatus,
-				}));
-			},
+			listVersions: async () => toVersionInfos(await rpc<WireRailEntry[]>('listVersions')),
 			deploy: async (message) => {
 				await rpc('deploy', [message]);
 			},
@@ -846,38 +756,7 @@ const AppWebview: React.FC = () => {
 						await rpc('withdraw', [version]);
 					}
 				: undefined,
-			getWhereLive: async () => {
-				const pins = await rpc<WirePin[]>('where');
-				return pins.map((p) => {
-					const rung = (p.rung === 'personal' || p.rung === 'team' || p.rung === 'public' ? p.rung : 'personal') as 'personal' | 'team' | 'public';
-					// p.state is the bound DEPLOYMENT's review state
-					// (private|submit|ready|rejected). Internal rungs serve live;
-					// on a review-ladder server the public rung shows the gate —
-					// 'ready' = approved, anything else = still in review. Without
-					// the ladder (OSS) a public pin serves as soon as it exists.
-					const state: 'enabled' | 'approved' | 'pending' =
-						rung !== 'public' ? 'enabled' : !capabilities.hasReviewLadder || p.state === 'ready' ? 'approved' : 'pending';
-					return {
-						rung,
-						label: rung.charAt(0).toUpperCase() + rung.slice(1),
-						handle: p.handle,
-						registryVersion: p.version,
-						// RAW semver only ('' on legacy rows) — the view composes the
-						// shared v<registry> + semver-pill format itself, so any
-						// fallback text here would render as a bogus pill.
-						version: p.appVersion || '',
-						state,
-						audience: rung === 'personal' ? 'on your desktop' : rung === 'public' ? 'the app store' : 'team members',
-						deployedAt: p.deployedAt,
-						// The server's serving truth (#2461): whether a browser in
-						// this audience is actually served, why not, and whether
-						// this is the pin the caller's own resolution picks.
-						serving: p.serving,
-						reason: p.reason,
-						servesYou: p.servesYou,
-					};
-				});
-			},
+			getWhereLive: async () => toRungPins(await rpc<WirePin[]>('where'), capabilities.hasReviewLadder),
 			getDeveloperId: async () => {
 				const res = await rpc<{ developerId?: string | null }>('developerStatus');
 				return res?.developerId ?? '';
@@ -902,10 +781,10 @@ const AppWebview: React.FC = () => {
 			readAppImageDataUri: async (relPath) => await rpc<string | null>('readImage', [relPath]),
 
 			// ── Dashboard + review thread ───────────────────────────────────
-			// The bridge walks the server's 100-row pages and returns the
-			// whole stream oldest-first; the Dashboard's conversation renders
-			// it (the Store tab's review-history card retired into it).
-			loadHistory: async () => toHistoryEntries(await rpc<WireHistoryRow[]>('history')),
+			// The extension host walks + projects the stream with the SHARED
+			// helper — the rows arrive as ready AppHistoryEntry rows, oldest
+			// first; no second mapping here.
+			loadHistory: async () => await rpc<AppHistoryEntry[]>('history'),
 			sendReply: async (message, version) => {
 				await rpc('reply', version === undefined ? [message] : [message, version]);
 			},

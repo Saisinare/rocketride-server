@@ -1,0 +1,418 @@
+// MIT License
+//
+// Copyright (c) 2026 Aparavi Software AG
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+// =============================================================================
+// APP BUILDER PROVIDER — the `app:<appId>` document surface
+// =============================================================================
+
+/**
+ * Direct-mounts the shared AppBuilderScreen for one app document (opened by
+ * the sidebar's MY APPS list as the static doc `app:<appId>`). The web
+ * host: the adapter wraps the live client, the Code pane renders the dev
+ * session's models, and the preview is a same-origin iframe of this very
+ * shell.
+ *
+ * Preview sources:
+ *  - LIVE  — `?appid=<id>&rrdev=1`: the dev-flavor shell; the session
+ *    injects the LINKED build via registerLocalApp after the rrdev:auth
+ *    handshake. Save-to-render with Fast Refresh.
+ *  - BUILT — `?appid=<id>&version=<N>`: the immutable server-built version
+ *    from `/apps/<id>/v<N>/` — verifies the true bundle in design.
+ *
+ * The debug verb opens the LIVE preview in a new browser tab; the session
+ * switches its injection target to the tab (same-origin window handle), so
+ * DevTools debugs the real linked app against VFS sources.
+ *
+ * The document is STATIC — the shell's dirty/save hooks never fire; the
+ * Code pane owns its whole save lifecycle.
+ */
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { useShellConnection, ConnectionManager } from 'shell';
+import { AppBuilderScreen } from 'shared/modules/appdev';
+import type { AppBuilderStage, AppSummary } from 'shared/modules/appdev';
+// Deep import by design: CodePane carries the Monaco module and only
+// Code-pane hosts pay for it (see the appdev barrel's note).
+import { CodePane } from 'shared/modules/appdev/CodePane';
+import { scanApps } from '../appdev/appStore';
+import type { StoredApp } from '../appdev/appStore';
+import { createWebAppBuilderHost } from '../appdev/webHost';
+import { WebDevSession } from '../appdev/devSession';
+
+// =============================================================================
+// STYLES
+// =============================================================================
+
+const styles: Record<string, CSSProperties> = {
+	root: {
+		position: 'relative',
+		flex: 1,
+		minHeight: 0,
+		minWidth: 0,
+		display: 'flex',
+		flexDirection: 'column',
+		background: 'var(--rr-bg-default)',
+	},
+	loading: {
+		flex: 1,
+		display: 'flex',
+		alignItems: 'center',
+		justifyContent: 'center',
+		fontSize: 12.5,
+		color: 'var(--rr-text-secondary)',
+	},
+	previewRoot: {
+		position: 'absolute',
+		inset: 0,
+		display: 'flex',
+		flexDirection: 'column',
+		borderRadius: 'inherit',
+	},
+	sourceBar: {
+		display: 'flex',
+		alignItems: 'center',
+		gap: 6,
+		padding: '4px 8px',
+		borderBottom: '1px solid var(--rr-border)',
+		background: 'var(--rr-bg-widget)',
+		fontSize: 11.5,
+		flex: 'none',
+	},
+	sourceButton: {
+		fontFamily: 'inherit',
+		fontSize: 11.5,
+		padding: '2px 10px',
+		borderRadius: 3,
+		border: '1px solid var(--rr-border)',
+		cursor: 'pointer',
+		background: 'transparent',
+		color: 'var(--rr-text-secondary)',
+	},
+	// Full border shorthand (not borderColor): the base style sets `border`,
+	// and mixing shorthand + longhand for the same value trips React's
+	// conflicting-style warning on rerender.
+	sourceButtonActive: {
+		background: 'var(--rr-brand)',
+		border: '1px solid transparent',
+		color: 'var(--rr-text-on-brand, #ffffff)',
+	},
+	sourceNote: {
+		marginLeft: 'auto',
+		color: 'var(--rr-text-disabled)',
+		fontFamily: 'var(--rr-font-mono, monospace)',
+		fontSize: 10.5,
+	},
+	// borderRadius:'inherit' down the chain: composited iframes do not
+	// reliably take an ancestor's rounded overflow clip.
+	iframeWrap: {
+		position: 'relative',
+		flex: 1,
+		minHeight: 0,
+		borderRadius: 'inherit',
+		overflow: 'hidden',
+	},
+	iframe: {
+		width: '100%',
+		height: '100%',
+		border: 'none',
+		background: 'var(--rr-bg-default)',
+		borderRadius: 'inherit',
+	},
+};
+
+// =============================================================================
+// PREVIEW SURFACE
+// =============================================================================
+
+/**
+ * The preview surface: the Live | Built source bar over the same-origin
+ * shell iframe. Kept visibility:hidden until the document loads (hidden
+ * panels report zero dimensions with display:none — never that).
+ *
+ * @param props.liveUrl - The rrdev linked-preview URL.
+ * @param props.builtVersion - The registry version for BUILT mode (null = none known).
+ * @param props.mode - The active source.
+ * @param props.onModeChange - Source switch callback.
+ * @param props.reloadSeq - Bumping remounts the iframe.
+ * @param props.onIframe - Exposes the live iframe element to the provider.
+ */
+const PreviewSurface: React.FC<{
+	appId: string;
+	liveUrl: string;
+	builtVersion: number | null;
+	mode: 'live' | 'built';
+	onModeChange: (mode: 'live' | 'built') => void;
+	reloadSeq: number;
+	onIframe: (el: HTMLIFrameElement | null) => void;
+}> = ({ appId, liveUrl, builtVersion, mode, onModeChange, reloadSeq, onIframe }) => {
+	const [loaded, setLoaded] = useState(false);
+	const url = mode === 'built' && builtVersion !== null ? `${window.location.origin}/?appid=${encodeURIComponent(appId)}&version=${builtVersion}` : liveUrl;
+	// step: a reload or source switch starts hidden again
+	useEffect(() => {
+		setLoaded(false);
+	}, [reloadSeq, url]);
+	return (
+		<div style={styles.previewRoot}>
+			<div style={styles.sourceBar}>
+				<button type="button" style={{ ...styles.sourceButton, ...(mode === 'live' ? styles.sourceButtonActive : {}) }} onClick={() => onModeChange('live')}>
+					Live
+				</button>
+				<button
+					type="button"
+					style={{ ...styles.sourceButton, ...(mode === 'built' ? styles.sourceButtonActive : {}), ...(builtVersion === null ? { opacity: 0.5, cursor: 'default' } : {}) }}
+					disabled={builtVersion === null}
+					title={builtVersion === null ? 'No server-built version yet — deploy first.' : `Serve the immutable v${builtVersion} build`}
+					onClick={() => onModeChange('built')}
+				>
+					Built{builtVersion !== null ? ` v${builtVersion}` : ''}
+				</button>
+				<span style={styles.sourceNote}>{mode === 'live' ? 'linked · save to render' : `served from /apps/${appId}/v${builtVersion}/`}</span>
+			</div>
+			<div style={styles.iframeWrap}>
+				<iframe
+					key={`${mode}:${reloadSeq}`}
+					ref={onIframe}
+					src={url}
+					title="App preview"
+					style={{ ...styles.iframe, visibility: loaded ? 'visible' : 'hidden' }}
+					onLoad={() => setLoaded(true)}
+				/>
+			</div>
+		</div>
+	);
+};
+
+// =============================================================================
+// COMPONENT
+// =============================================================================
+
+/**
+ * Resolves the app's working copy, runs the dev session, and mounts the
+ * shared AppBuilderScreen with the web host adapter.
+ *
+ * @param props.uri - The document URI (`app:<appId>`).
+ * @param props.initialViewState - This EDITOR INSTANCE's persisted view
+ *        state (the workspace file's per-editor row) — two panels of one
+ *        app restore independently; the per-app pref bag cannot express
+ *        that (last writer won across every panel).
+ * @param props.onViewStateChange - Persists view-state changes back to the
+ *        editor instance.
+ */
+const AppBuilderProvider: React.FC<{
+	uri: string;
+	initialViewState?: Record<string, unknown>;
+	onViewStateChange?: (viewState: Record<string, unknown>) => void;
+}> = ({ uri, initialViewState, onViewStateChange }) => {
+	const { client, isConnected } = useShellConnection();
+	const appId = uri.slice('app:'.length);
+
+	// ── Resolve the working copy ─────────────────────────────────────────
+	const [stored, setStored] = useState<StoredApp | null | undefined>(undefined);
+	useEffect(() => {
+		if (!client || !isConnected) return;
+		let cancelled = false;
+		void scanApps(client).then((apps) => {
+			if (!cancelled) setStored(apps.find((a) => a.id === appId) ?? null);
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [client, isConnected, appId]);
+
+	// ── The dev session (models + design loop) ───────────────────────────
+	const [session, setSession] = useState<WebDevSession | null>(null);
+	useEffect(() => {
+		if (!client || !stored) return;
+		const next = new WebDevSession(client, appId, stored.folder, stored.name);
+		setSession(next);
+		void next.open();
+		return () => {
+			next.dispose();
+			setSession(null);
+		};
+	}, [client, stored, appId]);
+
+	// ── Preview state ────────────────────────────────────────────────────
+	const [reloadSeq, setReloadSeq] = useState(0);
+	const [previewMode, setPreviewMode] = useState<'live' | 'built'>('live');
+	const [builtVersion, setBuiltVersion] = useState<number | null>(null);
+	const iframeRef = useRef<HTMLIFrameElement | null>(null);
+	const debugWindowRef = useRef<Window | null>(null);
+	const liveUrl = `${window.location.origin}/?appid=${encodeURIComponent(appId)}&rrdev=1`;
+
+	// step: resolve the newest server-built version for the BUILT source
+	// (refreshed on build-status ticks below)
+	const refreshBuiltVersion = useCallback(async () => {
+		if (!client) return;
+		try {
+			const rows = (await client.listDeployments(appId)) as Array<{ registryVersion: number; buildStatus?: string }>;
+			const built = rows.find((r) => !r.buildStatus || r.buildStatus === 'ok');
+			setBuiltVersion(built?.registryVersion ?? null);
+		} catch {
+			setBuiltVersion(null);
+		}
+	}, [client, appId]);
+	useEffect(() => {
+		void refreshBuiltVersion();
+	}, [refreshBuiltVersion]);
+
+	// ── Preview handshake + feed routing ─────────────────────────────────
+	// The embedded (or debug-tab) dev shell posts shell:devReady, waits for
+	// rrdev:auth (its token store is frame-local in-memory), then the
+	// session adopts it as the injection target.
+	// The handler reads the CURRENT mode at message time — never a stale
+	// closure (a Built-mode iframe must not become the injection target).
+	const previewModeRef = useRef(previewMode);
+	previewModeRef.current = previewMode;
+	useEffect(() => {
+		if (!session) return;
+		const handler = (e: MessageEvent): void => {
+			const fromIframe = iframeRef.current?.contentWindow && e.source === iframeRef.current.contentWindow;
+			const fromDebug = debugWindowRef.current && e.source === debugWindowRef.current;
+			if (!fromIframe && !fromDebug) return;
+			const data = e.data as { type?: string } | undefined;
+			if (data?.type === 'shell:devReady') {
+				// step: ALWAYS answer with the definitive session state — the
+				// token from the top-level shell's localStorage ('' = signed
+				// out) — so any embedded dev shell boots authenticated
+				const token = window.localStorage.getItem('rr:user_token') ?? '';
+				(e.source as Window).postMessage({ type: 'rrdev:auth', token }, window.location.origin);
+				// step: only LIVE previews (and the debug tab) become the
+				// linked-injection target; the Built iframe serves the
+				// immutable server build untouched
+				if (fromDebug || previewModeRef.current === 'live') {
+					void session.attachPreview(e.source as Window);
+				}
+			} else {
+				session.handlePreviewMessage(e.data as Record<string, unknown>);
+			}
+		};
+		window.addEventListener('message', handler);
+		return () => window.removeEventListener('message', handler);
+	}, [session]);
+
+	// ── Server build feed -> Console pane + built-version refresh ────────
+	useEffect(() => {
+		if (!client || !session) return;
+		client.addMonitor({ token: '*' }, ['deploy']).catch(() => { /* feed degrades */ });
+		const unsub = ConnectionManager.getInstance().on('shell:event', ({ event }: { event: { event?: string; body?: { appId?: string; phase?: string; lines?: string[]; status?: string } } }) => {
+			const body = event?.body;
+			if (!body || body.appId !== appId) return;
+			if (event.event === 'apaevt_build' && Array.isArray(body.lines)) {
+				for (const line of body.lines) session.pushConsole('log', `[build:${body.phase ?? '?'}] ${line}`);
+			} else if (event.event === 'apaevt_build_status') {
+				// A finished build may mint a new BUILT candidate.
+				if (!body.status || body.status === '') void refreshBuiltVersion();
+			}
+		});
+		return () => {
+			unsub();
+		};
+	}, [client, session, appId, refreshBuiltVersion]);
+
+	// ── The host adapter ─────────────────────────────────────────────────
+	const host = useMemo(() => {
+		if (!client || !stored) return null;
+		// hasReviewLadder mirrors the server's account backend: only a server
+		// declaring 'oss' publishes @public directly (same rule as VSCode).
+		const hasReviewLadder = !(client.getAccountInfo()?.capabilities ?? []).includes('oss');
+		return createWebAppBuilderHost({
+			client,
+			appId,
+			folder: stored.folder,
+			hasReviewLadder,
+			previewUrl: liveUrl,
+			session,
+			onReloadPreview: () => setReloadSeq((n) => n + 1),
+			onOpenDebugTab: () => {
+				// step: open the LIVE preview as a first-class tab; the
+				// message handler above adopts it as the injection target
+				debugWindowRef.current = window.open(liveUrl, '_blank');
+			},
+		});
+	}, [client, stored, appId, liveUrl, session]);
+
+	// ── App summary for the screen header ────────────────────────────────
+	const app: AppSummary | null = useMemo(() => {
+		if (!stored) return null;
+		return {
+			id: stored.id,
+			moduleId: stored.moduleId,
+			name: stored.name,
+			version: stored.version || undefined,
+			status: 'local',
+			description: stored.description || undefined,
+		};
+	}, [stored]);
+
+	// ── Stage persistence (per EDITOR INSTANCE, via the workspace file) ──
+	// The editor's view-state row is the per-panel slot (editor-1/editor-2
+	// each keep their own); the host pref bag is read only as a LEGACY
+	// fallback for workspaces saved before the stage moved here — the bag is
+	// keyed per app, so two panels of one app fought over it (last writer
+	// won across every panel on reload).
+	const initialStage = useMemo(() => {
+		const persisted = initialViewState?.stage ?? host?.getPref?.('stage');
+		return persisted === 'dashboard' || persisted === 'design' || persisted === 'code' || persisted === 'package' || persisted === 'store' || persisted === 'deploy' ? (persisted as AppBuilderStage) : undefined;
+		// initialViewState is INITIAL state by contract (frozen at mount by
+		// the pane) — live changes persist via onViewStateChange below.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [host]);
+
+	// ── Render ───────────────────────────────────────────────────────────
+	if (!isConnected) return <div style={styles.root}><div style={styles.loading}>Connect to a server to open the App Builder.</div></div>;
+	if (stored === undefined || !host || !app) return <div style={styles.root}><div style={styles.loading}>Loading app&hellip;</div></div>;
+	if (stored === null) return <div style={styles.root}><div style={styles.loading}>No working copy for &quot;{appId}&quot; in your store.</div></div>;
+
+	return (
+		<div style={styles.root}>
+			<AppBuilderScreen
+				host={host}
+				app={app}
+				previewPane={
+					<PreviewSurface
+						appId={appId}
+						liveUrl={liveUrl}
+						builtVersion={builtVersion}
+						mode={previewMode}
+						onModeChange={setPreviewMode}
+						reloadSeq={reloadSeq}
+						onIframe={(el) => {
+							iframeRef.current = el;
+						}}
+					/>
+				}
+				codePane={session ? <CodePane store={session.store} vfs={session.vfs} /> : undefined}
+				initialStage={initialStage}
+				// Per-panel persistence: the editor view-state row when the pane
+				// provides one; the per-app pref bag only as the legacy path.
+				onStageChange={(stage) => {
+					if (onViewStateChange) onViewStateChange({ stage });
+					else host.setPref?.('stage', stage);
+				}}
+			/>
+		</div>
+	);
+};
+
+export default AppBuilderProvider;

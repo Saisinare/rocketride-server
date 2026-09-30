@@ -113,7 +113,7 @@ export const GALLERY_TOKEN_USAGE: Record<string, IGalleryTokenUsage> = {
 		commonStyles: {},
 	},
 	'explorer': {
-		direct: ['--rr-bg-input', '--rr-bg-list-active', '--rr-bg-list-hover', '--rr-bg-paper', '--rr-bg-surface-alt', '--rr-bg-toolbar-hover', '--rr-border', '--rr-brand', '--rr-color-error', '--rr-color-success', '--rr-color-warning', '--rr-fg-list-active', '--rr-font-family', '--rr-text-primary', '--rr-text-secondary'],
+		direct: ['--rr-accent', '--rr-bg-input', '--rr-bg-list-active', '--rr-bg-list-hover', '--rr-bg-paper', '--rr-bg-surface-alt', '--rr-bg-toolbar-hover', '--rr-border', '--rr-brand', '--rr-color-error', '--rr-color-success', '--rr-color-warning', '--rr-fg-list-active', '--rr-font-family', '--rr-text-primary', '--rr-text-secondary'],
 		commonStyles: {
 			labelUppercase: ['--rr-text-secondary'],
 			textMuted: ['--rr-text-secondary'],

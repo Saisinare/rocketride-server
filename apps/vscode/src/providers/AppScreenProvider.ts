@@ -25,6 +25,13 @@ import { DEV_SESSION_NONCE } from '../appdev/devSession';
 import type { ScannedApp } from '../appdev/appScan';
 import { ensureAppTrigger, ensureProjectId, readAppListing, saveAppListing } from '../appdev/appMarker';
 import type { AppListing } from '../appdev/appMarker';
+// Deep file imports (never the barrel — it drags the React view layer
+// into the extension-host bundle): the SHARED preflight bar, dependency
+// probe, and history walk, so this host can never drift from the web one.
+import { runListingPreflight } from 'shared/modules/appdev/preflight';
+import { probePackage } from 'shared/modules/appdev/compatProbe';
+import { walkDeploymentHistory } from 'shared/modules/appdev/wire';
+import type { WireHistoryRow } from 'shared/modules/appdev/wire';
 import { ensureWatch, getWatchManager } from '../appdev/watchManager';
 import { deployApp } from '../appdev/publish';
 import { vendorAppTypes } from '../appdev/appTypes';
@@ -403,77 +410,46 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 									value = await client.call('rrext_deploy_app', { subcommand: 'developer_register', developerId: String(callArgs?.[0] ?? '') });
 									break;
 								case 'preflight': {
-									// Real, client-side readiness checks over the app's manifest
-									// (no server round-trip), TIERED: 'package' rows are the
-									// complete-and-buildable bar (the PACKAGE tab's readiness box
-									// — all green means a personal @me/@team publish just works);
-									// 'store' rows are the ADDITIONAL public-submission bar the
-									// STORE tab gates its Submit button on.
+									// The SHARED tiered readiness bar (one implementation for
+									// every host — apps/shared appdev/preflight), fed with this
+									// host's IO: native-fs existence + the dependency compat
+									// probe (Node fetch), which closes the gap where a Node-only
+									// dep would survive to deploy from VSCode.
 									const apps = await scanWorkspaceApps();
 									const scanned = apps.find((a) => a.id === appId);
-									const checks: Array<{ id: string; state: 'pass' | 'warn' | 'fail'; label: string; note?: string; tier?: 'package' | 'store' }> = [];
 									if (!scanned) {
-										checks.push({ id: 'manifest', state: 'fail', label: 'App manifest', note: 'No package.json appManifest found for this app.', tier: 'package' });
-										value = checks;
+										value = await runListingPreflight(null, { fileExists: async () => false });
 										break;
 									}
 									const listing = await readAppListing(scanned.folder);
-									/** Whether an app-folder-relative file exists. */
-									const fileExists = async (rel: string): Promise<boolean> => {
-										try {
-											await vscode.workspace.fs.stat(vscode.Uri.joinPath(vscode.Uri.file(scanned.folder), ...rel.replace(/^\.\//, '').split('/')));
-											return true;
-										} catch {
-											return false;
-										}
-									};
-									// ── package tier — the personal-publish bar ──────────
-									checks.push(scanned.id.includes('.') ? { id: 'appid', state: 'pass', label: 'App id namespaced', note: scanned.id, tier: 'package' } : { id: 'appid', state: 'fail', label: 'App id namespaced', note: `"${scanned.id}" must be <developerId>.<name>`, tier: 'package' });
-									checks.push(scanned.name ? { id: 'name', state: 'pass', label: 'Display name', note: scanned.name, tier: 'package' } : { id: 'name', state: 'fail', label: 'Display name', note: 'appManifest.name is required.', tier: 'package' });
-									// Icon/readme: a DECLARED path that does not resolve is a
-									// fail (the manifest lies); undeclared is only a warn.
-									if (listing.icon) {
-										checks.push((await fileExists(listing.icon)) ? { id: 'icon', state: 'pass', label: 'Icon', note: listing.icon, tier: 'package' } : { id: 'icon', state: 'fail', label: 'Icon', note: `${listing.icon} does not exist in the app folder.`, tier: 'package' });
-									} else {
-										checks.push({ id: 'icon', state: 'warn', label: 'Icon', note: 'No icon declared, so tiles show a generic glyph.', tier: 'package' });
-									}
-									if (listing.readme) {
-										checks.push((await fileExists(listing.readme)) ? { id: 'readme', state: 'pass', label: 'README', note: listing.readme, tier: 'package' } : { id: 'readme', state: 'fail', label: 'README', note: `${listing.readme} does not exist in the app folder.`, tier: 'package' });
-									} else {
-										checks.push({ id: 'readme', state: 'warn', label: 'README', note: 'No README declared. Recommended so users know what the app does.', tier: 'package' });
-									}
-									// Include paths are WORKSPACE-relative; a missing one fails
-									// the deploy pack, so it fails here first, by name.
-									const includeEntries = listing.include ?? [];
-									if (includeEntries.length > 0) {
-										const wsRoot = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(scanned.folder))?.uri;
-										const missing: string[] = [];
-										for (const entry of includeEntries) {
+									const wsRoot = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(scanned.folder))?.uri;
+									// step: declared runtime deps for the compat rows
+									let dependencies: Record<string, string> = {};
+									try {
+										const pkgBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(vscode.Uri.file(scanned.folder), 'package.json'));
+										dependencies = (JSON.parse(Buffer.from(pkgBytes).toString('utf8')) as { dependencies?: Record<string, string> }).dependencies ?? {};
+									} catch { /* unreadable package.json — the manifest row already failed */ }
+									value = await runListingPreflight(listing, {
+										fileExists: async (rel) => {
 											try {
-												if (!wsRoot) throw new Error('no workspace');
-												await vscode.workspace.fs.stat(vscode.Uri.joinPath(wsRoot, ...entry.split('/')));
+												await vscode.workspace.fs.stat(vscode.Uri.joinPath(vscode.Uri.file(scanned.folder), ...rel.replace(/^\.\//, '').split('/')));
+												return true;
 											} catch {
-												missing.push(entry);
+												return false;
 											}
-										}
-										checks.push(missing.length === 0 ? { id: 'include', state: 'pass', label: 'Include paths', note: `${includeEntries.length} path${includeEntries.length === 1 ? '' : 's'} resolve`, tier: 'package' } : { id: 'include', state: 'fail', label: 'Include paths', note: `Missing in the workspace: ${missing.join(', ')}`, tier: 'package' });
-									}
-									// The typecheck waiver is always VISIBLE, never silent —
-									// a deploy that skips verification should read as a choice.
-									if (listing.typecheck === false) {
-										checks.push({ id: 'typecheck', state: 'warn', label: 'Strict type checking', note: 'Off, so the server builds without verifying types.', tier: 'package' });
-									}
-									// ── store tier — the additional public-submission bar ─
-									checks.push(scanned.description ? { id: 'desc', state: 'pass', label: 'Description', tier: 'store' } : { id: 'desc', state: 'fail', label: 'Description', note: 'A store listing needs a description.', tier: 'store' });
-									if (listing.mode !== 'free') {
-										checks.push(listing.plans.length > 0 ? { id: 'pricing', state: 'pass', label: 'Pricing plans', note: `${listing.plans.length} plan${listing.plans.length === 1 ? '' : 's'}`, tier: 'store' } : { id: 'pricing', state: 'fail', label: 'Pricing plans', note: `Mode "${listing.mode}" needs at least one plan.`, tier: 'store' });
-									}
-									// No dist/ check: deployment packs SOURCE (packFilter's
-									// BASELINE_PATTERNS excludes dist/ unconditionally) and the
-									// server builds the client bundle itself, so a local build
-									// is never read or uploaded — failing on a missing dist/
-									// would block a submission the deploy would have accepted.
-									value = checks;
+										},
+										includeExists: async (entry) => {
+											try {
+												if (!wsRoot) return false;
+												await vscode.workspace.fs.stat(vscode.Uri.joinPath(wsRoot, ...entry.split('/')));
+												return true;
+											} catch {
+												return false;
+											}
+										},
+										dependencies,
+										probeDependency: (name, range) => probePackage({ name, version: range }),
+									});
 									break;
 								}
 								case 'pickFile': {
@@ -591,27 +567,11 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 								}
 								case 'history': {
 									// The app's full deployment_history stream — audit rows
-									// plus the review thread. The server clamps page_size to
-									// 100, so walk the pages; the webview projects the one
-									// array into the Dashboard thread AND the Store timeline.
+									// plus the review thread, walked and projected by the
+									// SHARED helper (oldest-first AppHistoryEntry rows; the
+									// webview renders them without a second mapping).
 									if (!client) throw new Error('Not connected');
-									const rows: unknown[] = [];
-									let total = Number.POSITIVE_INFINITY;
-									// Defensive ceiling — 50 pages (5000 rows) is far past any
-									// real thread; a server paging bug must not spin forever.
-									for (let page = 1; rows.length < total && page <= 50; page += 1) {
-										const envelope = await client.deploy.history(appId, { page, pageSize: 100 });
-										const chunk = envelope?.rows ?? [];
-										total = typeof envelope?.total === 'number' ? envelope.total : rows.length + chunk.length;
-										// A short/empty page ends the walk even if `total`
-										// disagrees — rows deleted between requests must not
-										// spin the loop.
-										if (chunk.length === 0) break;
-										rows.push(...chunk);
-										if (chunk.length < 100) break;
-									}
-									// Server pages newest-first; the views render oldest-first.
-									value = rows.reverse();
+									value = await walkDeploymentHistory(async (page, pageSize) => (await client.deploy.history(appId, { page, pageSize })) as { rows?: WireHistoryRow[]; total?: number } | undefined);
 									break;
 								}
 								case 'reply':

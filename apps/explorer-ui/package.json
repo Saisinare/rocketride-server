@@ -36,7 +36,6 @@
 	],
 	"dependencies": {
 		"@module-federation/rsbuild-plugin": "^2.5.1",
-		"@monaco-editor/react": "^4.7.0",
 		"docx-preview": "^0.3.3",
 		"dompurify": "~3.4.13",
 		"monaco-editor": "^0.55.1",

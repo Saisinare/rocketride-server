@@ -242,6 +242,14 @@ export interface IExplorerProps {
 	/** Currently active/open file path (for highlight). */
 	activeFilePath?: string;
 
+	/**
+	 * Paths with unsaved edits — rendered as a trailing accent dot on the
+	 * file row, rolled up onto collapsed ancestor directories. Distinct from
+	 * `statuses` by design: status dots are liveness (running NOW), the
+	 * modified dot is editor state; the two never share a glyph.
+	 */
+	modifiedPaths?: ReadonlySet<string>;
+
 	/** Called when the user clicks a file entry to open it. */
 	onOpenFile: (path: string) => void;
 

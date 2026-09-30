@@ -41,6 +41,8 @@ import ProjectProvider from './providers/ProjectProvider';
 import MonitorProvider from './providers/MonitorProvider';
 import WebviewProvider from './providers/WebviewProvider';
 import SidebarProvider from './providers/SidebarProvider';
+import AppBuilderProvider from './providers/AppBuilderProvider';
+import NewAppProvider from './providers/NewAppProvider';
 
 // =============================================================================
 // STYLES
@@ -375,6 +377,11 @@ const RocketEditorContent: React.FC<{
 
 	// Static document routes — not backed by VFS
 	if (uri === 'monitor') return <MonitorProvider />;
+	if (uri === 'newapp') return <NewAppProvider />;
+	// App Builder panels persist per-panel view state (the active stage)
+	// through the editor's view-state row — the same channel the pipeline
+	// editor uses — so two panels of one app restore independently.
+	if (uri.startsWith('app:')) return <AppBuilderProvider uri={uri} {...(initialViewState ? { initialViewState } : {})} {...(onViewStateChange ? { onViewStateChange } : {})} />;
 	if (uri.startsWith('webview:')) return <WebviewProvider uri={uri} />;
 
 	// Content is the pipeline object directly — no parsing needed

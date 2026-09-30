@@ -12,6 +12,8 @@
  *   - Optional child items under files (sources, layers, tracks, etc.)
  *   - Status indicators per entry/child: a green dot = running NOW (liveness
  *     only), error/warning COUNT CHIPS = the last run's diagnostics
+ *   - Modified markers (modifiedPaths): a small accent dot per unsaved file,
+ *     rolled up onto collapsed ancestor directories
  *   - Inline rename and create (when onFileManage provided)
  *   - Context menus (rename/delete)
  *   - Tree/flat view toggle
@@ -98,6 +100,20 @@ const S = {
 		backgroundColor: color,
 		flexShrink: 0,
 	}),
+	// The unsaved-edits marker — accent-colored and SMALLER than the liveness
+	// dot, so the two states stay visually distinct (see modifiedPaths docs).
+	dirtyDot: {
+		width: 6,
+		height: 6,
+		borderRadius: '50%',
+		backgroundColor: 'var(--rr-accent, #f7901f)',
+		flexShrink: 0,
+	} as CSSProperties,
+	// On the SELECTED row the accent dot vanishes — every theme's selection
+	// background IS the accent color — so it flips to the selection foreground.
+	dirtyDotActive: {
+		backgroundColor: 'var(--rr-fg-list-active)',
+	} as CSSProperties,
 	badge: (color: string): CSSProperties => ({
 		fontSize: 10,
 		color,
@@ -392,7 +408,7 @@ function childTooltip(child: { id: string; name: string; provider?: string }, ta
  * sources, or any app-specific concepts.  The hosting container provides
  * entries, statuses, and callbacks.
  */
-export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses = new Map(), isConnected, showChildActions = true, activeFilePath, onOpenFile, onFileManage, onChildAction, fileActions, onRefresh, onMove, onUpload }) => {
+export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses = new Map(), isConnected, showChildActions = true, activeFilePath, modifiedPaths, onOpenFile, onFileManage, onChildAction, fileActions, onRefresh, onMove, onUpload }) => {
 	const [viewMode, setViewMode] = useState<'tree' | 'flat'>('tree');
 	const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
 	const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
@@ -604,6 +620,22 @@ export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses =
 	// O(directories × entries) work on every pointer move.
 	const dirAggregates = useMemo(() => buildDirAggregates(entries, statuses), [entries, statuses]);
 
+	// Modified roll-up: every ancestor directory of a dirty file, so a
+	// collapsed folder still shows that an unsaved edit hides inside it.
+	const modifiedDirs = useMemo(() => {
+		const dirs = new Set<string>();
+		if (modifiedPaths) {
+			for (const p of modifiedPaths) {
+				let idx = p.lastIndexOf('/');
+				while (idx > 0) {
+					dirs.add(p.substring(0, idx));
+					idx = p.lastIndexOf('/', idx - 1);
+				}
+			}
+		}
+		return dirs;
+	}, [modifiedPaths]);
+
 	const renderChildren = useCallback(
 		(parent?: string, depth: number = 0): React.ReactNode[] => {
 			const children = getChildren(parent);
@@ -660,6 +692,9 @@ export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses =
 							) : (
 								<span style={S.rowName}>{dir.name}</span>
 							)}
+							{/* Modified roll-up only while COLLAPSED — expanded, the
+							    dirty children carry their own dots. */}
+							{!isExpanded && modifiedDirs.has(dir.path) && <div style={{ ...S.dirtyDot, ...(isSelected ? S.dirtyDotActive : {}) }} />}
 							{dirStat && dirStat.errorCount > 0 && <span style={S.badge('var(--rr-color-error)')}>&#10006; {dirStat.errorCount}</span>}
 							{dirStat && dirStat.warningCount > 0 && <span style={S.badge('var(--rr-color-warning)')}>&#9888; {dirStat.warningCount}</span>}
 							{dirDot && <div style={S.dot(dirDot)} />}
@@ -751,6 +786,7 @@ export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses =
 							) : (
 								<span style={S.rowName}>{displayName}</span>
 							)}
+							{modifiedPaths?.has(file.path) && <div style={{ ...S.dirtyDot, ...(isFileSelected ? S.dirtyDotActive : {}) }} />}
 							{status.errorCount > 0 && <span style={S.badge('var(--rr-color-error)')}>&#10006; {status.errorCount}</span>}
 							{status.warningCount > 0 && <span style={S.badge('var(--rr-color-warning)')}>&#9888; {status.warningCount}</span>}
 							{dotColor && <div style={S.dot(dotColor)} />}
@@ -922,7 +958,7 @@ export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses =
 
 			return nodes;
 		},
-		[getChildren, expandedDirs, expandedFiles, hoveredRow, statuses, isConnected, showChildActions, onOpenFile, onFileManage, onChildAction, toggleDir, toggleFile, entries, hasFileManage, selectedPath, menuPath, renamePath, renameValue, confirmRename, cancelRename, startRename, createState, confirmCreate, cancelCreate, getDisplayName, config.createPlaceholder, canDrag, handleDragStart, handleDragOver, handleDragLeave, handleDrop, handleDragEnd, dropTarget, dirAggregates]
+		[getChildren, expandedDirs, expandedFiles, hoveredRow, statuses, isConnected, showChildActions, onOpenFile, onFileManage, onChildAction, toggleDir, toggleFile, entries, hasFileManage, selectedPath, menuPath, renamePath, renameValue, confirmRename, cancelRename, startRename, createState, confirmCreate, cancelCreate, getDisplayName, config.createPlaceholder, canDrag, handleDragStart, handleDragOver, handleDragLeave, handleDrop, handleDragEnd, dropTarget, dirAggregates, modifiedPaths, modifiedDirs]
 	);
 
 	// --- Render ---------------------------------------------------------------

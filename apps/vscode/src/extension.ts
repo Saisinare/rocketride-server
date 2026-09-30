@@ -520,7 +520,10 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 			appScreen?.show(appId).catch((err) => vscode.window.showErrorMessage(`Failed to open app: ${err instanceof Error ? err.message : String(err)}`));
 		}),
 		vscode.commands.registerCommand('rocketride.app.debug', (appId: string) => {
-			debugApp(appId).catch((err) => vscode.window.showErrorMessage(`Failed to debug app: ${err instanceof Error ? err.message : String(err)}`));
+			// The persistent browser profile lives in global storage: per-machine,
+			// outside every workspace (a workspace-local profile risks committing
+			// a signed-in session to the repository).
+			debugApp(appId, path.join(context.globalStorageUri.fsPath, 'app-debug-profile')).catch((err) => vscode.window.showErrorMessage(`Failed to debug app: ${err instanceof Error ? err.message : String(err)}`));
 		}),
 		vscode.commands.registerCommand('rocketride.refresh', async () => {
 			await refreshAllProviders();

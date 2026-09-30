@@ -38,10 +38,12 @@ import { getDocs } from '../docs';
 import { SidebarView } from 'shared/modules/sidebar/SidebarView';
 import { BxExport, useSidebarCollapsed } from 'shell';
 import { foldTaskEvent } from 'shared/modules/sidebar/taskFold';
-import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, SidebarMode } from 'shared/modules/sidebar/types';
+import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, SidebarMode, AppBuilderSidebar, AppListItem } from 'shared/modules/sidebar/types';
 import type { TaskLifecycleEvent } from 'shared/modules/sidebar/taskFold';
 import { loadProject, listProjectDir, isPipelineFile, pipelineExtension } from '../utils/projectStore';
 import { downloadJson } from '../utils/downloadFile';
+import { scanApps } from '../appdev/appStore';
+import { APPDEV_CHANGED_EVENT } from './NewAppProvider';
 
 // =============================================================================
 // COLLAPSED GATE
@@ -127,6 +129,9 @@ const SidebarProvider: React.FC = () => {
 				const result = await listProjectDir(client, dir);
 				const out: ProjectEntry[] = [];
 				for (const e of result.entries ?? []) {
+					// Dot-directories at the store root are OTHER surfaces'
+					// trees (.appdev working copies) — never pipeline content.
+					if (!dir && e.type === 'dir' && e.name.startsWith('.')) continue;
 					const path = dir ? `${dir}/${e.name}` : e.name;
 					if (e.type === 'dir') {
 						out.push({ path, type: 'dir' });
@@ -455,10 +460,52 @@ const SidebarProvider: React.FC = () => {
 		[client]
 	);
 
+	// --- App Builder (MY APPS) -----------------------------------------------
+
+	// The MY APPS list from the .appdev store scan — the web twin of the
+	// VSCode workspace scan (working copies only; no registry state).
+	const [apps, setApps] = useState<AppListItem[]>([]);
+	const refreshApps = useCallback(async () => {
+		if (!client || !isConnected) {
+			setApps([]);
+			return;
+		}
+		try {
+			const scanned = await scanApps(client);
+			setApps(scanned.map((a) => ({ id: a.id, name: a.name })));
+		} catch {
+			setApps([]);
+		}
+	}, [client, isConnected]);
+	useEffect(() => {
+		void refreshApps();
+		// Re-scan whenever the wizard (or a future delete) mutates .appdev.
+		const handler = () => void refreshApps();
+		window.addEventListener(APPDEV_CHANGED_EVENT, handler);
+		return () => window.removeEventListener(APPDEV_CHANGED_EVENT, handler);
+	}, [refreshApps]);
+
+	// The App Builder sidebar contract: presence adds the Apps mode tab.
+	const appBuilder: AppBuilderSidebar = useMemo(
+		() => ({
+			apps,
+			// The open App Builder document is `app:<appId>`.
+			activeAppId: activeFilePath.startsWith('app:') ? activeFilePath.slice('app:'.length) : undefined,
+			onNewApp: () => {
+				getDocs()?.openStaticDocument('newapp', 'New App');
+			},
+			onOpenApp: (appId: string) => {
+				const name = apps.find((a) => a.id === appId)?.name ?? appId;
+				getDocs()?.openStaticDocument(`app:${appId}`, name);
+			},
+		}),
+		[apps, activeFilePath]
+	);
+
 	// --- Render ----------------------------------------------------------------
 
-	// Mode tab selection (Pipelines | Nodes on this host — no app builder).
-	// Session-scoped only, matching the VS Code host's session persistence.
+	// Mode tab selection (Pipelines | Apps | Nodes). Session-scoped only,
+	// matching the VS Code host's session persistence.
 	const [sidebarMode, setSidebarMode] = useState<SidebarMode>('pipelines');
 
 	// The sidebar node — the pipelines Explorer plus its confirm/error dialogs.
@@ -471,7 +518,7 @@ const SidebarProvider: React.FC = () => {
 	return (
 		<>
 			<SidebarCollapsedGate>
-				<SidebarView connection={connection} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} activeFilePath={activeFilePath} onNavigate={handleNavigate} onOpenFile={handleOpenFile} onFileManage={handleFileManage} fileActions={[{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }]} onSourceAction={handleSourceAction} onOpenUnknownTask={handleOpenUnknownTask} onRefresh={refresh} showModeStrip sidebarMode={sidebarMode} onSidebarModeChange={setSidebarMode} />
+				<SidebarView connection={connection} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} activeFilePath={activeFilePath} onNavigate={handleNavigate} onOpenFile={handleOpenFile} onFileManage={handleFileManage} fileActions={[{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }]} onSourceAction={handleSourceAction} onOpenUnknownTask={handleOpenUnknownTask} onRefresh={refresh} appBuilder={appBuilder} showModeStrip sidebarMode={sidebarMode} onSidebarModeChange={setSidebarMode} />
 			</SidebarCollapsedGate>
 			{confirmState && <ConfirmDialog title={confirmState.title} message={confirmState.message} confirmLabel={confirmState.confirmLabel} cancelLabel="Cancel" onConfirm={() => handleConfirmResult(true)} onCancel={() => handleConfirmResult(false)} />}
 			{actionError && <ConfirmDialog title="Pipeline Error" message={actionError} confirmLabel="OK" onConfirm={() => setActionError(null)} onCancel={() => setActionError(null)} />}

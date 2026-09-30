@@ -17,6 +17,7 @@
  */
 
 import * as vscode from 'vscode';
+import { mkdirSync } from 'fs';
 import { ConnectionManager } from '../connection/connection';
 import { scanWorkspaceApps } from './appScan';
 import { resolveBrowserDebugTarget } from './browser';
@@ -31,8 +32,13 @@ import { ensureWatch } from './watchManager';
  * Launches an external-browser debug session for an app.
  *
  * @param appId - The app to debug (appManifest.id).
+ * @param profileDir - Persistent browser profile directory for the launched
+ *                     browser. js-debug's default is a THROWAWAY temp profile,
+ *                     which forgets the preview sign-in (the shell keeps its
+ *                     token in localStorage) on every launch — a stable
+ *                     profile makes the first sign-in stick across F5s.
  */
-export async function debugApp(appId: string): Promise<void> {
+export async function debugApp(appId: string, profileDir: string): Promise<void> {
 	// Resolve the workspace binding
 	const apps = await scanWorkspaceApps();
 	const app = apps.find((a) => a.id === appId);
@@ -43,6 +49,9 @@ export async function debugApp(appId: string): Promise<void> {
 
 	// One watch session must be live so the preview serves a dev bundle
 	await ensureWatch(app, true);
+
+	// The profile directory must exist before js-debug hands it to the browser.
+	mkdirSync(profileDir, { recursive: true });
 
 	// Standard js-debug external-browser launch (stock UI from here on).
 	const base = (ConnectionManager.getInstance().getHttpUrl?.() || 'http://localhost:5565').replace(/\/$/, '');
@@ -66,6 +75,9 @@ export async function debugApp(appId: string): Promise<void> {
 		// folder — the app folder doubles the path
 		// (".../apps/home-ui/apps/home-ui/...") and no breakpoint ever binds.
 		webRoot: folder?.uri.fsPath ?? app.folder,
+		// Persistent profile (see the profileDir param doc): one sign-in, then
+		// every F5 boots authenticated.
+		userDataDir: profileDir,
 	};
 	// startDebugging resolves false (no throw) when the session never starts
 	// — a silent F5 no-op unless it is reported here.
