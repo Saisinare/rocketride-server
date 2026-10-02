@@ -164,7 +164,7 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 	// Full task debug output; adds --trace=debugOut to the task args when enabled
 	const settingDebugOutput = settings['rocketride.pipeBuilder.pipelineDebugOutput'] === true;
 
-	// Pipeline Builder is a paywalled app. Running requires an active sub —
+	// Rocket Builder is a paywalled app. Running requires an active sub —
 	// gate the run controls (lock icon) and the run action on this. Reactive:
 	// updates live when the subscription status changes.
 	const { getStatus } = useSubscriptions();
@@ -340,13 +340,13 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 	// --- Pipeline run/stop/restart -------------------------------------------
 
 	/**
-	 * Opens the subscription checkout (plan picker) for Pipeline Builder.
+	 * Opens the subscription checkout (plan picker) for Rocket Builder.
 	 * Uses the app entry from account info when present, else a minimal entry —
 	 * the checkout only needs the app id (to fetch prices) plus name/description.
 	 */
 	const promptSubscribe = useCallback(() => {
 		const info: any = getClient()?.getAccountInfo();
-		const app = info?.apps?.find((a: any) => a.id === 'rocketride.pipeBuilder') ?? { id: 'rocketride.pipeBuilder', name: 'Pipeline Builder', description: '' };
+		const app = info?.apps?.find((a: any) => a.id === 'rocketride.pipeBuilder') ?? { id: 'rocketride.pipeBuilder', name: 'Rocket Builder', description: '' };
 		ConnectionManager.getInstance().emit('shell:subscribe', { app });
 	}, []);
 

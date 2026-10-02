@@ -10,9 +10,10 @@
  * UI: navigation buttons, unknown tasks section, and a footer slot.
  *
  * Column order: shared nav (host slot + Monitor), then the stock TabControl
- * mode tabs (Pipelines | Apps | Nodes — Apps when the host wires the app
- * builder, Nodes as the node-builder placeholder), then a stock TabPanel
- * holding the mode bodies, then the shared footer slot.
+ * mode tabs (Agent | Apps | Nodes | Pipelines — Agent when the host wires
+ * the agent sidebar, Apps when it wires the app builder, Nodes as the
+ * node-builder placeholder), then a stock TabPanel holding the mode bodies,
+ * then the shared footer slot.
  *
  * The Explorer component handles all file tree rendering, inline rename/create,
  * context menus, status indicators, and child item actions.  SidebarView
@@ -21,7 +22,7 @@
 
 import React, { useState, useCallback, CSSProperties } from 'react';
 import { commonStyles } from 'shell';
-import { BxPlus, BxDesktop, BxChevronRight, BxChevronDown, BxStop, BxGridAlt } from 'shell';
+import { BxPlus, BxDesktop, BxChevronRight, BxChevronDown, BxStop, BxGridAlt, BxTrash, BxNote } from 'shell';
 import { SidebarMenu, TabControl, TabPanel } from 'shell';
 import { Explorer, NOOP_VFS } from 'shell';
 import type { ISidebarViewProps } from './types';
@@ -137,6 +138,25 @@ const S = {
 const HOVER_BG = 'var(--rr-bg-list-hover, var(--rr-bg-surface-alt))';
 
 // =============================================================================
+// SESSION DATE FORMATTING
+// =============================================================================
+
+/**
+ * Formats a session stamp for the MY SESSIONS meta line: minutes/hours for
+ * today ("12m ago", "3h ago"), "yesterday", then a short month-day ("Sep 24").
+ *
+ * @param date - Epoch-ms creation stamp.
+ * @returns The human-relative label.
+ */
+function formatSessionDate(date: number): string {
+	const elapsed = Date.now() - date;
+	if (elapsed < 3_600_000) return `${Math.max(1, Math.round(elapsed / 60_000))}m ago`;
+	if (elapsed < 86_400_000) return `${Math.round(elapsed / 3_600_000)}h ago`;
+	if (elapsed < 2 * 86_400_000) return 'yesterday';
+	return new Date(date).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+// =============================================================================
 // DEFAULT EXPLORER CONFIG
 // =============================================================================
 
@@ -160,18 +180,20 @@ const PIPELINE_CONFIG: ExplorerConfig = {
  * Maps ISidebarViewProps (pipeline-specific) to IExplorerProps (generic).
  * The Explorer component handles all file tree rendering internally.
  */
-export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscribed = true, entries, activeTasks, unknownTasks, headerSlot, onNavigate, onOpenFile, onFileManage, fileActions, onSourceAction, onRefresh, footerSlot, onOpenUnknownTask, activeFilePath, appBuilder, showModeStrip = false, sidebarMode = 'pipelines', onSidebarModeChange }) => {
+export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscribed = true, entries, activeTasks, unknownTasks, headerSlot, onNavigate, onOpenFile, onFileManage, fileActions, onSourceAction, onRefresh, footerSlot, onOpenUnknownTask, activeFilePath, appBuilder, agent, showModeStrip = false, sidebarMode = 'pipelines', onSidebarModeChange, onShowIntro }) => {
 	const [hoveredRow, setHoveredRow] = useState<string | null>(null);
 	const [unknownExpanded, setUnknownExpanded] = useState(true);
 
 	const isConnected = connection.state === 'connected';
 	const hasUnknown = (unknownTasks?.length ?? 0) > 0;
-	// The Apps tab exists only when the host wires it; the Nodes tab exists
-	// whenever the mode tabs render at all. A requested mode is only honored
-	// when its tab actually exists — anything else falls back to Pipelines.
+	// The Agent and Apps tabs exist only when the host wires them; the Nodes
+	// tab exists whenever the mode tabs render at all. A requested mode is
+	// only honored when its tab actually exists — anything else falls back
+	// to Pipelines.
 	const hasAppBuilder = Boolean(appBuilder);
-	const tabsVisible = hasAppBuilder || showModeStrip;
-	const mode = (sidebarMode === 'apps' && hasAppBuilder) || (sidebarMode === 'nodes' && tabsVisible) ? sidebarMode : 'pipelines';
+	const hasAgent = Boolean(agent);
+	const tabsVisible = hasAppBuilder || hasAgent || showModeStrip;
+	const mode = (sidebarMode === 'agent' && hasAgent) || (sidebarMode === 'apps' && hasAppBuilder) || (sidebarMode === 'nodes' && tabsVisible) ? sidebarMode : 'pipelines';
 	// --- Static nav menus ----------------------------------------------------
 
 	// Monitor sits ABOVE the mode tabs — it is mode-independent chrome shared
@@ -181,16 +203,18 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 		entries: [{ id: 'monitor', label: 'Monitor', icon: <BxDesktop size={16} />, disabled: !isConnected }],
 	};
 
-	// "+ New pipeline" belongs to the Pipelines tab body only.
+	// "+ New pipeline" belongs to the Pipelines tab body only; the embedded
+	// Introduction row sits right above it when the host wires onShowIntro.
 	const pipelinesNavMenu: ViewMenu = {
-		entries: [{ id: 'new', label: 'New pipeline', icon: <BxPlus size={16} /> }],
+		entries: [...(onShowIntro ? [{ id: 'intro', label: 'Introduction to Pipelines', icon: <BxNote size={16} /> }] : []), { id: 'new', label: 'New pipeline', icon: <BxPlus size={16} /> }],
 	};
 
-	// The mode tabs — the stock TabControl menu. The Apps entry only exists
-	// when the host wires the app-builder sidebar content; Nodes (the
+	// The mode tabs — the stock TabControl menu. The Agent and Apps entries
+	// only exist when the host wires their sidebar content; Nodes (the
 	// node-builder placeholder) rides along whenever the tabs render.
 	const modeMenu: ViewMenu = {
 		entries: [
+			...(hasAgent ? [{ id: 'agent', label: 'Agent' }] : []),
 			...(hasAppBuilder ? [{ id: 'apps', label: 'Apps' }] : []),
 			{ id: 'nodes', label: 'Nodes' },
 			{ id: 'pipelines', label: 'Pipelines' },
@@ -227,9 +251,18 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 
 	// --- MY APPS nav (App Builder mode) --------------------------------------
 
-	// "+ New app" as a stock SidebarMenu entry, mirroring "New pipeline".
+	// "+ New app" as a stock SidebarMenu entry, mirroring "New pipeline"; the
+	// embedded Introduction row sits right above it.
 	const appsNavMenu: ViewMenu = {
-		entries: [{ id: 'newApp', label: 'New app', icon: <BxPlus size={16} /> }],
+		entries: [...(onShowIntro ? [{ id: 'intro', label: 'Introduction to Apps', icon: <BxNote size={16} /> }] : []), { id: 'newApp', label: 'New app', icon: <BxPlus size={16} /> }],
+	};
+
+	// --- MY SESSIONS nav (Agent mode) -----------------------------------------
+
+	// "+ New session" as a stock SidebarMenu entry, mirroring "New app"; the
+	// embedded Introduction row sits right above it.
+	const agentNavMenu: ViewMenu = {
+		entries: [...(onShowIntro ? [{ id: 'intro', label: 'Introduction to Agents', icon: <BxNote size={16} /> }] : []), { id: 'newSession', label: 'New session', icon: <BxPlus size={16} /> }],
 	};
 
 	// --- Mode bodies ---------------------------------------------------------
@@ -249,6 +282,7 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 					activeId=""
 					onSelect={(id) => {
 						if (id === 'new') onNavigate(id);
+						if (id === 'intro') onShowIntro?.('pipelines');
 					}}
 				/>
 			</div>
@@ -305,6 +339,7 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 					activeId=""
 					onSelect={(id) => {
 						if (id === 'newApp') appBuilder.onNewApp();
+						if (id === 'intro') onShowIntro?.('apps');
 					}}
 				/>
 			</div>
@@ -344,9 +379,83 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 		</div>
 	) : null;
 
-	// Nodes tab body: node-builder placeholder until the real surface lands.
+	// Agent tab body: + New session nav and the MY SESSIONS list.
+	const agentPanel = agent ? (
+		<div style={S.panelColumn}>
+			<div style={S.navSection}>
+				<SidebarMenu
+					menu={agentNavMenu}
+					activeId=""
+					onSelect={(id) => {
+						if (id === 'newSession') agent.onNewSession();
+						if (id === 'intro') onShowIntro?.('agent');
+					}}
+				/>
+			</div>
+			<div style={S.appsLabel}>My Sessions</div>
+			<div style={S.appsList}>
+				{agent.sessions.length === 0 && (
+					<div style={{ padding: '4px 10px', fontSize: 12, color: 'var(--rr-text-secondary)' }}>
+						No sessions yet — start one with New session.
+					</div>
+				)}
+				{agent.sessions.map((session) => {
+					const rowKey = `sess:${session.sessionId}`;
+					const active = session.sessionId === agent.activeSessionId;
+					return (
+						<div
+							key={session.sessionId}
+							style={{ ...S.row, alignItems: 'flex-start', ...(active ? { background: HOVER_BG } : hoverBg(rowKey)) }}
+							onMouseEnter={() => setHoveredRow(rowKey)}
+							onMouseLeave={() => setHoveredRow(null)}
+							onClick={() => agent.onOpenSession(session.sessionId)}
+							title={session.title}
+						>
+							{/* Two-line row: title over the relative date; the 14px
+							    chevron slot keeps alignment with the other modes. */}
+							<span style={{ width: 14, flexShrink: 0 }} />
+							<div style={{ flex: 1, minWidth: 0, padding: '2px 0' }}>
+								<div style={S.rowName}>{session.title}</div>
+								<div style={{ fontSize: 11, lineHeight: '14px', color: 'var(--rr-text-secondary)' }}>{formatSessionDate(session.date)}</div>
+							</div>
+							{hoveredRow === rowKey && (
+								<button
+									style={S.actionBtn('var(--rr-text-secondary)')}
+									title="Delete session"
+									onClick={(e) => {
+										e.stopPropagation();
+										agent.onDeleteSession(session.sessionId);
+									}}
+								>
+									<BxTrash size={14} />
+								</button>
+							)}
+						</div>
+					);
+				})}
+			</div>
+		</div>
+	) : null;
+
+	// The Nodes Introduction row — the only nav the placeholder mode has.
+	const nodesNavMenu: ViewMenu = {
+		entries: [{ id: 'intro', label: 'Introduction to Nodes', icon: <BxNote size={16} /> }],
+	};
+
+	// Nodes tab body: the Introduction row above the node-builder placeholder.
 	const nodesPanel = (
 		<div style={S.panelColumn}>
+			{onShowIntro && (
+				<div style={S.navSection}>
+					<SidebarMenu
+						menu={nodesNavMenu}
+						activeId=""
+						onSelect={(id) => {
+							if (id === 'intro') onShowIntro('nodes');
+						}}
+					/>
+				</div>
+			)}
 			<div style={S.comingSoon}>Coming soon...</div>
 		</div>
 	);
@@ -375,7 +484,7 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 					menu={modeMenu}
 					activeId={mode}
 					onSelect={(id) => {
-						if (id === 'pipelines' || id === 'apps' || id === 'nodes') onSidebarModeChange?.(id);
+						if (id === 'agent' || id === 'pipelines' || id === 'apps' || id === 'nodes') onSidebarModeChange?.(id);
 					}}
 				/>
 			)}
@@ -383,7 +492,7 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 			{/* ── Mode bodies — the stock TabPanel stack keeps all modes
 			    mounted, so Explorer scroll/expand state survives switches */}
 			<div style={S.panelStack}>
-				<TabPanel activeId={mode} panels={{ pipelines: { content: pipelinesPanel }, ...(appsPanel ? { apps: { content: appsPanel } } : {}), nodes: { content: nodesPanel } }} />
+				<TabPanel activeId={mode} panels={{ pipelines: { content: pipelinesPanel }, ...(agentPanel ? { agent: { content: agentPanel } } : {}), ...(appsPanel ? { apps: { content: appsPanel } } : {}), nodes: { content: nodesPanel } }} />
 			</div>
 
 			{/* ── Footer slot (shared by both modes) ──────────────────── */}

@@ -113,16 +113,47 @@ export interface AppBuilderSidebar {
 	onOpenApp: (appId: string) => void;
 }
 
+/**
+ * One agent-session row of the MY SESSIONS list (mirrors the shared
+ * AgentSessionMeta shape without importing the agent module — the sidebar
+ * renders whatever rows the host supplies).
+ */
+export interface AgentSessionListItem {
+	/** The session's GUID. */
+	sessionId: string;
+	/** Epoch-ms creation stamp (list is rendered newest-first). */
+	date: number;
+	/** Display title — the first user request, truncated. */
+	title: string;
+}
+
+/**
+ * Agent sidebar content. PRESENCE of this prop adds the `Agent` mode tab
+ * (cloud hosts); hosts that omit it (VS Code) render exactly as before.
+ */
+export interface AgentSidebar {
+	/** MY SESSIONS list, newest first. */
+	sessions: AgentSessionListItem[];
+	/** The session whose conversation tab is open/focused, if any. */
+	activeSessionId?: string;
+	/** Start a brand-new session (opens an empty conversation tab). */
+	onNewSession: () => void;
+	/** Open a session's conversation tab. */
+	onOpenSession: (sessionId: string) => void;
+	/** Delete a session (host confirms first). */
+	onDeleteSession: (sessionId: string) => void;
+}
+
 // =============================================================================
 // SIDEBAR MODE
 // =============================================================================
 
 /**
- * The sidebar's mode tabs. 'apps' exists only when the host wires the app
- * builder; 'nodes' is the node-builder placeholder shown whenever the mode
- * tabs render.
+ * The sidebar's mode tabs. 'agent' exists only when the host wires the
+ * agent sidebar; 'apps' only when the host wires the app builder; 'nodes'
+ * is the node-builder placeholder shown whenever the mode tabs render.
  */
-export type SidebarMode = 'pipelines' | 'apps' | 'nodes';
+export type SidebarMode = 'agent' | 'pipelines' | 'apps' | 'nodes';
 
 // =============================================================================
 // CONNECTION STATE
@@ -204,6 +235,11 @@ export interface ISidebarViewProps {
 	 */
 	appBuilder?: AppBuilderSidebar;
 	/**
+	 * Agent sidebar content — presence adds the Agent tab to the mode tabs
+	 * and enables the MY SESSIONS mode. Omitted (VS Code) → no Agent tab.
+	 */
+	agent?: AgentSidebar;
+	/**
 	 * Force the mode tabs visible without appBuilder — Pipelines plus the
 	 * Nodes placeholder (the web host: more modes will land on that strip).
 	 */
@@ -212,4 +248,10 @@ export interface ISidebarViewProps {
 	sidebarMode?: SidebarMode;
 	/** Mode tab selection callback (hosts persist the choice). */
 	onSidebarModeChange?: (mode: SidebarMode) => void;
+	/**
+	 * Opens a mode's embedded "Introduction to ..." page as an editor tab.
+	 * Presence adds the Introduction row at the top of each mode body (above
+	 * "+ New session" / "+ New app" / "+ New pipeline" / the Nodes placeholder).
+	 */
+	onShowIntro?: (mode: 'agent' | 'apps' | 'nodes' | 'pipelines') => void;
 }

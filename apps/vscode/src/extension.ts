@@ -45,6 +45,7 @@ import { SidebarProvider } from './providers/SidebarProvider';
 import { ProjectProvider } from './providers/ProjectProvider';
 import { SettingsProvider } from './providers/SettingsProvider';
 import { MonitorProvider } from './providers/MonitorProvider';
+import { IntroProvider } from './providers/IntroProvider';
 // DeployProvider removed — Docker/Service operations now live in Settings panels
 import { StatusProvider } from './providers/StatusProvider';
 import { BarStatus } from './providers/BarStatusProvider';
@@ -75,6 +76,7 @@ let sidebar: SidebarProvider | undefined;
 let project: ProjectProvider | undefined;
 let settings: SettingsProvider | undefined;
 let _monitor: MonitorProvider | undefined;
+let _intro: IntroProvider | undefined;
 // deploy removed — functionality moved to Settings panels
 let status: StatusProvider | undefined;
 let appScreen: AppScreenProvider | undefined;
@@ -293,6 +295,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 				settings = new SettingsProvider(context.extensionUri);
 				_monitor = new MonitorProvider(context);
+				// Embedded "Introduction to ..." pages (sidebar Introduction rows).
+				_intro = new IntroProvider(context);
 				// deploy removed — register redirect command so sidebar "Deploy" opens Settings
 				context.subscriptions.push(vscode.commands.registerCommand('rocketride.page.deploy.open', () => vscode.commands.executeCommand('rocketride.page.settings.open', 'deployment')));
 				status = new StatusProvider(context);
@@ -707,6 +711,15 @@ async function refreshAllProviders(): Promise<void> {
  * Extension deactivation cleanup
  */
 export async function deactivate(): Promise<void> {
+	if (_intro) {
+		try {
+			_intro.dispose();
+		} catch (error: unknown) {
+			if (!(error instanceof Error) || error.name !== 'Canceled') {
+				console.error('[ROCKETRIDE] Error disposing intro pages:', error);
+			}
+		}
+	}
 	if (_monitor) {
 		try {
 			_monitor.dispose();

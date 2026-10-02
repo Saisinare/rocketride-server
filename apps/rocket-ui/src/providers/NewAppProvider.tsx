@@ -46,13 +46,6 @@ import { getDocs } from '../docs';
 import { APPDEV_DIR, listAppFolders, scaffoldApp } from '../appdev/appStore';
 
 // =============================================================================
-// EVENTS
-// =============================================================================
-
-/** Window event fired after the .appdev tree changes (sidebar re-scans). */
-export const APPDEV_CHANGED_EVENT = 'appdev:changed';
-
-// =============================================================================
 // STYLES
 // =============================================================================
 
@@ -126,8 +119,9 @@ const NewAppProvider: React.FC = () => {
 					publisher: identity.developerId || 'local',
 					frame,
 				});
-				// step: tell the sidebar the .appdev tree changed
-				window.dispatchEvent(new CustomEvent(APPDEV_CHANGED_EVENT));
+				// The sidebar re-scans off the scaffold's own onFsChange bus
+				// notifications (emitFsChange inside scaffoldApp) — no extra
+				// announcement needed here.
 				// step: close the wizard and open the new app's builder
 				const docs = getDocs();
 				docs?.discardDocument('newapp');

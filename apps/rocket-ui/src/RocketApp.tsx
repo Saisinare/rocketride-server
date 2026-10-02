@@ -43,6 +43,9 @@ import WebviewProvider from './providers/WebviewProvider';
 import SidebarProvider from './providers/SidebarProvider';
 import AppBuilderProvider from './providers/AppBuilderProvider';
 import NewAppProvider from './providers/NewAppProvider';
+import AgentProvider from './providers/AgentProvider';
+import IntroProvider from './providers/IntroProvider';
+import { AgentSession } from 'shared/agent/agent';
 
 // =============================================================================
 // STYLES
@@ -154,7 +157,17 @@ const RocketApp: React.FC<ShellAppProps> = (_props) => {
 		};
 
 		// Create the instance — both App and Sidebar will use it
-		createDocs(vfs, { appState, updateAppState });
+		const docs = createDocs(vfs, { appState, updateAppState });
+
+		// step: an empty restored workspace opens straight into a fresh Agent
+		// conversation — the startup surface. Only when NO tabs were restored:
+		// an existing session's tabs come back exactly as left.
+		const restored = docs.getState();
+		if (Object.keys(restored.editors).length === 0) {
+			const session = AgentSession.newSession();
+			docs.openStaticDocument(`agent:${session.sessionId}`, session.title);
+		}
+
 		setReady(true);
 
 		return () => {
@@ -262,7 +275,7 @@ const RocketAppReady: React.FC<{ docs: import('shell').Documents }> = ({ docs })
 							<div style={styles.content}>
 								{group.editorIds.length === 0 ? (
 									<div style={styles.welcome}>
-										<div style={{ fontSize: 16, fontWeight: 600 }}>Pipeline Builder</div>
+										<div style={{ fontSize: 16, fontWeight: 600 }}>Rocket Builder</div>
 										<div>Open a project from the Explorer or create a new one to get started.</div>
 									</div>
 								) : (
@@ -378,6 +391,11 @@ const RocketEditorContent: React.FC<{
 	// Static document routes — not backed by VFS
 	if (uri === 'monitor') return <MonitorProvider />;
 	if (uri === 'newapp') return <NewAppProvider />;
+	// Agent conversation tabs carry only the session GUID in the URI — the
+	// transcript lives in the fs store, never in workspace state.
+	if (uri.startsWith('agent:')) return <AgentProvider sessionId={uri.slice('agent:'.length)} />;
+	// Embedded "Introduction to ..." pages from the sidebar modes.
+	if (uri.startsWith('intro:')) return <IntroProvider mode={uri.slice('intro:'.length)} />;
 	// App Builder panels persist per-panel view state (the active stage)
 	// through the editor's view-state row — the same channel the pipeline
 	// editor uses — so two panels of one app restore independently.

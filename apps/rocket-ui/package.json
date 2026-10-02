@@ -10,7 +10,7 @@
 		"id": "rocketride.pipeBuilder",
 		"projectId": "f648481f-cee8-4edd-95c6-c7bd192457d7",
 		"publisher": "Aparavi Software AG",
-		"name": "Pipeline Builder",
+		"name": "Rocket Builder",
 		"description": "Design, run, and deploy AI pipelines visually.",
 		"readme": "./README.md",
 		"icon": "./icon.svg",
@@ -21,7 +21,7 @@
 		"mode": "paywall",
 		"contributes": {
 			"configuration": {
-				"title": "Pipeline Builder",
+				"title": "Rocket Builder",
 				"properties": {
 					"rocketride.pipeBuilder.pipelineRestartBehavior": {
 						"type": "string",

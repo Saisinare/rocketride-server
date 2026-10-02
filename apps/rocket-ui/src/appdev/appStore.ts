@@ -36,8 +36,8 @@
  */
 
 import { PROJECT_DIR } from 'rocketride';
-import { ConnectionManager } from 'shell';
 import type { RocketRideClient } from 'shell';
+import { emitFsChange } from 'shared/utils/fsNotify';
 import { renderTemplate } from 'shared/modules/appdev';
 import type { FrameOptions, PackageJsonLike, TemplateName } from 'shared/modules/appdev';
 
@@ -66,23 +66,9 @@ export function appPath(folder: string, rel = ''): string {
 // CHANGE NOTIFICATION
 // =============================================================================
 
-/** Page-monotonic revision counter for onFsChange notifications. */
-let fsChangeRev = 0;
-
-/**
- * Announces one store-VFS write on the shell notification bus
- * (`shell:notify` / kind `onFsChange`). Called AFTER the server write
- * resolves, so a listener that re-reads the path sees the new content.
- * Page-local by design: same-realm listeners only — cross-tab and
- * cross-client delivery is the future server-pushed feed's job.
- *
- * @param uri - The full store path that changed.
- * @param origin - The writer's identity (a dev-session id, or a verb like
- *                 'scaffold') — listeners skip their own echo.
- */
-export function emitFsChange(uri: string, origin: string): void {
-	ConnectionManager.getInstance().emit('shell:notify', { kind: 'onFsChange', uri, origin, rev: ++fsChangeRev });
-}
+// The emitter lives in shared (ONE page-monotonic rev counter for every
+// store writer); re-exported here so existing importers keep working.
+export { emitFsChange };
 
 /**
  * Guards an app-folder-relative path against traversal — the store client

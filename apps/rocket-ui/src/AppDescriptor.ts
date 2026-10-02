@@ -45,12 +45,12 @@ import IconLight from 'shared/assets/rocketride/rocketride-light.svg';
  */
 const ROCKETRIDE_APP: AppDescriptor = {
 	id: 'rocketride.pipeBuilder',
-	name: 'Pipeline Builder',
+	name: 'Rocket Builder',
 	branding: {
-		appName: 'Pipeline Builder',
+		appName: 'Rocket Builder',
 		iconDark: React.createElement(IconDark, { style: { width: '100%', height: '100%' } }),
 		iconLight: React.createElement(IconLight, { style: { width: '100%', height: '100%' } }),
-		welcomeTitle: 'Pipeline Builder',
+		welcomeTitle: 'Rocket Builder',
 		welcomeSubtitle: 'Open a project from the Explorer or create a new one to get started.',
 	},
 	// Two-column app: RocketApp's root AppLayout declares the pipelines

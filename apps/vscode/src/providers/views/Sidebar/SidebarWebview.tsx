@@ -359,6 +359,14 @@ const SidebarViewWebview: React.FC = () => {
 		[sendMessage]
 	);
 
+	/** Introduction row → the embedded intro page panel (extension host). */
+	const onShowIntro = useCallback(
+		(mode: 'agent' | 'apps' | 'nodes' | 'pipelines') => {
+			sendMessage({ type: 'command', command: 'rocketride.page.intro.open', args: [mode] });
+		},
+		[sendMessage]
+	);
+
 	/** Mode strip selection — local state now, host persists via message. */
 	const onSidebarModeChange = useCallback(
 		(mode: SidebarMode) => {
@@ -476,7 +484,7 @@ const SidebarViewWebview: React.FC = () => {
 	// No headerSlot: the VS Code host has no home-app destination, so it injects no
 	// host-specific top nav. The "Home" button is a SaaS-shell concept owned by the
 	// web host (rocket-ui), intentionally absent from shared / this extension.
-	return <SidebarView connection={connection} isSubscribed={subscribed} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} onNavigate={onNavigate} onOpenFile={onOpenFile} onSourceAction={onSourceAction} onRefresh={onRefresh} footerSlot={footerSlot} onOpenUnknownTask={onOpenUnknownTask} appBuilder={{ apps, onNewApp, onOpenApp }} sidebarMode={sidebarMode} onSidebarModeChange={onSidebarModeChange} />;
+	return <SidebarView connection={connection} isSubscribed={subscribed} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} onNavigate={onNavigate} onOpenFile={onOpenFile} onSourceAction={onSourceAction} onRefresh={onRefresh} footerSlot={footerSlot} onOpenUnknownTask={onOpenUnknownTask} appBuilder={{ apps, onNewApp, onOpenApp }} sidebarMode={sidebarMode} onSidebarModeChange={onSidebarModeChange} onShowIntro={onShowIntro} />;
 };
 
 export default SidebarViewWebview;

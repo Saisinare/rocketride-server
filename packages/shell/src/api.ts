@@ -315,7 +315,7 @@ export {
 // concrete module paths (generated from the retired barrel's map).
 export type { IButtonProps, ButtonVariant } from './components/button/Button';
 export type { IStatusBadgeProps, IStatusDotProps, StatusVariant } from './components/status-badge/StatusBadge';
-export type { IChatViewProps, ChatMessage, UseChatMessagesOptions } from './components/chat/types';
+export type { IChatViewProps, ChatMessage, UseChatMessagesOptions, TextResult } from './components/chat/types';
 export type { IConnectionCardProps, IConnectionCardAddProps } from './components/connection-card/ConnectionCard';
 export type { IConnectionManagerViewProps, IConnectionCardDisplay, IConnectionFormField } from './components/connection-manager/ConnectionManagerView';
 export type { IEmptyStateProps } from './components/empty-state/EmptyState';

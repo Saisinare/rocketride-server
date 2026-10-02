@@ -33,17 +33,21 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { useShellConnection, ConnectionManager, ConfirmDialog } from 'shell';
+import { useShellConnection, ConnectionManager, ConfirmDialog, useWorkspace } from 'shell';
+import type { ShellNotification } from 'shell';
 import { getDocs } from '../docs';
 import { SidebarView } from 'shared/modules/sidebar/SidebarView';
 import { BxExport, useSidebarCollapsed } from 'shell';
 import { foldTaskEvent } from 'shared/modules/sidebar/taskFold';
-import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, SidebarMode, AppBuilderSidebar, AppListItem } from 'shared/modules/sidebar/types';
+import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, SidebarMode, AgentSidebar, AppBuilderSidebar, AppListItem } from 'shared/modules/sidebar/types';
 import type { TaskLifecycleEvent } from 'shared/modules/sidebar/taskFold';
+import { AgentSession, AGENTS_DIR } from 'shared/agent/agent';
+import type { AgentSessionMeta } from 'shared/agent/agent';
 import { loadProject, listProjectDir, isPipelineFile, pipelineExtension } from '../utils/projectStore';
 import { downloadJson } from '../utils/downloadFile';
-import { scanApps } from '../appdev/appStore';
-import { APPDEV_CHANGED_EVENT } from './NewAppProvider';
+import { scanApps, appPath } from '../appdev/appStore';
+import { INTRO_PAGES } from 'shared/modules/intro/introPages';
+import type { IntroMode } from 'shared/modules/intro/introPages';
 
 // =============================================================================
 // COLLAPSED GATE
@@ -479,10 +483,6 @@ const SidebarProvider: React.FC = () => {
 	}, [client, isConnected]);
 	useEffect(() => {
 		void refreshApps();
-		// Re-scan whenever the wizard (or a future delete) mutates .appdev.
-		const handler = () => void refreshApps();
-		window.addEventListener(APPDEV_CHANGED_EVENT, handler);
-		return () => window.removeEventListener(APPDEV_CHANGED_EVENT, handler);
 	}, [refreshApps]);
 
 	// The App Builder sidebar contract: presence adds the Apps mode tab.
@@ -502,11 +502,97 @@ const SidebarProvider: React.FC = () => {
 		[apps, activeFilePath]
 	);
 
+	// --- Agent (MY SESSIONS) ---------------------------------------------------
+
+	// The agent's session HISTORY is namespaced by this hosting app's id —
+	// the workspace supplies it (never hardcoded); AgentSession.configure
+	// stamps it once for the shared storage layer. Sessions themselves are
+	// operationally unrestricted (any app/node/pipeline).
+	const { activeAppId: hostAppId, prefs, updatePrefs } = useWorkspace();
+	useEffect(() => {
+		AgentSession.configure(hostAppId);
+	}, [hostAppId]);
+
+	// The MY SESSIONS list from the .agents catalog.
+	const [sessions, setSessions] = useState<AgentSessionMeta[]>([]);
+	const refreshSessions = useCallback(async () => {
+		if (!client || !isConnected) {
+			setSessions([]);
+			return;
+		}
+		try {
+			setSessions(await AgentSession.getSessions());
+		} catch {
+			setSessions([]);
+		}
+	}, [client, isConnected]);
+	useEffect(() => {
+		void refreshSessions();
+	}, [refreshSessions]);
+
+	// ONE shell-bus subscription serves both list refreshes: app-dev
+	// working-copy writes re-scan MY APPS; agent history writes re-list
+	// MY SESSIONS. (The bus is the only notification channel — no window
+	// events.)
+	useEffect(() => {
+		const unsub = ConnectionManager.getInstance().on('shell:notify', (notification: ShellNotification) => {
+			if (notification.kind !== 'onFsChange') return;
+			if (notification.uri.startsWith(`${appPath('')}`)) void refreshApps();
+			else if (notification.uri.startsWith(`${AGENTS_DIR}/${hostAppId}/`)) void refreshSessions();
+		});
+		return () => {
+			unsub();
+		};
+	}, [refreshApps, refreshSessions, hostAppId]);
+
+	// The Agent sidebar contract: presence adds the Agent mode tab.
+	const agent: AgentSidebar = useMemo(
+		() => ({
+			sessions,
+			// The open conversation document is `agent:<sessionId>`.
+			activeSessionId: activeFilePath.startsWith('agent:') ? activeFilePath.slice('agent:'.length) : undefined,
+			onNewSession: () => {
+				// step: mint the GUID now; nothing hits disk until the first send
+				const session = AgentSession.newSession();
+				getDocs()?.openStaticDocument(`agent:${session.sessionId}`, session.title);
+			},
+			onOpenSession: (sessionId: string) => {
+				const title = sessions.find((s) => s.sessionId === sessionId)?.title ?? 'Agent session';
+				getDocs()?.openStaticDocument(`agent:${sessionId}`, title);
+			},
+			onDeleteSession: (sessionId: string) => {
+				void (async () => {
+					const title = sessions.find((s) => s.sessionId === sessionId)?.title ?? sessionId;
+					const confirmed = await showConfirm('Delete session', `Are you sure you want to delete "${title}"?`, 'Delete');
+					if (!confirmed) return;
+					await AgentSession.deleteSession(sessionId);
+					// Force-close the conversation tab regardless of state.
+					getDocs()?.discardDocument(`agent:${sessionId}`);
+				})();
+			},
+		}),
+		[sessions, activeFilePath, showConfirm]
+	);
+
+	/** Opens a mode's embedded "Introduction to ..." page as a document tab. */
+	const handleShowIntro = useCallback((mode: IntroMode) => {
+		getDocs()?.openStaticDocument(`intro:${mode}`, INTRO_PAGES[mode].title);
+	}, []);
+
 	// --- Render ----------------------------------------------------------------
 
-	// Mode tab selection (Pipelines | Apps | Nodes). Session-scoped only,
-	// matching the VS Code host's session persistence.
-	const [sidebarMode, setSidebarMode] = useState<SidebarMode>('apps');
+	// Mode tab selection (Agent | Apps | Nodes | Pipelines) — prefs-backed so
+	// the choice survives reload via workspace state. Agent is the startup
+	// default when no stored choice exists (requirement: default tab unless
+	// workspace state says otherwise).
+	const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => (prefs?.sidebarMode as SidebarMode | undefined) ?? 'agent');
+	const handleSidebarModeChange = useCallback(
+		(mode: SidebarMode) => {
+			setSidebarMode(mode);
+			updatePrefs({ sidebarMode: mode });
+		},
+		[updatePrefs]
+	);
 
 	// The sidebar node — the pipelines Explorer plus its confirm/error dialogs.
 	// Only the Explorer sits behind the collapse gate: the shell frame owns the
@@ -518,7 +604,7 @@ const SidebarProvider: React.FC = () => {
 	return (
 		<>
 			<SidebarCollapsedGate>
-				<SidebarView connection={connection} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} activeFilePath={activeFilePath} onNavigate={handleNavigate} onOpenFile={handleOpenFile} onFileManage={handleFileManage} fileActions={[{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }]} onSourceAction={handleSourceAction} onOpenUnknownTask={handleOpenUnknownTask} onRefresh={refresh} appBuilder={appBuilder} showModeStrip sidebarMode={sidebarMode} onSidebarModeChange={setSidebarMode} />
+				<SidebarView connection={connection} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} activeFilePath={activeFilePath} onNavigate={handleNavigate} onOpenFile={handleOpenFile} onFileManage={handleFileManage} fileActions={[{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }]} onSourceAction={handleSourceAction} onOpenUnknownTask={handleOpenUnknownTask} onRefresh={refresh} appBuilder={appBuilder} agent={agent} showModeStrip sidebarMode={sidebarMode} onSidebarModeChange={handleSidebarModeChange} onShowIntro={handleShowIntro} />
 			</SidebarCollapsedGate>
 			{confirmState && <ConfirmDialog title={confirmState.title} message={confirmState.message} confirmLabel={confirmState.confirmLabel} cancelLabel="Cancel" onConfirm={() => handleConfirmResult(true)} onCancel={() => handleConfirmResult(false)} />}
 			{actionError && <ConfirmDialog title="Pipeline Error" message={actionError} confirmLabel="OK" onConfirm={() => setActionError(null)} onCancel={() => setActionError(null)} />}
