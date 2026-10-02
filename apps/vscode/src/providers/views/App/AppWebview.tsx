@@ -24,7 +24,7 @@
 import 'shell/themes/rocketride-default.css';
 import '../../../themes/rocketride-vscode.css';
 import '../../styles/root.css';
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppBuilderScreen, toRungPins, toVersionInfos } from 'shared/modules/appdev';
 import type { AppBuilderCapabilities, AppBuilderStage, AppErrorRow, AppEventRow, AppHistoryEntry, AppSummary, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus, WirePin, WireRailEntry } from 'shared/modules/appdev';
 import { useMessaging } from '../hooks/useMessaging';
@@ -110,6 +110,11 @@ const styles: Record<string, React.CSSProperties> = {
 		color: 'var(--rr-text-secondary)',
 	},
 	// Initializing pane (pre-iframe): headline + one-line phase detail.
+	initBody: {
+		textAlign: 'center',
+		maxWidth: 460,
+		padding: '0 24px',
+	},
 	initTitle: {
 		fontSize: 13,
 		fontWeight: 600,
@@ -119,6 +124,23 @@ const styles: Record<string, React.CSSProperties> = {
 	initDetail: {
 		fontSize: 12,
 		color: 'var(--rr-text-secondary)',
+	},
+	// Elapsed-in-phase ticker under the phase line (stall visibility).
+	initElapsed: {
+		fontSize: 12,
+		color: 'var(--rr-text-secondary)',
+		marginTop: 2,
+		fontVariantNumeric: 'tabular-nums',
+	},
+	// Live tail of the latest Console row — what the dev session is DOING.
+	initTail: {
+		fontFamily: 'var(--rr-font-mono, Consolas, monospace)',
+		fontSize: 11,
+		color: 'var(--rr-text-secondary)',
+		marginTop: 12,
+		whiteSpace: 'nowrap',
+		overflow: 'hidden',
+		textOverflow: 'ellipsis',
 	},
 	// Unresponsive-shell overlay actions (Retry / Show anyway).
 	overlayButton: {
@@ -153,23 +175,57 @@ const styles: Record<string, React.CSSProperties> = {
  * NOT mount yet — a shell booted now could only race a dev server that is
  * not listening, and the first descriptor load would fail with RUNTIME-004.
  *
+ * While waiting, the pane ticks the elapsed time in the current phase and
+ * tails the latest Console row \u2014 a multi-minute first build (pnpm resolving,
+ * rsbuild's first compile) shows what it is actually doing instead of a
+ * frozen label, and a genuinely hung session is distinguishable by a tail
+ * that stops advancing while the clock keeps counting.
+ *
  * On error the pane says WHY, center-screen: the host supplies the reason
  * with every error status (server unreachable, not connected, the failing
  * pnpm line, a compile failure). The generic console pointer is only the
  * fallback for a producer that failed to say.
  *
  * @param props.status - The latest watch status (state + error reason).
+ * @param props.subscribeConsole - Console feed (backlog replayed first) whose newest row is tailed.
  */
-const PreviewInitializing: React.FC<{ status: WatchStatus }> = ({ status }) => (
-	<div style={styles.iframeWrap}>
-		<div style={styles.loading}>
-			<div style={{ textAlign: 'center', maxWidth: 460, padding: '0 24px' }}>
-				<div style={styles.initTitle}>{status.state === 'error' ? 'Dev session failed' : 'Initializing Services'}</div>
-				<div style={styles.initDetail}>{status.state === 'error' ? (status.reason ?? 'See the Console pane for the error output.') : status.state === 'building' ? 'Starting the dev server\u2026' : status.state === 'idle' ? 'Restarting the dev server\u2026' : 'Installing dependencies\u2026'}</div>
+const PreviewInitializing: React.FC<{ status: WatchStatus; subscribeConsole: (fn: (row: ConsoleRow) => void) => () => void }> = ({ status, subscribeConsole }) => {
+	// Newest console row \u2014 the live "what is it doing" line. The backlog
+	// replay on subscribe lands the latest pre-mount row immediately.
+	const [tail, setTail] = useState<ConsoleRow | null>(null);
+	useEffect(() => subscribeConsole((row) => setTail(row)), [subscribeConsole]);
+	// Seconds spent in the CURRENT phase; restarts on every phase change.
+	const [elapsed, setElapsed] = useState(0);
+	useEffect(() => {
+		setElapsed(0);
+		const started = Date.now();
+		const timer = setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+		return () => clearInterval(timer);
+	}, [status.state]);
+	const error = status.state === 'error';
+	return (
+		<div style={styles.iframeWrap}>
+			<div style={styles.loading}>
+				<div style={styles.initBody}>
+					<div style={styles.initTitle}>{error ? 'Dev session failed' : 'Initializing Services'}</div>
+					<div style={styles.initDetail}>{error ? (status.reason ?? 'See the Console pane for the error output.') : status.state === 'building' ? 'Starting the dev server\u2026' : status.state === 'idle' ? 'Restarting the dev server\u2026' : 'Installing dependencies\u2026'}</div>
+					{!error && elapsed >= 5 && <div style={styles.initElapsed}>{formatElapsed(elapsed)} in this phase</div>}
+					{!error && tail && <div style={styles.initTail} title={tail.text}>{tail.text}</div>}
+				</div>
 			</div>
 		</div>
-	</div>
-);
+	);
+};
+
+/**
+ * Formats whole seconds for the Initializing pane's phase clock.
+ *
+ * @param sec - Whole seconds elapsed.
+ * @returns "45s" under a minute, "1m 05s" above.
+ */
+function formatElapsed(sec: number): string {
+	return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${String(sec % 60).padStart(2, '0')}s`;
+}
 
 // =============================================================================
 // PREVIEW IFRAME
@@ -798,7 +854,7 @@ const AppWebview: React.FC = () => {
 
 	return (
 		<div style={styles.root}>
-			<AppBuilderScreen host={host} app={app} previewPane={previewUrl && previewLive ? <PreviewFrame url={previewUrl} reloadSeq={reloadSeq} app={app} devEntry={devEntry} authToken={authToken} inheritAuth={inheritAuth} explicitAuthSeq={explicitAuthSeq} /> : <PreviewInitializing status={watchStatus} />} initialStage={initialStage} onStageChange={(stage) => sendMessage({ type: 'appdev:stage', stage })} />
+			<AppBuilderScreen host={host} app={app} previewPane={previewUrl && previewLive ? <PreviewFrame url={previewUrl} reloadSeq={reloadSeq} app={app} devEntry={devEntry} authToken={authToken} inheritAuth={inheritAuth} explicitAuthSeq={explicitAuthSeq} /> : <PreviewInitializing status={watchStatus} subscribeConsole={subscribeConsole} />} initialStage={initialStage} onStageChange={(stage) => sendMessage({ type: 'appdev:stage', stage })} />
 		</div>
 	);
 };

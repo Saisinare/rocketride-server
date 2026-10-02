@@ -74,6 +74,12 @@ interface WatchSession {
 	    ('' when absent/unreadable) — registerOverlay re-fires on every
 	    rebuild and must not re-read a 256 KiB file each time. */
 	iconUri?: string;
+	/** Millisecond stamp of the last COMPLETE output line (stall detection). */
+	lastLineAt?: number;
+	/** True once the first successful build landed ("built in" seen). */
+	firstBuildDone?: boolean;
+	/** Stall heartbeat while a build is in flight (see startHeartbeat). */
+	heartbeatTimer?: NodeJS.Timeout;
 }
 
 // =============================================================================
@@ -340,9 +346,10 @@ export class WatchManager {
 			detached: process.platform !== 'win32',
 		});
 
-		const session: WatchSession = { app, proc, startedAt: Date.now(), buildStart: Date.now() };
+		const session: WatchSession = { app, proc, startedAt: Date.now(), buildStart: Date.now(), lastLineAt: Date.now() };
 		this.sessions.set(app.id, session);
 		this.notify(app.id, { state: 'building' });
+		this.startHeartbeat(session);
 
 		// package.json watcher: a dependency edit invalidates the shared
 		// install and restarts THIS session (other apps' dev servers survive
@@ -431,7 +438,35 @@ export class WatchManager {
 	private disposeSessionResources(session: WatchSession): void {
 		if (session.reloadTimer) clearTimeout(session.reloadTimer);
 		if (session.pkgTimer) clearTimeout(session.pkgTimer);
+		if (session.heartbeatTimer) clearInterval(session.heartbeatTimer);
 		session.pkgWatcher?.dispose();
+	}
+
+	/** Interval between stall-heartbeat checks while a build is in flight. */
+	private static readonly HEARTBEAT_MS = 30_000;
+
+	/**
+	 * Periodic stall diagnostics for the Console pane: rsbuild prints nothing
+	 * between "build started..." and "built in Xs", so a slow (or hung) first
+	 * compile reads as a dead session. While the session still awaits its
+	 * FIRST successful build, or a rebuild is in flight, say every 30s how
+	 * long it has been — and, when rsbuild itself has gone quiet, for how
+	 * long — so "slow but alive" and "hung" are distinguishable. Silent once
+	 * the session is built and idle; cleared with the session's other timers.
+	 *
+	 * @param session - The session to watch for stalls.
+	 */
+	private startHeartbeat(session: WatchSession): void {
+		session.heartbeatTimer = setInterval(() => {
+			// step: only speak while something is actually awaited
+			if (session.firstBuildDone && session.buildStart === undefined) return;
+			const now = Date.now();
+			const elapsed = formatMs(now - (session.buildStart ?? session.startedAt));
+			// step: a long-quiet compiler is the stall signal — escalate to warn
+			const quietMs = now - (session.lastLineAt ?? session.startedAt);
+			const quiet = quietMs >= WatchManager.HEARTBEAT_MS ? ` — no rsbuild output for ${formatMs(quietMs)}` : '';
+			this.console(session.app.id, quiet ? 'warn' : 'log', `still building (${elapsed} elapsed)${quiet}`);
+		}, WatchManager.HEARTBEAT_MS);
 	}
 
 	/**
@@ -485,9 +520,7 @@ export class WatchManager {
 		session.lingerToken = undefined;
 		this.rejectReadiness(appId, 'watch stopped');
 		this.sessions.delete(appId);
-		if (session.reloadTimer) clearTimeout(session.reloadTimer);
-		if (session.pkgTimer) clearTimeout(session.pkgTimer);
-		session.pkgWatcher?.dispose();
+		this.disposeSessionResources(session);
 		try {
 			// The tether IS the stop verb: closing the guard's stdin tells it
 			// to fell its own tree — the guard owns every process below
@@ -827,6 +860,8 @@ export class WatchManager {
 		session[key] = lines.pop() ?? '';
 		if (lines.length === 0) return;
 		const text = lines.join('\n');
+		// Feed the stall heartbeat: any complete line counts as liveness.
+		session.lastLineAt = Date.now();
 
 		// Mirror the raw rsbuild output into the panel Console pane — stderr
 		// keeps its severity so the pane renders one stream consistently
@@ -858,6 +893,7 @@ export class WatchManager {
 		if (/built in\s+[\d.]+/i.test(compilerText)) {
 			const durationMs = session.buildStart ? Date.now() - session.buildStart : undefined;
 			session.buildStart = undefined;
+			session.firstBuildDone = true;
 			this.notify(session.app.id, { state: 'ok', durationMs, target: session.devOrigin?.replace(/^https?:\/\//, '') });
 			// Fresh cache-busted entry FIRST (same-URL re-registration would
 			// resolve to the browser-cached container — the stale-bundle bug),
@@ -869,7 +905,7 @@ export class WatchManager {
 			session.buildStart = undefined;
 			this.appScreen.notifyError(session.app.id, 'rsbuild build failed; see the Console pane for compiler output', 'rsbuild');
 			this.notify(session.app.id, { state: 'error', target: session.devOrigin?.replace(/^https?:\/\//, ''), reason: 'The app failed to compile. The Console pane carries the compiler output.' });
-		} else if (/building|compiling/i.test(compilerText) && session.buildStart === undefined) {
+		} else if (/building|compiling|build started/i.test(compilerText) && session.buildStart === undefined) {
 			session.buildStart = Date.now();
 			this.notify(session.app.id, { state: 'building', target: session.devOrigin?.replace(/^https?:\/\//, '') });
 		}
@@ -953,6 +989,18 @@ export class WatchManager {
 	private resolveRsbuild(appRoot: string): { cmd: string; args: string[]; shell: boolean } {
 		return resolveRsbuildInvocation(appRoot);
 	}
+}
+
+/**
+ * Formats a millisecond span for stall diagnostics.
+ *
+ * @param ms - The span in milliseconds.
+ * @returns "45s" under a minute, "2m 05s" above.
+ */
+function formatMs(ms: number): string {
+	const totalSec = Math.round(ms / 1000);
+	if (totalSec < 60) return `${totalSec}s`;
+	return `${Math.floor(totalSec / 60)}m ${String(totalSec % 60).padStart(2, '0')}s`;
 }
 
 /**

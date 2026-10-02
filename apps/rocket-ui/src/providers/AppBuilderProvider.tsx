@@ -31,12 +31,10 @@
  * session's models, and the preview is a same-origin iframe of this very
  * shell.
  *
- * Preview sources:
- *  - LIVE  — `?appid=<id>&rrdev=1`: the dev-flavor shell; the session
- *    injects the LINKED build via registerLocalApp after the rrdev:auth
- *    handshake. Save-to-render with Fast Refresh.
- *  - BUILT — `?appid=<id>&version=<N>`: the immutable server-built version
- *    from `/apps/<id>/v<N>/` — verifies the true bundle in design.
+ * The preview is LIVE only — `?appid=<id>&rrdev=1`: the dev-flavor shell;
+ * the session injects the LINKED build via registerLocalApp after the
+ * rrdev:auth handshake. Save-to-render with Fast Refresh. (Server-built
+ * versions are verified from the Deploy stage, same as VS Code.)
  *
  * The debug verb opens the LIVE preview in a new browser tab; the session
  * switches its injection target to the tab (same-origin window handle), so
@@ -46,7 +44,7 @@
  * Code pane owns its whole save lifecycle.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { useShellConnection, ConnectionManager } from 'shell';
 import { AppBuilderScreen } from 'shared/modules/appdev';
@@ -88,40 +86,6 @@ const styles: Record<string, CSSProperties> = {
 		flexDirection: 'column',
 		borderRadius: 'inherit',
 	},
-	sourceBar: {
-		display: 'flex',
-		alignItems: 'center',
-		gap: 6,
-		padding: '4px 8px',
-		borderBottom: '1px solid var(--rr-border)',
-		background: 'var(--rr-bg-widget)',
-		fontSize: 11.5,
-		flex: 'none',
-	},
-	sourceButton: {
-		fontFamily: 'inherit',
-		fontSize: 11.5,
-		padding: '2px 10px',
-		borderRadius: 3,
-		border: '1px solid var(--rr-border)',
-		cursor: 'pointer',
-		background: 'transparent',
-		color: 'var(--rr-text-secondary)',
-	},
-	// Full border shorthand (not borderColor): the base style sets `border`,
-	// and mixing shorthand + longhand for the same value trips React's
-	// conflicting-style warning on rerender.
-	sourceButtonActive: {
-		background: 'var(--rr-brand)',
-		border: '1px solid transparent',
-		color: 'var(--rr-text-on-brand, #ffffff)',
-	},
-	sourceNote: {
-		marginLeft: 'auto',
-		color: 'var(--rr-text-disabled)',
-		fontFamily: 'var(--rr-font-mono, monospace)',
-		fontSize: 10.5,
-	},
 	// borderRadius:'inherit' down the chain: composited iframes do not
 	// reliably take an ancestor's rounded overflow clip.
 	iframeWrap: {
@@ -145,54 +109,31 @@ const styles: Record<string, CSSProperties> = {
 // =============================================================================
 
 /**
- * The preview surface: the Live | Built source bar over the same-origin
- * shell iframe. Kept visibility:hidden until the document loads (hidden
- * panels report zero dimensions with display:none — never that).
+ * The preview surface: the same-origin shell iframe on the rrdev
+ * linked-preview URL. Kept visibility:hidden until the document loads
+ * (hidden panels report zero dimensions with display:none — never that).
  *
  * @param props.liveUrl - The rrdev linked-preview URL.
- * @param props.builtVersion - The registry version for BUILT mode (null = none known).
- * @param props.mode - The active source.
- * @param props.onModeChange - Source switch callback.
  * @param props.reloadSeq - Bumping remounts the iframe.
  * @param props.onIframe - Exposes the live iframe element to the provider.
  */
 const PreviewSurface: React.FC<{
-	appId: string;
 	liveUrl: string;
-	builtVersion: number | null;
-	mode: 'live' | 'built';
-	onModeChange: (mode: 'live' | 'built') => void;
 	reloadSeq: number;
 	onIframe: (el: HTMLIFrameElement | null) => void;
-}> = ({ appId, liveUrl, builtVersion, mode, onModeChange, reloadSeq, onIframe }) => {
+}> = ({ liveUrl, reloadSeq, onIframe }) => {
 	const [loaded, setLoaded] = useState(false);
-	const url = mode === 'built' && builtVersion !== null ? `${window.location.origin}/?appid=${encodeURIComponent(appId)}&version=${builtVersion}` : liveUrl;
-	// step: a reload or source switch starts hidden again
+	// step: a reload starts hidden again
 	useEffect(() => {
 		setLoaded(false);
-	}, [reloadSeq, url]);
+	}, [reloadSeq]);
 	return (
 		<div style={styles.previewRoot}>
-			<div style={styles.sourceBar}>
-				<button type="button" style={{ ...styles.sourceButton, ...(mode === 'live' ? styles.sourceButtonActive : {}) }} onClick={() => onModeChange('live')}>
-					Live
-				</button>
-				<button
-					type="button"
-					style={{ ...styles.sourceButton, ...(mode === 'built' ? styles.sourceButtonActive : {}), ...(builtVersion === null ? { opacity: 0.5, cursor: 'default' } : {}) }}
-					disabled={builtVersion === null}
-					title={builtVersion === null ? 'No server-built version yet — deploy first.' : `Serve the immutable v${builtVersion} build`}
-					onClick={() => onModeChange('built')}
-				>
-					Built{builtVersion !== null ? ` v${builtVersion}` : ''}
-				</button>
-				<span style={styles.sourceNote}>{mode === 'live' ? 'linked · save to render' : `served from /apps/${appId}/v${builtVersion}/`}</span>
-			</div>
 			<div style={styles.iframeWrap}>
 				<iframe
-					key={`${mode}:${reloadSeq}`}
+					key={reloadSeq}
 					ref={onIframe}
-					src={url}
+					src={liveUrl}
 					title="App preview"
 					style={{ ...styles.iframe, visibility: loaded ? 'visible' : 'hidden' }}
 					onLoad={() => setLoaded(true)}
@@ -254,36 +195,14 @@ const AppBuilderProvider: React.FC<{
 
 	// ── Preview state ────────────────────────────────────────────────────
 	const [reloadSeq, setReloadSeq] = useState(0);
-	const [previewMode, setPreviewMode] = useState<'live' | 'built'>('live');
-	const [builtVersion, setBuiltVersion] = useState<number | null>(null);
 	const iframeRef = useRef<HTMLIFrameElement | null>(null);
 	const debugWindowRef = useRef<Window | null>(null);
 	const liveUrl = `${window.location.origin}/?appid=${encodeURIComponent(appId)}&rrdev=1`;
-
-	// step: resolve the newest server-built version for the BUILT source
-	// (refreshed on build-status ticks below)
-	const refreshBuiltVersion = useCallback(async () => {
-		if (!client) return;
-		try {
-			const rows = (await client.listDeployments(appId)) as Array<{ registryVersion: number; buildStatus?: string }>;
-			const built = rows.find((r) => !r.buildStatus || r.buildStatus === 'ok');
-			setBuiltVersion(built?.registryVersion ?? null);
-		} catch {
-			setBuiltVersion(null);
-		}
-	}, [client, appId]);
-	useEffect(() => {
-		void refreshBuiltVersion();
-	}, [refreshBuiltVersion]);
 
 	// ── Preview handshake + feed routing ─────────────────────────────────
 	// The embedded (or debug-tab) dev shell posts shell:devReady, waits for
 	// rrdev:auth (its token store is frame-local in-memory), then the
 	// session adopts it as the injection target.
-	// The handler reads the CURRENT mode at message time — never a stale
-	// closure (a Built-mode iframe must not become the injection target).
-	const previewModeRef = useRef(previewMode);
-	previewModeRef.current = previewMode;
 	useEffect(() => {
 		if (!session) return;
 		const handler = (e: MessageEvent): void => {
@@ -297,12 +216,9 @@ const AppBuilderProvider: React.FC<{
 				// out) — so any embedded dev shell boots authenticated
 				const token = window.localStorage.getItem('rr:user_token') ?? '';
 				(e.source as Window).postMessage({ type: 'rrdev:auth', token }, window.location.origin);
-				// step: only LIVE previews (and the debug tab) become the
-				// linked-injection target; the Built iframe serves the
-				// immutable server build untouched
-				if (fromDebug || previewModeRef.current === 'live') {
-					void session.attachPreview(e.source as Window);
-				}
+				// step: the embedded preview and the debug tab both become
+				// the linked-injection target
+				void session.attachPreview(e.source as Window);
 			} else {
 				session.handlePreviewMessage(e.data as Record<string, unknown>);
 			}
@@ -311,24 +227,21 @@ const AppBuilderProvider: React.FC<{
 		return () => window.removeEventListener('message', handler);
 	}, [session]);
 
-	// ── Server build feed -> Console pane + built-version refresh ────────
+	// ── Server build feed -> Console pane ────────────────────────────────
 	useEffect(() => {
 		if (!client || !session) return;
 		client.addMonitor({ token: '*' }, ['deploy']).catch(() => { /* feed degrades */ });
-		const unsub = ConnectionManager.getInstance().on('shell:event', ({ event }: { event: { event?: string; body?: { appId?: string; phase?: string; lines?: string[]; status?: string } } }) => {
+		const unsub = ConnectionManager.getInstance().on('shell:event', ({ event }: { event: { event?: string; body?: { appId?: string; phase?: string; lines?: string[] } } }) => {
 			const body = event?.body;
 			if (!body || body.appId !== appId) return;
 			if (event.event === 'apaevt_build' && Array.isArray(body.lines)) {
 				for (const line of body.lines) session.pushConsole('log', `[build:${body.phase ?? '?'}] ${line}`);
-			} else if (event.event === 'apaevt_build_status') {
-				// A finished build may mint a new BUILT candidate.
-				if (!body.status || body.status === '') void refreshBuiltVersion();
 			}
 		});
 		return () => {
 			unsub();
 		};
-	}, [client, session, appId, refreshBuiltVersion]);
+	}, [client, session, appId]);
 
 	// ── The host adapter ─────────────────────────────────────────────────
 	const host = useMemo(() => {
@@ -391,11 +304,7 @@ const AppBuilderProvider: React.FC<{
 				app={app}
 				previewPane={
 					<PreviewSurface
-						appId={appId}
 						liveUrl={liveUrl}
-						builtVersion={builtVersion}
-						mode={previewMode}
-						onModeChange={setPreviewMode}
 						reloadSeq={reloadSeq}
 						onIframe={(el) => {
 							iframeRef.current = el;

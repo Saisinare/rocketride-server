@@ -207,7 +207,7 @@ export type { ShellToIframeMsg, IframeToShellMsg, ShellInitMsg } from './util/if
 // Document component library standalone types.
 // `Documents` itself is captured as a constructor via `shellApi.Documents`;
 // these are its standalone helper/model types that apps import directly.
-export type { Editor, WorkspaceBinding, Document, EditorGroup, SplitOrientation, DocumentsState, LayoutNode, LayoutLeaf, LayoutSplit } from './components/docs/Documents';
+export type { Editor, WorkspaceBinding, Document, EditorGroup, SplitOrientation, SplitPosition, EditorDragSession, DocumentsState, LayoutNode, LayoutLeaf, LayoutSplit } from './components/docs/Documents';
 export type { DocTabsProps } from './components/docs/DocTabs';
 export type { DocSplitLayoutProps } from './components/docs/DocSplitLayout';
 export type { DocExplorerProps, DocExplorerConfig, DocEntry, DocEntryChild, DocEntryStatus } from './components/docs/DocExplorer';

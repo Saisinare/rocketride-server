@@ -506,7 +506,7 @@ const SidebarProvider: React.FC = () => {
 
 	// Mode tab selection (Pipelines | Apps | Nodes). Session-scoped only,
 	// matching the VS Code host's session persistence.
-	const [sidebarMode, setSidebarMode] = useState<SidebarMode>('pipelines');
+	const [sidebarMode, setSidebarMode] = useState<SidebarMode>('apps');
 
 	// The sidebar node — the pipelines Explorer plus its confirm/error dialogs.
 	// Only the Explorer sits behind the collapse gate: the shell frame owns the

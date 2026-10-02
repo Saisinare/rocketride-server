@@ -32,14 +32,15 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { CSSProperties } from 'react';
+import { EDITOR_DND_MIME, beginEditorDrag, endEditorDrag } from './Documents';
 import type { Documents, Public, SplitOrientation } from './Documents';
 
 // =============================================================================
 // STYLES
 // =============================================================================
 
-/** MIME type key for drag-and-drop editor transfers. */
-const DND_MIME = 'application/x-rr-editor';
+/** MIME type key for drag-and-drop editor transfers (shared with DocDropZones). */
+const DND_MIME = EDITOR_DND_MIME;
 
 const styles = {
 	bar: (_isActiveGroup: boolean, isDragOver: boolean): CSSProperties => ({
@@ -257,15 +258,19 @@ const DocTabs: React.FC<DocTabsProps> = ({ docs, groupId, isActive = false, canC
 	const handleDragStart = useCallback((e: React.DragEvent, editorId: string) => {
 		e.dataTransfer.setData(DND_MIME, JSON.stringify({ editorId, sourceGroupId: groupId }));
 		e.dataTransfer.effectAllowed = 'move';
+		// Publish the drag session so pane drop zones can validate the gesture
+		// during hover (the transfer payload is unreadable until drop)
+		beginEditorDrag(docs, editorId, groupId);
 		setDraggingId(editorId);
-	}, [groupId]);
+	}, [docs, groupId]);
 
 	/**
-	 * Clears the dragging visual state when drag ends.
+	 * Clears the dragging visual state and the shared drag session when drag ends.
 	 */
 	const handleDragEnd = useCallback(() => {
+		endEditorDrag(docs);
 		setDraggingId(null);
-	}, []);
+	}, [docs]);
 
 	/**
 	 * Allows the tab bar to accept drops by preventing the default.
@@ -275,6 +280,9 @@ const DocTabs: React.FC<DocTabsProps> = ({ docs, groupId, isActive = false, canC
 	const handleDragOver = useCallback((e: React.DragEvent) => {
 		if (e.dataTransfer.types.includes(DND_MIME)) {
 			e.preventDefault();
+			// The bar owns the gesture while hovered — don't let the enclosing
+			// DocDropZones pane wrapper show an edge-split highlight for it
+			e.stopPropagation();
 			e.dataTransfer.dropEffect = 'move';
 			setIsDragOver(true);
 		}
@@ -294,6 +302,9 @@ const DocTabs: React.FC<DocTabsProps> = ({ docs, groupId, isActive = false, canC
 	 */
 	const handleDrop = useCallback((e: React.DragEvent) => {
 		e.preventDefault();
+		// Stop here so the enclosing DocDropZones pane wrapper never
+		// double-handles the same drop as an edge split
+		if (e.dataTransfer.types.includes(DND_MIME)) e.stopPropagation();
 		setIsDragOver(false);
 		try {
 			const data = JSON.parse(e.dataTransfer.getData(DND_MIME));
@@ -344,6 +355,7 @@ const DocTabs: React.FC<DocTabsProps> = ({ docs, groupId, isActive = false, canC
 		return (
 			<div
 				style={styles.bar(isActive, isDragOver)}
+				data-rr-editor-droptarget="true"
 				onDragOver={handleDragOver}
 				onDragLeave={handleDragLeave}
 				onDrop={handleDrop}
@@ -357,6 +369,7 @@ const DocTabs: React.FC<DocTabsProps> = ({ docs, groupId, isActive = false, canC
 	return (
 		<div
 			style={styles.bar(isActive, isDragOver)}
+			data-rr-editor-droptarget="true"
 			onDragOver={handleDragOver}
 			onDragLeave={handleDragLeave}
 			onDrop={handleDrop}
