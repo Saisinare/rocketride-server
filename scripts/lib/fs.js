@@ -627,7 +627,7 @@ async function walkFiles(dirPath, exclude = []) {
 
 			if (item.isDirectory()) await walk(fullPath, relPath);
 			// Forward slashes, so a hash means the same on either platform
-			else files.push({ rel: relPath.replace(/\\/g, '/'), full: fullPath });
+			else if (item.isFile()) files.push({ rel: relPath.replace(/\\/g, '/'), full: fullPath });
 		}
 	}
 
