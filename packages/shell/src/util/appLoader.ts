@@ -667,6 +667,21 @@ export function devFallbackEntry(a: ServerAppEntry, nonce: string): string | nul
 	return versionedEntryUrl(a.id, a.registryVersion);
 }
 
+/**
+ * Whether a remote load failed before its container initialized: the entry
+ * script itself never loaded (Module Federation RUNTIME-008, a
+ * ScriptNetworkError). Only then is a forced re-register safe — a failure
+ * AFTER the entry ran (a broken expose or factory) leaves an initialized
+ * container that must not be overwritten.
+ *
+ * @param err - The rejection from loadRemote.
+ * @returns True when the entry script never loaded.
+ */
+export function isEntryLoadFailure(err: unknown): boolean {
+	const text = err instanceof Error ? `${err.name} ${err.message}` : String(err);
+	return text.includes('RUNTIME-008') || text.includes('ScriptNetworkError');
+}
+
 export function registerAndMapApps(serverApps: ServerAppEntry[]): AppManifestEntry[] {
 	const overrides = getAppVersionOverrides();
 	const nonce = sessionNonce();
@@ -753,10 +768,11 @@ export function registerAndMapApps(serverApps: ServerAppEntry[]): AppManifestEnt
 			return load()
 				.catch((err: unknown) => {
 					// The dev server is unreachable from this device (see
-					// devFallbackEntry). The container never initialized, so a
-					// forced re-register is safe; retry ONCE on the published
-					// bundle. Embedder-owned containers keep their failure.
-					if (!fallback || devRemoteModules.has(a.moduleId) || loadedModules.has(a.moduleId)) throw err;
+					// devFallbackEntry). Only when the entry script itself never
+					// loaded is the container uninitialized and a forced
+					// re-register safe (isEntryLoadFailure); retry ONCE on the
+					// published bundle. Embedder-owned containers keep their failure.
+					if (!fallback || !isEntryLoadFailure(err) || devRemoteModules.has(a.moduleId) || loadedModules.has(a.moduleId)) throw err;
 					console.warn(`[appLoader] dev entry for "${a.id}" failed to load — falling back to the published bundle at ${fallback}`);
 					registerRemotes([{ name: a.moduleId, entry: fallback }], { force: true });
 					registeredEntries.set(a.moduleId, fallback);
