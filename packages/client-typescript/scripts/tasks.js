@@ -55,6 +55,7 @@ const {
 	saveSourceHash,
 	setState,
 	parseServerAddress,
+	testServerLogFile,
 } = require('../../../scripts/lib');
 const { stripDtsDir } = require('../../../scripts/lib/stripDts');
 
@@ -267,6 +268,7 @@ function makeStartTestServerAction(options = {}) {
 			const result = await startServer({
 				script: 'ai/eaas.py',
 				trace: options.trace,
+				logFile: testServerLogFile('client-typescript'),
 				basePort: 30000,
 				// CI for fork PRs doesn't have repo secrets; the integration tests
 				// expect a shared API key between server and client. Default to the

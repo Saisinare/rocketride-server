@@ -53,6 +53,7 @@ const {
 	bracket,
 	parallel,
 	parseServerAddress,
+	testServerLogFile,
 } = require('../../../scripts/lib');
 
 const PACKAGE_DIR = path.join(__dirname, '..');
@@ -198,6 +199,7 @@ function makeStartTestServerAction(options = {}) {
 			const result = await startServer({
 				script: 'ai/eaas.py',
 				trace: options.trace,
+				logFile: testServerLogFile('client-mcp'),
 				basePort: 20000,
 				onOutput: (text) => {
 					if (taskComplete) return;
