@@ -410,9 +410,22 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 					return (
 						<div
 							key={session.sessionId}
+							role="button"
+							tabIndex={0}
 							style={{ ...S.row, alignItems: 'flex-start', ...(active ? { background: HOVER_BG } : hoverBg(rowKey)) }}
 							onMouseEnter={() => setHoveredRow(rowKey)}
 							onMouseLeave={() => setHoveredRow(null)}
+							// step: keyboard parity — focus marks the row (the hover-gated
+							// delete button needs a reachable target), Enter/Space opens it
+							onFocus={() => setHoveredRow(rowKey)}
+							onBlur={(e) => {
+								if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHoveredRow((prev) => (prev === rowKey ? null : prev));
+							}}
+							onKeyDown={(e) => {
+								if (e.key !== 'Enter' && e.key !== ' ') return;
+								e.preventDefault();
+								agent.onOpenSession(session.sessionId);
+							}}
 							onClick={() => agent.onOpenSession(session.sessionId)}
 							title={session.title}
 						>

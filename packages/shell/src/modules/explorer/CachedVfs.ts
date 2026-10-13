@@ -245,7 +245,15 @@ export class CachedVfs implements IVirtualFileSystem {
 	registerOverlay(path: string, overlay: VfsOverlay): () => void {
 		this.overlays.set(path, overlay);
 		return () => {
-			if (this.overlays.get(path) === overlay) this.overlays.delete(path);
+			// step: unregister by IDENTITY, not by the registration path — a
+			// rename() migrates overlays to the new prefix, and the disposer
+			// must still find (and only find) its own entry afterwards
+			for (const [p, o] of this.overlays) {
+				if (o === overlay) {
+					this.overlays.delete(p);
+					break;
+				}
+			}
 		};
 	}
 
@@ -387,10 +395,17 @@ export class CachedVfs implements IVirtualFileSystem {
 		const prefix = `${oldPath}/`;
 		const movedEntries = [...this.entries].filter(([p]) => p === oldPath || p.startsWith(prefix));
 		const movedContents = [...this.contents].filter(([p]) => p === oldPath || p.startsWith(prefix));
+		// step: overlays ride along — a dirty buffer must keep serving read()
+		// at the NEW path, and dirtyPaths() must stop naming the old one
+		const movedOverlays = [...this.overlays].filter(([p]) => p === oldPath || p.startsWith(prefix));
 		this.evict(oldPath);
 		this.ensureEntry(newPath, type);
 		for (const [p, t] of movedEntries) this.entries.set(`${newPath}${p.substring(oldPath.length)}`, t);
 		for (const [p, c] of movedContents) this.contents.set(`${newPath}${p.substring(oldPath.length)}`, c);
+		for (const [p, o] of movedOverlays) {
+			this.overlays.delete(p);
+			this.overlays.set(`${newPath}${p.substring(oldPath.length)}`, o);
+		}
 		this.notify();
 	}
 

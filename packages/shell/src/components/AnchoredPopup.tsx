@@ -24,6 +24,7 @@
 import React, { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useFixedPopupPosition } from '../hooks/useFixedPopupPosition';
+import { acquireOverlayLayer, isTopOverlayLayer, releaseOverlayLayer } from './modal/Modal';
 
 // =============================================================================
 // STYLES
@@ -65,24 +66,35 @@ export const AnchoredPopup: React.FC<AnchoredPopupProps> = ({ anchorRef, open, o
 	const popupRef = useRef<HTMLDivElement>(null);
 	const pos = useFixedPopupPosition(anchorRef, open, placement, { popupRef, align, gap, matchWidth: matchAnchorWidth });
 
-	// step: dismissal — outside mousedown and Escape while open
+	// step: onClose rides a ref — callers pass inline arrows, and a changing
+	// identity must not detach/reattach the document listeners every render
+	const onCloseRef = useRef(onClose);
+	onCloseRef.current = onClose;
+
+	// step: dismissal — outside mousedown and Escape while open. The popup
+	// joins the overlay-layer stack (scroll untouched) so one Escape press
+	// closes ONLY the topmost overlay, not a popup and its host Modal together.
 	useEffect(() => {
 		if (!open) return;
+		const layer = acquireOverlayLayer(false);
 		const onMouseDown = (e: MouseEvent) => {
 			const target = e.target as Node;
 			if (popupRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
-			onClose();
+			onCloseRef.current();
 		};
 		const onKeyDown = (e: KeyboardEvent) => {
-			if (e.key === 'Escape') onClose();
+			if (e.key !== 'Escape' || !isTopOverlayLayer(layer)) return;
+			e.stopPropagation();
+			onCloseRef.current();
 		};
 		document.addEventListener('mousedown', onMouseDown);
 		document.addEventListener('keydown', onKeyDown);
 		return () => {
+			releaseOverlayLayer(layer);
 			document.removeEventListener('mousedown', onMouseDown);
 			document.removeEventListener('keydown', onKeyDown);
 		};
-	}, [open, onClose, anchorRef]);
+	}, [open, anchorRef]);
 
 	if (!open) return null;
 

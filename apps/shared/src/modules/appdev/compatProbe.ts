@@ -152,10 +152,17 @@ export async function probePackage(options: ProbeOptions): Promise<CompatVerdict
 		try {
 			body = await fetchText(url);
 		} catch (err) {
-			return { verdict: 'incompatible', reasons: [`Cannot fetch the browser build (${url}): ${err instanceof Error ? err.message : String(err)}.`] };
+			// step: a transport failure says nothing about the PACKAGE — the
+			// probe is degraded (unverifiable), not the dependency incompatible
+			return { verdict: 'degraded', reasons: [`Cannot fetch the browser build (${url}): ${err instanceof Error ? err.message : String(err)}.`] };
 		}
 		if (!body.ok) {
-			return { verdict: 'incompatible', reasons: [`The module source returned ${body.status} for ${url} — no servable browser build.`] };
+			// step: only a definite 404 proves there is no servable browser
+			// build; 5xx/429/auth walls are transient server states
+			if (body.status === 404) {
+				return { verdict: 'incompatible', reasons: [`The module source returned ${body.status} for ${url} — no servable browser build.`] };
+			}
+			return { verdict: 'degraded', reasons: [`The module source returned ${body.status} for ${url} — compatibility could not be verified.`] };
 		}
 		let imports;
 		try {
@@ -167,7 +174,11 @@ export async function probePackage(options: ProbeOptions): Promise<CompatVerdict
 		for (const imp of imports) {
 			const specifier = imp.n;
 			if (!specifier) continue;
-			const bare = specifier.replace(/^node:/, '');
+			// step: esm.sh serves builtins as absolute paths too ("/node/fs.mjs",
+			// versioned "/v135/node/fs.mjs") — normalize those BEFORE the builtin
+			// check or a non-shimmable builtin rides the fetch queue past the gate
+			const nodePath = /^\/(?:v\d+\/)?node\/([a-z_0-9]+)(?:\.m?js)?$/.exec(specifier)?.[1];
+			const bare = nodePath ?? specifier.replace(/^node:/, '');
 			if (NODE_BUILTINS.has(bare)) {
 				builtinsHit.add(bare);
 			} else if (specifier.startsWith('/')) {

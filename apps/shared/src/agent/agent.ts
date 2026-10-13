@@ -37,7 +37,7 @@
  */
 
 import type { ChatMessage, TextResult } from 'shell';
-import { configureSessions, deleteSession as deleteStoredSession, getAgentSessions, getContext, saveSession } from './sessions';
+import { configureSessions, deleteSession as deleteStoredSession, getAgentSessions, getContext, isNotFound, saveSession } from './sessions';
 import type { AgentSessionFile, AgentSessionMeta } from './sessions';
 
 export type { AgentSessionFile, AgentSessionMeta } from './sessions';
@@ -133,19 +133,25 @@ export class AgentSession {
 
 	/**
 	 * Opens one session fully loaded. A missing file (a fresh id whose first
-	 * message was never sent) yields an empty conversation.
+	 * message was never sent) yields an empty conversation. Every OTHER
+	 * failure (transport drop, store timeout, corrupt JSON) propagates: an
+	 * empty session under the same id would get saved over the stored
+	 * history on the next send.
 	 *
 	 * @param sessionId - The session GUID.
 	 * @returns The hydrated session.
 	 */
 	static async getSession(sessionId: string): Promise<AgentSession> {
+		let raw: string;
 		try {
-			const stored = JSON.parse(await getContext(sessionId)) as AgentSessionFile;
-			return new AgentSession(sessionId, stored.title ?? UNTITLED, stored.date ?? Date.now(), stored.contextRefs ?? [], stored.messages ?? []);
-		} catch {
-			// step: nothing stored yet — a brand-new (or vanished) session
-			return new AgentSession(sessionId, UNTITLED, Date.now(), [], []);
+			raw = await getContext(sessionId);
+		} catch (err) {
+			// step: nothing stored yet — a brand-new session
+			if (isNotFound(err)) return new AgentSession(sessionId, UNTITLED, Date.now(), [], []);
+			throw err;
 		}
+		const stored = JSON.parse(raw) as AgentSessionFile;
+		return new AgentSession(sessionId, stored.title ?? UNTITLED, stored.date ?? Date.now(), stored.contextRefs ?? [], stored.messages ?? []);
 	}
 
 	/**

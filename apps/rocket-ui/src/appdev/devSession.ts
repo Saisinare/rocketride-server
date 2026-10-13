@@ -119,6 +119,40 @@ function emitKey(uri: string, version: number): string {
 }
 
 // =============================================================================
+// SHARED MONACO STATE — reference-counted across sessions
+// =============================================================================
+
+// Split panels of one app adopt the SAME Monaco models (one per
+// file:///<appId>/ URI), and every session shares the page's one TypeScript
+// defaults. Teardown is therefore reference-counted: the closing session
+// releases its claim, and only the LAST release disposes — otherwise closing
+// one panel would yank live models (and the React/platform type libs) out
+// from under the session still open.
+
+/** Live claims per model URI. */
+const modelRefs = new Map<string, number>();
+
+/** The page's one TS setup, shared by every session while any is open. */
+let sharedTsSetup: { handle: TypescriptSetupHandle; refs: number } | null = null;
+
+/** Claims the shared TS setup (created on the first claim). */
+function acquireTsSetup(monaco: Monaco): TypescriptSetupHandle {
+	if (!sharedTsSetup) sharedTsSetup = { handle: setupAppTypescript(monaco), refs: 0 };
+	sharedTsSetup.refs += 1;
+	return sharedTsSetup.handle;
+}
+
+/** Releases one claim; the last one disposes the extra libs. */
+function releaseTsSetup(): void {
+	if (!sharedTsSetup) return;
+	sharedTsSetup.refs -= 1;
+	if (sharedTsSetup.refs <= 0) {
+		sharedTsSetup.handle.dispose();
+		sharedTsSetup = null;
+	}
+}
+
+// =============================================================================
 // SESSION
 // =============================================================================
 
@@ -213,6 +247,8 @@ export class WebDevSession {
 	private readonly dirty = new Set<string>();
 	/** Unregister functions for the models' VFS overlays. */
 	private readonly overlayDisposers: Array<() => void> = [];
+	/** THIS session's content listeners — an adopted model outlives the session. */
+	private readonly modelListeners: Array<{ dispose: () => void }> = [];
 
 	// ── Build state ──────────────────────────────────────────────────────
 	private lastLink: LinkResult | null = null;
@@ -275,7 +311,7 @@ export class WebDevSession {
 			const monaco = await loadMonaco();
 			if (this.disposed) return;
 			this.monaco = monaco;
-			this.tsHandle = setupAppTypescript(monaco);
+			this.tsHandle = acquireTsSetup(monaco);
 			this.ata = createAtaEngine(this.tsHandle, (message) => this.pushConsole('warn', message));
 			await ensureLexer();
 
@@ -378,9 +414,26 @@ export class WebDevSession {
 		this.ata = null;
 		for (const disposeOverlay of this.overlayDisposers) disposeOverlay();
 		this.overlayDisposers.length = 0;
-		for (const model of this.models.values()) model.dispose();
+		for (const listener of this.modelListeners) listener.dispose();
+		this.modelListeners.length = 0;
+		// step: release — not dispose — the shared state; a model (and the TS
+		// setup) dies only with its LAST session, so a split panel of the same
+		// app keeps its editors and type libs when the other panel closes
+		for (const model of this.models.values()) {
+			const key = model.uri.toString();
+			const remaining = (modelRefs.get(key) ?? 1) - 1;
+			if (remaining <= 0) {
+				modelRefs.delete(key);
+				model.dispose();
+			} else {
+				modelRefs.set(key, remaining);
+			}
+		}
 		this.models.clear();
-		this.tsHandle?.dispose();
+		if (this.tsHandle) {
+			releaseTsSetup();
+			this.tsHandle = null;
+		}
 		this.consoleListeners.clear();
 		this.errorListeners.clear();
 		this.watchListeners.clear();
@@ -404,10 +457,13 @@ export class WebDevSession {
 		const monaco = this.monaco!;
 		const uri = monaco.Uri.parse(`file:///${this.appId}/${path}`);
 		const model = monaco.editor.getModel(uri) ?? monaco.editor.createModel(text, detectLanguage(path), uri);
+		// step: claim the model — adopted or created, every session holds one
+		// reference, and dispose() releases rather than destroys (split panels)
+		modelRefs.set(uri.toString(), (modelRefs.get(uri.toString()) ?? 0) + 1);
 		this.models.set(path, model);
 		const isSource = /\.(ts|tsx)$/.test(path);
 		if (isSource) this.ata?.enqueue(path, () => model.getValue());
-		model.onDidChangeContent(() => {
+		this.modelListeners.push(model.onDidChangeContent(() => {
 			// step: acquisition follows the keystrokes (debounced in the engine)
 			if (isSource) this.ata?.enqueue(path, () => model.getValue());
 			if (!this.dirty.has(path)) {
@@ -416,7 +472,7 @@ export class WebDevSession {
 				// see them, so announce on its bus (the Explorer subscribes there)
 				this.vfs.notify();
 			}
-		});
+		}));
 		this.overlayDisposers.push(this.vfs.registerOverlay(path, {
 			getContent: () => model.getValue(),
 			isDirty: () => this.dirty.has(path),
@@ -681,12 +737,16 @@ export class WebDevSession {
 			// step: single-module relink against the existing graph
 			const single = new Map<string, LinkModule>([[path, instrumented]]);
 			// Reuse the full module map for RESOLUTION but only relink this
-			// module: importers keep their old URLs — Fast Refresh swaps the
-			// implementations by family id, not by module identity.
+			// module: the last link's URLs are seeded as preLinked, so every
+			// OTHER module keeps its existing instance — the saved module's
+			// relative imports (contexts, stores) must bind to the objects the
+			// mounted tree already holds, and Fast Refresh swaps only this
+			// module's implementations by family id.
 			const result = await linkModules({
 				appId: this.appId,
 				modules: new Map([...this.buildResolutionMap(), ...single]),
 				entryPath: path,
+				preLinked: new Map([...last.moduleUrls].filter(([p]) => p !== path)),
 				scope: (this.previewWindow as unknown as { __rrShellDev: { getShareScope: () => Record<string, unknown> } }).__rrShellDev.getShareScope(),
 				cssDocument: this.previewWindow?.document ?? null,
 				resolveDependency: this.deps?.resolve ?? (() => null),

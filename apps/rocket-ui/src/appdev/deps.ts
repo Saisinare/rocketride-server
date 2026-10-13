@@ -93,7 +93,10 @@ export async function readLockMap(folder: string): Promise<Record<string, string
 
 /**
  * Settles one dependency's exact version into the lock map: the module
- * source resolves the range once, and the answer is persisted.
+ * source resolves the range once, and the answer is persisted. The DECLARED
+ * range is stored next to the version (under `<name>#range`) — editing
+ * package.json from "^4" to "^5" must re-settle, not keep serving the old
+ * lock silently.
  *
  * @param folder - The app's .appdev folder name.
  * @param name - Package name.
@@ -103,12 +106,14 @@ export async function readLockMap(folder: string): Promise<Record<string, string
  */
 async function settleVersion(folder: string, name: string, range: string, lock: Record<string, string>): Promise<string> {
 	const existing = lock[name];
-	if (existing) return existing;
+	const rangeKey = `${name}#range`;
+	if (existing && lock[rangeKey] === (range || 'latest')) return existing;
 	const response = await fetch(`${BASE_URL}/${name}@${encodeURIComponent(range || 'latest')}/package.json`);
 	if (!response.ok) throw new Error(`Cannot resolve ${name}@${range || 'latest'}: registry answered ${response.status}.`);
 	const pkg = (await response.json()) as { version?: string };
 	if (!pkg.version) throw new Error(`Cannot resolve ${name}@${range || 'latest'}: no version in its package.json.`);
 	lock[name] = pkg.version;
+	lock[rangeKey] = range || 'latest';
 	await getWorkspaceVfs().write(`apps/${folder}/${LOCK_FILE}`, `${JSON.stringify(lock, null, '\t')}\n`);
 	return pkg.version;
 }
@@ -169,7 +174,10 @@ async function linkDependencyGraph(entryUrl: string, shims: Map<string, string>)
 			} else {
 				throw new Error(`Unexpected bare import "${specifier}" in ${url}.`);
 			}
-			code = `${code.slice(0, imp.s)}${replacement}${code.slice(imp.e)}`;
+			// step: a dynamic import's s..e spans the QUOTED literal — splice
+			// a quoted URL back or `import(blob:…)` is a syntax error
+			const text = imp.d > -1 ? JSON.stringify(replacement) : replacement;
+			code = `${code.slice(0, imp.s)}${text}${code.slice(imp.e)}`;
 		}
 		visiting.delete(url);
 		const blob = mintBlob(code);

@@ -172,14 +172,6 @@ export function toRungPins(pins: WirePin[], hasReviewLadder: boolean): RungPin[]
 }
 
 /**
- * Normalizes raw history rows (oldest-first) into the shared AppHistoryEntry
- * shape — SQL nulls become absent fields so the views only deal in one
- * vocabulary.
- *
- * @param rows - Raw rows, oldest first.
- * @returns The Dashboard's history entries, oldest first.
- */
-/**
  * Walks the deployment-history pages into one oldest-first stream — the
  * server clamps page_size to 100 and pages NEWEST-FIRST, so both hosts
  * page through it with the same rules: 50-page defensive ceiling, a
@@ -204,6 +196,14 @@ export async function walkDeploymentHistory(fetchPage: (page: number, pageSize: 
 	return toHistoryEntries(rows.reverse());
 }
 
+/**
+ * Normalizes raw history rows (oldest-first) into the shared AppHistoryEntry
+ * shape — SQL nulls become absent fields so the views only deal in one
+ * vocabulary.
+ *
+ * @param rows - Raw rows, oldest first.
+ * @returns The Dashboard's history entries, oldest first.
+ */
 export function toHistoryEntries(rows: WireHistoryRow[]): AppHistoryEntry[] {
 	return rows.map((r) => ({
 		seq: r.seq,

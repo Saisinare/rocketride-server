@@ -181,17 +181,23 @@ const AppBuilderProvider: React.FC<{
 	}, [client, isConnected, appId]);
 
 	// ── The dev session (models + design loop) ───────────────────────────
+	// Keyed on the working copy's VALUES, not the `stored` object identity:
+	// the scan effect mints a fresh object on every reconnect, and rebuilding
+	// the live session from it would dispose the Monaco models (unsaved edits
+	// included) for a layout that did not change.
+	const storedFolder = stored?.folder;
+	const storedName = stored?.name;
 	const [session, setSession] = useState<WebDevSession | null>(null);
 	useEffect(() => {
-		if (!client || !stored) return;
-		const next = new WebDevSession(client, appId, stored.folder, stored.name);
+		if (!client || !storedFolder || storedName === undefined) return;
+		const next = new WebDevSession(client, appId, storedFolder, storedName);
 		setSession(next);
 		void next.open();
 		return () => {
 			next.dispose();
 			setSession(null);
 		};
-	}, [client, stored, appId]);
+	}, [client, storedFolder, storedName, appId]);
 
 	// ── Preview state ────────────────────────────────────────────────────
 	const [reloadSeq, setReloadSeq] = useState(0);
@@ -268,9 +274,10 @@ const AppBuilderProvider: React.FC<{
 	}, [client, stored, appId, liveUrl, session]);
 
 	// ── Live manifest facts for the header ──────────────────────────────
-	// `stored` stays FROZEN on purpose (the dev-session effect keys on it —
-	// re-scanning would tear the session down on every manifest save); the
-	// header overlays these instead, refreshed whenever package.json changes.
+	// `stored` stays FROZEN on purpose (the dev-session effect keys on its
+	// folder/name values — re-scanning would tear the session down whenever
+	// a manifest save changes them); the header overlays these instead,
+	// refreshed whenever package.json changes.
 	const [liveMeta, setLiveMeta] = useState<{ name?: string; version?: string; description?: string } | null>(null);
 	useEffect(() => {
 		if (!client || !stored) return;

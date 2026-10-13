@@ -166,6 +166,19 @@ function requireClient(): RocketRideClient {
 let catalogChain: Promise<void> = Promise.resolve();
 
 /**
+ * Whether a store read failed because the file does not exist — the store
+ * raises StorageError('File not found: …'), which reaches this side as the
+ * error message. Only that case may be treated as "nothing stored yet";
+ * transport drops and parse failures must surface instead.
+ *
+ * @param err - The error a store read rejected with.
+ * @returns True when the path simply has no file.
+ */
+export function isNotFound(err: unknown): boolean {
+	return err instanceof Error && /file not found/i.test(err.message);
+}
+
+/**
  * Reads the catalog; a missing file is an empty catalog.
  *
  * @returns The catalog rows (unsorted, as stored).
@@ -174,24 +187,31 @@ async function readCatalog(): Promise<AgentSessionMeta[]> {
 	try {
 		const file = await requireClient().fsReadJson<CatalogFile>(`${agentsDir()}/catalog.json`);
 		return Array.isArray(file?.sessions) ? file.sessions : [];
-	} catch {
-		return [];
+	} catch (err) {
+		// step: ONLY a genuinely absent catalog is empty — a transient read
+		// failure must not feed updateCatalog a bare list to rewrite with
+		if (isNotFound(err)) return [];
+		throw err;
 	}
 }
 
 /**
  * Queues one read-modify-write of the catalog behind all previous ones.
+ * The queue survives failures: each update waits for the previous one to
+ * SETTLE (a rejected link would otherwise dam the chain for the whole page
+ * session), while the caller still receives its own operation's outcome.
  *
  * @param mutate - Pure transform of the current rows to the new rows.
  */
 function updateCatalog(mutate: (rows: AgentSessionMeta[]) => AgentSessionMeta[]): Promise<void> {
 	const path = `${agentsDir()}/catalog.json`;
-	catalogChain = catalogChain.then(async () => {
+	const op = catalogChain.then(async () => {
 		const rows = mutate(await readCatalog());
 		await requireClient().fsWriteJson(path, { version: 1, sessions: rows } satisfies CatalogFile);
 		emitFsChange(path, 'agent');
 	});
-	return catalogChain;
+	catalogChain = op.catch(() => undefined);
+	return op;
 }
 
 // =============================================================================

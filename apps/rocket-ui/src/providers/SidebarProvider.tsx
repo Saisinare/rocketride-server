@@ -480,16 +480,21 @@ const SidebarProvider: React.FC = () => {
 	// The MY APPS list from the .appdev store scan — the web twin of the
 	// VSCode workspace scan (working copies only; no registry state).
 	const [apps, setApps] = useState<AppListItem[]>([]);
+	// step: every refresh takes a ticket — a slow scan that resolves after a
+	// disconnect or after a NEWER refresh must not land its stale rows
+	const appsReqRef = useRef(0);
 	const refreshApps = useCallback(async () => {
+		const req = ++appsReqRef.current;
 		if (!client || !isConnected) {
 			setApps([]);
 			return;
 		}
 		try {
 			const scanned = await scanApps();
+			if (req !== appsReqRef.current) return;
 			setApps(scanned.map((a) => ({ id: a.id, name: a.name })));
 		} catch {
-			setApps([]);
+			if (req === appsReqRef.current) setApps([]);
 		}
 	}, [client, isConnected]);
 	useEffect(() => {
@@ -526,15 +531,20 @@ const SidebarProvider: React.FC = () => {
 
 	// The MY SESSIONS list from the .agents catalog.
 	const [sessions, setSessions] = useState<AgentSessionMeta[]>([]);
+	// step: same ticket guard as refreshApps — only the newest listing lands
+	const sessionsReqRef = useRef(0);
 	const refreshSessions = useCallback(async () => {
+		const req = ++sessionsReqRef.current;
 		if (!client || !isConnected) {
 			setSessions([]);
 			return;
 		}
 		try {
-			setSessions(await AgentSession.getSessions());
+			const listed = await AgentSession.getSessions();
+			if (req !== sessionsReqRef.current) return;
+			setSessions(listed);
 		} catch {
-			setSessions([]);
+			if (req === sessionsReqRef.current) setSessions([]);
 		}
 	}, [client, isConnected]);
 	useEffect(() => {

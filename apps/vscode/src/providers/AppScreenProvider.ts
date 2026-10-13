@@ -443,7 +443,16 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 											}
 										},
 										dependencies,
-										probeDependency: (name, range) => probePackage({ name, version: range }),
+										// step: bounded fetches — without a timeout one hung
+										// module-source request stalls the whole readiness bar
+										probeDependency: (name, range) => probePackage({
+											name,
+											version: range,
+											fetchText: async (url) => {
+												const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+												return { ok: response.ok, status: response.status, text: response.ok ? await response.text() : '' };
+											},
+										}),
 									});
 									break;
 								}

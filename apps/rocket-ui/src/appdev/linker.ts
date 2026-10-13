@@ -93,6 +93,13 @@ export interface LinkOptions {
 	 * (which surfaces as a diagnostic).
 	 */
 	resolveDependency?: (specifier: string) => string | null;
+	/**
+	 * Already-linked module URLs to reuse verbatim (hot swap): seeded paths
+	 * short-circuit linkOne, so ONLY the unseeded modules mint new blobs and
+	 * re-evaluate. Reused URLs are never added to the result's blobUrls —
+	 * revoking the link must not kill URLs an earlier link still owns.
+	 */
+	preLinked?: Map<string, string>;
 }
 
 // =============================================================================
@@ -234,7 +241,7 @@ export async function linkModules(options: LinkOptions): Promise<LinkResult> {
 	const { appId, modules, entryPath, scope, cssDocument, resolveDependency } = options;
 	const errors: LinkError[] = [];
 	const blobUrls: string[] = [];
-	const moduleUrls = new Map<string, string>();
+	const moduleUrls = new Map<string, string>(options.preLinked ?? []);
 	/** Reserved-share shim URLs, one per name per link. */
 	const shimUrls = new Map<string, string>();
 
@@ -320,7 +327,10 @@ export async function linkModules(options: LinkOptions): Promise<LinkResult> {
 				if (!replacement) errors.push({ path, message: `"${specifier}" is not a declared dependency. Add it to package.json dependencies.` });
 			}
 			if (replacement) {
-				code = `${code.slice(0, imp.s)}${replacement}${code.slice(imp.e)}`;
+				// step: a dynamic import's s..e spans the QUOTED literal —
+				// splice a quoted URL back or `import(blob:…)` is a syntax error
+				const text = imp.d > -1 ? JSON.stringify(replacement) : replacement;
+				code = `${code.slice(0, imp.s)}${text}${code.slice(imp.e)}`;
 			}
 		}
 		visiting.delete(path);

@@ -287,6 +287,13 @@ const DocDropZones: React.FC<DocDropZonesProps> = ({ docs, groupId, children }) 
 			return;
 		}
 
+		// Edge-splitting a group's only tab out of itself recreates the same
+		// layout after the source collapses. isUsefulDrop suppresses this via
+		// the drag SESSION — re-check with the RESOLVED source group, because
+		// a drag that never called beginEditorDrag (no session) still carries
+		// transfer data and would otherwise manufacture an empty split.
+		if (sourceGroupId === groupId && (docs.getState().groups[groupId]?.editorIds.length ?? 0) <= 1) return;
+
 		// Edge drop — split this group, then move the editor into the new pane
 		const newGroupId = docs.splitGroup(groupId, REGION_ORIENTATION[target], REGION_POSITION[target]);
 		docs.moveEditor(editorId, newGroupId);

@@ -73,7 +73,7 @@ interface WatchSession {
 	lingerToken?: number;
 	/** Millisecond stamp of the last COMPLETE output line (stall detection). */
 	lastLineAt?: number;
-	/** True once the first successful build landed ("built in" seen). */
+	/** True once the first build settled — success OR failure. */
 	firstBuildDone?: boolean;
 	/** Stall heartbeat while a build is in flight (see startHeartbeat). */
 	heartbeatTimer?: NodeJS.Timeout;
@@ -900,6 +900,10 @@ export class WatchManager {
 			this.scheduleReload(session);
 		} else if (/build failed|error {3}/i.test(compilerText)) {
 			session.buildStart = undefined;
+			// step: a failure SETTLES the first build too — otherwise the
+			// stall heartbeat keeps warning "still building" every tick while
+			// the panel already shows the compile error
+			session.firstBuildDone = true;
 			this.appScreen.notifyError(session.app.id, 'rsbuild build failed; see the Console pane for compiler output', 'rsbuild');
 			this.notify(session.app.id, { state: 'error', target: session.devOrigin?.replace(/^https?:\/\//, ''), reason: 'The app failed to compile. The Console pane carries the compiler output.' });
 		} else if (/building|compiling|build started/i.test(compilerText) && session.buildStart === undefined) {
