@@ -21,10 +21,14 @@ const fs = require('fs');
 const net = require('net');
 const { spawn } = require('child_process');
 const { exists } = require('./fs');
-const { DIST_ROOT } = require('./paths');
+const { BUILD_ROOT, DIST_ROOT } = require('./paths');
 
 const SERVER_DIR = path.join(DIST_ROOT, 'server');
 const READY_MESSAGE = 'Application startup complete.';
+
+// Under the build tree, so `builder clean` removes the logs and CI can upload
+// the directory as one artifact.
+const TEST_LOG_DIR = path.join(BUILD_ROOT, 'test-logs');
 
 // How many trailing output lines to retain from the server process. The server's
 // output is otherwise only forwarded to the optional onOutput callback, which
@@ -139,6 +143,35 @@ function describeExit(code, signal) {
 }
 
 /**
+ * Where a suite's test server writes its output.
+ *
+ * @param {string} suite - Module name, e.g. 'client-typescript'
+ * @returns {string} Absolute path of the log file
+ */
+function testServerLogFile(suite) {
+	return path.join(TEST_LOG_DIR, `${suite}-server.log`);
+}
+
+/**
+ * Open the file that receives everything a test server prints.
+ *
+ * Callers stop consuming onOutput once the server is ready and outputTail keeps
+ * only the last lines, so this file is the only complete record of the server's
+ * side of a test run.
+ *
+ * @param {string} logFile - Absolute path; parent directories are created and
+ *   an existing file is replaced
+ * @returns {fs.WriteStream} Stream to write the server's output to
+ */
+function openServerLog(logFile) {
+	fs.mkdirSync(path.dirname(logFile), { recursive: true });
+	const stream = fs.createWriteStream(logFile, { flags: 'w' });
+	// A log that cannot be written must not take the test run down with it.
+	stream.on('error', (err) => console.error(`[server] cannot write ${logFile}: ${err.message}`));
+	return stream;
+}
+
+/**
  * Start a Python server using the engine executable
  *
  * Waits indefinitely for the server to emit "Application startup complete."
@@ -153,6 +186,8 @@ function describeExit(code, signal) {
  * @param {string[]} [options.trace] - Trace categories to enable (passed as --trace=a,b,c)
  * @param {number} [options.basePort] - Base port for task allocation
  * @param {string[]} [options.args] - Additional arguments to pass to the script
+ * @param {string} [options.logFile] - File that receives all of the server's stdout and
+ *   stderr until it exits (see testServerLogFile)
  * @returns {Promise<{server: ChildProcess|null, port: number, diagnostics?: object}>}
  *   `diagnostics` (also reachable as `server.rocketrideDiagnostics`) carries the
  *   retained output tail and, once it exits, the exit code/signal. If the server
@@ -160,7 +195,7 @@ function describeExit(code, signal) {
  *   to stderr at the moment of death.
  */
 async function startServer(options) {
-	const { script, port: existingPort, onOutput, trace, basePort, args = [], env = {} } = options;
+	const { script, port: existingPort, onOutput, trace, basePort, args = [], env = {}, logFile } = options;
 
 	if (!script) {
 		throw new Error('startServer: script is required');
@@ -199,6 +234,8 @@ async function startServer(options) {
 	}
 
 	return new Promise((resolve, reject) => {
+		const logStream = logFile ? openServerLog(logFile) : null;
+
 		const serverProcess = spawn(serverExe, serverArgs, {
 			cwd: SERVER_DIR,
 			stdio: ['pipe', 'pipe', 'pipe'],
@@ -219,6 +256,7 @@ async function startServer(options) {
 			stopRequested: false,
 			outputTail: [],
 			port: null,
+			logFile: logFile ?? null,
 		};
 		serverProcess.rocketrideDiagnostics = diagnostics;
 
@@ -237,6 +275,8 @@ async function startServer(options) {
 		const checkReady = (data) => {
 			const text = data.toString();
 			outputBuffer += text;
+
+			if (logStream) logStream.write(data);
 
 			// Retain the tail unconditionally. Callers typically stop consuming
 			// onOutput once the server is ready, so this is the only thing that
@@ -307,7 +347,11 @@ async function startServer(options) {
 		serverProcess.stdout.on('data', checkReady);
 		serverProcess.stderr.on('data', checkReady);
 
+		// 'close' follows the last byte of both streams; 'exit' can come before it.
+		serverProcess.on('close', () => logStream?.end());
+
 		serverProcess.on('error', (err) => {
+			logStream?.end();
 			if (!resolved) {
 				resolved = true;
 				reject(err);
@@ -353,6 +397,8 @@ async function startServer(options) {
 			} else {
 				detail.push('  Server produced no output before dying.');
 			}
+
+			if (logFile) detail.push(`  Full server output: ${logFile}`);
 
 			detail.push('='.repeat(78), '');
 			console.error(detail.join('\n'));
@@ -475,4 +521,6 @@ module.exports = {
 	startServer,
 	stopServer,
 	parseServerAddress,
+	testServerLogFile,
+	openServerLog,
 };
