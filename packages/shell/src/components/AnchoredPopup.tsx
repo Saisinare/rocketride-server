@@ -67,9 +67,13 @@ export const AnchoredPopup: React.FC<AnchoredPopupProps> = ({ anchorRef, open, o
 	const pos = useFixedPopupPosition(anchorRef, open, placement, { popupRef, align, gap, matchWidth: matchAnchorWidth });
 
 	// step: onClose rides a ref — callers pass inline arrows, and a changing
-	// identity must not detach/reattach the document listeners every render
+	// identity must not detach/reattach the document listeners every render.
+	// Written in an effect: render must stay pure (React 18 can replay or
+	// discard a render after an in-render ref write already leaked).
 	const onCloseRef = useRef(onClose);
-	onCloseRef.current = onClose;
+	useEffect(() => {
+		onCloseRef.current = onClose;
+	});
 
 	// step: dismissal — outside mousedown and Escape while open. The popup
 	// joins the overlay-layer stack (scroll untouched) so one Escape press

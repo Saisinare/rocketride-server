@@ -338,8 +338,13 @@ export class StagingStore implements IStagingStore {
 					if (entry.baseHash) referenced.add(entry.baseHash);
 				}
 			}
-		} catch {
-			/* no manifest: everything under blobs/ is orphaned */
+		} catch (err) {
+			// step: only a PROVEN-absent manifest means every blob is an
+			// orphan; a transient read failure must not empty the referenced
+			// set and delete blobs the manifest still names (load() would
+			// then drop those staged writes)
+			const absent = err instanceof Error && /file not found/i.test(err.message);
+			if (!absent) return;
 		}
 
 		// step: list blobs and delete the unreferenced remainder

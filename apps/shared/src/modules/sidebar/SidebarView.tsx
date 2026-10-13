@@ -422,7 +422,9 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 								if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHoveredRow((prev) => (prev === rowKey ? null : prev));
 							}}
 							onKeyDown={(e) => {
-								if (e.key !== 'Enter' && e.key !== ' ') return;
+								// only the ROW itself — the nested delete button's
+								// Enter/Space bubbles here and must keep deleting
+								if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return;
 								e.preventDefault();
 								agent.onOpenSession(session.sessionId);
 							}}

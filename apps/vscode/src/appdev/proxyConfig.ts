@@ -146,11 +146,12 @@ export async function writeProxyConfig(appFolder: string, appId: string, engineO
 	const dir = path.join(appFolder, '.rocketride');
 	await mkdir(dir, { recursive: true });
 	const wrapperPath = path.join(dir, WRAPPER_NAME);
-	// step: resolve the config file the app ACTUALLY has — the scaffold emits
-	// .mts, but hand-rolled apps may carry .ts/.mjs/.js, and importing a
-	// missing file crashes rsbuild through the whole respawn budget
+	// step: resolve the config file the app ACTUALLY has, in rsbuild's OWN
+	// selection order (DEFAULT_CONFIG_FILE_NAMES in @rsbuild/core) — the
+	// wrapper must merge the same file a plain `rsbuild dev` would load, and
+	// importing a missing file crashes rsbuild through the respawn budget
 	let appConfigPath = path.join(appFolder, 'rsbuild.config.mts');
-	for (const name of ['rsbuild.config.mts', 'rsbuild.config.ts', 'rsbuild.config.mjs', 'rsbuild.config.js']) {
+	for (const name of ['rsbuild.config.ts', 'rsbuild.config.js', 'rsbuild.config.mts', 'rsbuild.config.mjs', 'rsbuild.config.cts', 'rsbuild.config.cjs']) {
 		const candidate = path.join(appFolder, name);
 		try {
 			await access(candidate);

@@ -179,13 +179,17 @@ export function isNotFound(err: unknown): boolean {
 }
 
 /**
- * Reads the catalog; a missing file is an empty catalog.
+ * Reads the catalog; a missing file is an empty catalog. The PATH is the
+ * caller's capture — updateCatalog queues its callback, and the controlling
+ * app (the namespace) may switch before it runs; read and write must name
+ * the same file.
  *
+ * @param path - The catalog file's full store path.
  * @returns The catalog rows (unsorted, as stored).
  */
-async function readCatalog(): Promise<AgentSessionMeta[]> {
+async function readCatalog(path: string): Promise<AgentSessionMeta[]> {
 	try {
-		const file = await requireClient().fsReadJson<CatalogFile>(`${agentsDir()}/catalog.json`);
+		const file = await requireClient().fsReadJson<CatalogFile>(path);
 		return Array.isArray(file?.sessions) ? file.sessions : [];
 	} catch (err) {
 		// step: ONLY a genuinely absent catalog is empty — a transient read
@@ -206,7 +210,7 @@ async function readCatalog(): Promise<AgentSessionMeta[]> {
 function updateCatalog(mutate: (rows: AgentSessionMeta[]) => AgentSessionMeta[]): Promise<void> {
 	const path = `${agentsDir()}/catalog.json`;
 	const op = catalogChain.then(async () => {
-		const rows = mutate(await readCatalog());
+		const rows = mutate(await readCatalog(path));
 		await requireClient().fsWriteJson(path, { version: 1, sessions: rows } satisfies CatalogFile);
 		emitFsChange(path, 'agent');
 	});
@@ -226,7 +230,7 @@ function updateCatalog(mutate: (rows: AgentSessionMeta[]) => AgentSessionMeta[])
  * @returns The requested catalog page.
  */
 export async function getAgentSessions(offset: number, count: number): Promise<AgentSessionMeta[]> {
-	const rows = await readCatalog();
+	const rows = await readCatalog(`${agentsDir()}/catalog.json`);
 	return rows.sort((a, b) => b.date - a.date).slice(offset, offset + count);
 }
 

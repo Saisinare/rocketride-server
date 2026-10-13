@@ -1739,8 +1739,10 @@ not-yet-published) version never means republishing. Two ways in:
 Both create a **session override**: it lives in the browser tab and dies
 with it — deliberately never persisted server-side, so an override cannot
 sit forgotten and quietly serve old code weeks later. Within the tab, the
-resolution order is: URL `?version=` first, then the session override, then
-your local dev registration, then the server's default for your rungs.
+resolution order is: your local dev registration first (while a watch or
+preview is serving the app, it owns the container outright), then URL
+`?version=`, then the session override, then the server's default for your
+rungs.
 
 Mechanics worth knowing:
 
