@@ -137,6 +137,15 @@ export default defineConfig(() => {
 				config.module ??= {};
 				config.module.rules ??= [];
 				config.module.rules.push(
+					// typescript.js's resolveJSModule carries a require(<expression>)
+					// in that same Node-only sys layer — unreachable in the browser.
+					// Marking expression requires non-critical for this one module
+					// drops the "Critical dependency" warning every (re)build would
+					// otherwise forward into the preview console.
+					{
+						test: /node_modules[\\/]typescript[\\/]lib[\\/]typescript\.js$/,
+						parser: { exprContextCritical: false },
+					},
 					{
 						resourceQuery: /raw/,
 						type: 'asset/source',

@@ -20,20 +20,24 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+// =============================================================================
+// HASH — content identity for staging (blob names + base hashes)
+// =============================================================================
+
 /**
- * The extension host's dev-session identity — one random nonce per host
- * lifetime, minted at module load.
- *
- * The dev overlay holds one registration PER EDITOR SESSION (several
- * editors may dev-serve the same app concurrently); this nonce is how a
- * preview finds the right one. It rides every register_dev call (the
- * server stamps it onto this host's overlay entries) and every preview
- * URL this host launches (`?rrsession=`), so a preview opened FROM this
- * editor resolves THIS editor's dev server rather than whichever editor
- * registered last.
+ * SHA-256 hashing for the workspace staging layer. Browser-only by design
+ * (WebCrypto), the same dependency shell's PKCE helper already assumes.
+ * Used for content-addressed blob names and the baseHash conflict anchors.
  */
 
-import { randomUUID } from 'crypto';
-
-/** This extension host's dev-session nonce (stable for the host's lifetime). */
-export const DEV_SESSION_NONCE = randomUUID();
+/**
+ * Hex-encoded SHA-256 of a UTF-8 string.
+ *
+ * @param text - The content to hash.
+ * @returns Lowercase hex digest (64 chars).
+ */
+export async function sha256Hex(text: string): Promise<string> {
+	// step: UTF-8 encode, digest, hex-encode
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}

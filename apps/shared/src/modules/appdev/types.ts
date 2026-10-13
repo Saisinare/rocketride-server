@@ -323,8 +323,6 @@ export interface BuildStatusTick {
 
 /** What the hosting surface can do — selects per-host affordances. */
 export interface AppBuilderCapabilities {
-	/** Web only: the Code pane (store-backed files + Monaco) exists. */
-	hasCodePane: boolean;
 	/** VSCode only: files are native — show the native-files strip. */
 	hasNativeFiles: boolean;
 	/** Debug affordance: VSCode launches a browser via F5; the web host opens the preview in a new tab. */
@@ -499,8 +497,10 @@ export interface NewAppIdentity {
 // VIEW VOCABULARY
 // =============================================================================
 
-/** The activity views (Code exists only on hosts with a Code pane — web). */
-export type AppBuilderStage = 'dashboard' | 'design' | 'code' | 'package' | 'store' | 'deploy';
+/** The activity views. Code editing lives outside the App Builder on every
+    host (VSCode edits natively; the web edits through the workspace
+    Explorer's file tabs) — there is no Code stage. */
+export type AppBuilderStage = 'dashboard' | 'design' | 'package' | 'store' | 'deploy';
 
 /** The DESIGN pill panes. */
 export type DesignPane = 'preview' | 'components' | 'events' | 'console' | 'errors';

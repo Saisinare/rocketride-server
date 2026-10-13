@@ -4,31 +4,32 @@
 // =============================================================================
 
 /**
- * WatchManager — the App Builder inner loop's engine room.
+ * WatchManager — the App Builder inner loop's engine room (local-first).
  *
- * Per app: runs `rsbuild dev` in the app's folder (serves the MF remote on
- * its dev port and rebuilds on save), parses the process output for the dev
- * URL and build results, keeps the developer's PERSONAL dev overlay pointed
- * at the served bundle via `rrext_deploy_app.register_dev` (re-registered
- * on every rebuild — that also keeps the overlay's idle TTL alive), and
- * notifies the App Builder panel: watch status for the DEV badge, and a
- * debounced preview reload on each successful rebuild.
+ * Per app: runs `rsbuild dev` in the app's folder under a generated
+ * PASSTHROUGH-PROXY wrapper config (the preview shell loads everything
+ * through the dev server; the app's /apps/<id>/dev/** prefix serves from
+ * local disk, all else proxies to the engine), parses the process output
+ * for the dev URL and build results, and notifies the App Builder panel:
+ * the dev entry + fresh WORKSPACE manifest for the panel's client-side
+ * registration push, watch status for the DEV badge, and a debounced
+ * preview reload on each successful rebuild. The server holds NO dev
+ * state — registration lives in preview pages and dies with them.
  *
  * Lifecycle: started when an App Builder panel opens (setting-gated by
  * `rocketride.appdev.autoWatch`), stopped when the panel closes or the
- * extension deactivates. Stopping unregisters the overlay entry so the
- * shell drops the dev bundle.
+ * extension deactivates.
  */
 
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { existsSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { spawn, ChildProcess } from 'child_process';
 import { ConnectionManager } from '../connection/connection';
 import { extractInstallCause, isTransientLockError, setWorkspaceInstallDelegate } from './appTypes';
 import { getLogger } from '../shared/util/output';
-import { DEV_SESSION_NONCE } from './devSession';
-import { appIconDataUri } from './appScan';
+import { writeProxyConfig } from './proxyConfig';
 import type { ScannedApp } from './appScan';
 import type { AppScreenProvider, AppWatchStatus } from '../providers/AppScreenProvider';
 
@@ -70,10 +71,6 @@ interface WatchSession {
 	    fresh start) never inherits it, so an already-expired linger can never
 	    tear down a session the user just reopened. */
 	lingerToken?: number;
-	/** The app's manifest icon as a data: URI, resolved ONCE per session
-	    ('' when absent/unreadable) — registerOverlay re-fires on every
-	    rebuild and must not re-read a 256 KiB file each time. */
-	iconUri?: string;
 	/** Millisecond stamp of the last COMPLETE output line (stall detection). */
 	lastLineAt?: number;
 	/** True once the first successful build landed ("built in" seen). */
@@ -152,8 +149,11 @@ export class WatchManager {
 	/** Bound reconnect listener (see constructor); removed in dispose(). */
 	private onStatusChange = (): void => {
 		if (!this.connectionManager.isConnected()) return;
+		// Re-announce the dev entry to the panels after a reconnect — the
+		// registration is CLIENT-side now (local-first): the webview re-posts
+		// it into the preview shell; the server holds no dev state.
 		for (const session of this.sessions.values()) {
-			if (session.devOrigin) void this.registerOverlay(session);
+			if (session.devOrigin) void this.notifyDevEntry(session);
 		}
 	};
 
@@ -302,8 +302,7 @@ export class WatchManager {
 				this.logger.output(`[appdev] revived lingering dev server for ${app.id}`);
 				this.console(app.id, 'log', 'reopened within the linger window — reusing the running dev server');
 				this.notify(app.id, { state: 'ok', target: existing.devOrigin?.replace(/^https?:\/\//, '') });
-				this.notifyDevEntry(existing);
-				void this.registerOverlay(existing);
+				void this.notifyDevEntry(existing);
 				this.scheduleReload(existing);
 			}
 			return;
@@ -333,7 +332,12 @@ export class WatchManager {
 		// are structurally impossible. The guard passes rsbuild's output
 		// through verbatim and mirrors its exit code, so parsing and crash
 		// detection below see the server as before.
-		const proc = spawn(process.execPath, [this.guardPath, String(process.pid), spawnArgs.shell ? '1' : '0', spawnArgs.cmd, ...spawnArgs.args, 'dev'], {
+		// step: regenerate the passthrough-proxy wrapper for THIS session —
+		// the preview shell loads everything through the dev server; the
+		// engine origin may differ between sessions (local-first dev design)
+		const engineOrigin = this.connectionManager.getHttpUrl() || 'http://localhost:5565';
+		const proxyConfigPath = await writeProxyConfig(app.folder, app.id, engineOrigin);
+		const proc = spawn(process.execPath, [this.guardPath, String(process.pid), spawnArgs.shell ? '1' : '0', spawnArgs.cmd, ...spawnArgs.args, 'dev', '--config', proxyConfigPath], {
 			cwd: app.folder,
 			env: { ...process.env, NO_COLOR: '1' },
 			// Never allocate a console window for the guard or its tree.
@@ -565,13 +569,8 @@ export class WatchManager {
 			}
 		} catch { /* already gone */ }
 
-		// Drop the overlay entry so the shell returns to the published bundle
-		try {
-			const client = this.connectionManager.getClient();
-			if (client && this.connectionManager.isConnected()) {
-				await client.call('rrext_deploy_app', { subcommand: 'register_dev', moduleId: session.app.moduleId, unregister: true });
-			}
-		} catch { /* engine gone — the overlay's disconnect expiry covers it */ }
+		// No server-side overlay to drop (local-first): the registration
+		// lives only in preview pages, and dies with them.
 		this.notify(appId, { state: 'idle' });
 	}
 
@@ -876,10 +875,9 @@ export class WatchManager {
 				this.logger.output(`[appdev] ${session.app.id} dev server at ${session.devOrigin}`);
 				this.resolveReadiness(session.app.id, session.devOrigin);
 				// The panel injects this entry straight into the preview shell
-				// (postMessage — no server dependency); the overlay below only
-				// serves embedder-less shells (F5's external browser).
-				this.notifyDevEntry(session);
-				void this.registerOverlay(session);
+				// (postMessage); embedder-less shells (F5's external browser)
+				// self-register from the URL convention — no server anywhere.
+				void this.notifyDevEntry(session);
 			}
 		}
 
@@ -897,9 +895,8 @@ export class WatchManager {
 			this.notify(session.app.id, { state: 'ok', durationMs, target: session.devOrigin?.replace(/^https?:\/\//, '') });
 			// Fresh cache-busted entry FIRST (same-URL re-registration would
 			// resolve to the browser-cached container — the stale-bundle bug),
-			// then the overlay refresh and the debounced re-inject.
-			this.notifyDevEntry(session);
-			void this.registerOverlay(session);
+			// then the debounced re-inject.
+			void this.notifyDevEntry(session);
 			this.scheduleReload(session);
 		} else if (/build failed|error {3}/i.test(compilerText)) {
 			session.buildStart = undefined;
@@ -924,47 +921,52 @@ export class WatchManager {
 	 *
 	 * @param session - The session whose dev server has a fresh build.
 	 */
-	private notifyDevEntry(session: WatchSession): void {
+	private async notifyDevEntry(session: WatchSession): Promise<void> {
 		if (!session.devOrigin) return;
-		this.appScreen.notifyDevServer(session.app.id, `${session.devOrigin}/remoteEntry.js?t=${Date.now()}`);
+		// step: the dev server is a passthrough proxy — the entry lives under
+		// the app's own /dev/ namespace (published /v<N>/ still proxies), and
+		// the WORKSPACE manifest rides along so the preview shell's metadata
+		// (name, icon, settings schema) is the local truth, not the registry
+		const entry = `${session.devOrigin}/apps/${encodeURIComponent(session.app.id)}/dev/remoteEntry.js?t=${Date.now()}`;
+		const manifest = await this.readWorkspaceManifest(session);
+		this.appScreen.notifyDevServer(session.app.id, entry, manifest);
 	}
 
 	/**
-	 * Points the caller's dev overlay at the served remoteEntry.js.
+	 * The app's workspace manifest for dev registration: the package.json
+	 * appManifest block plus the top-level semver, read fresh per
+	 * notification so manifest edits ride the next rebuild. Undefined when
+	 * unreadable — a half-written manifest mid-edit never blocks the dev
+	 * entry notification itself.
 	 *
-	 * The URL carries the same per-registration cache buster notifyDevEntry
-	 * uses: browser shells resolve the overlay to this URL verbatim, and a
-	 * constant URL let the browser serve its disk-cached container from a
-	 * previous (possibly dead) server until a hard refresh — the same
-	 * stale-bundle bug, on the overlay path.
+	 * @param session - The session whose app folder is read.
+	 * @returns The manifest payload, or undefined.
 	 */
-	private async registerOverlay(session: WatchSession): Promise<void> {
-		if (!session.devOrigin) return;
+	private async readWorkspaceManifest(session: WatchSession): Promise<Record<string, unknown> | undefined> {
 		try {
-			const client = this.connectionManager.getClient();
-			if (!client || !this.connectionManager.isConnected()) return;
-			// Manifest basics ride along so a never-published app's desktop
-			// tile renders like a store tile (real name/icon/description)
-			// instead of a bare app id.
-			if (session.iconUri === undefined) {
-				session.iconUri = (await appIconDataUri(session.app.icon)) ?? '';
+			const pkg = JSON.parse(await readFile(path.join(session.app.folder, 'package.json'), 'utf8')) as Record<string, unknown>;
+			const manifest = { ...(pkg.appManifest ?? {}) } as Record<string, unknown>;
+			// step: inline the icon as a data URI — the manifest's './icon.svg'
+			// form points at a SOURCE file the dev server does not necessarily
+			// serve (rsbuild bundles src assets; it does not expose them), so a
+			// path-form icon 404s in the preview shell and the app loses its
+			// face while a dev session runs. Inlining removes the serving
+			// dependency and keeps icon edits live per rebuild.
+			if (typeof manifest.icon === 'string' && manifest.icon && !/^(data:|https?:)/i.test(manifest.icon)) {
+				try {
+					const iconAbs = path.join(session.app.folder, manifest.icon.replace(/^\.\//, ''));
+					const ext = path.extname(iconAbs).toLowerCase();
+					const mime = ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : null;
+					if (mime) {
+						const data = await readFile(iconAbs);
+						// 256KB cap — an icon, not an asset pipeline.
+						if (data.byteLength <= 256 * 1024) manifest.icon = `data:${mime};base64,${data.toString('base64')}`;
+					}
+				} catch { /* unreadable icon — keep the path form (shell falls back) */ }
 			}
-			await client.call('rrext_deploy_app', {
-				subcommand: 'register_dev',
-				moduleId: session.app.moduleId,
-				url: `${session.devOrigin}/remoteEntry.js?t=${Date.now()}`,
-				appId: session.app.id,
-				// This host's overlay entry is keyed to its session nonce, so
-				// previews launched from THIS editor resolve THIS dev server
-				// even when another editor serves the same app.
-				session: DEV_SESSION_NONCE,
-				name: session.app.name,
-				description: session.app.description ?? '',
-				appVersion: session.app.version ?? '',
-				icon: session.iconUri,
-			});
-		} catch (err) {
-			this.logger.output(`[appdev] register_dev failed for ${session.app.id}: ${err}`);
+			return { ...manifest, version: typeof pkg.version === 'string' ? pkg.version : undefined };
+		} catch {
+			return undefined;
 		}
 	}
 

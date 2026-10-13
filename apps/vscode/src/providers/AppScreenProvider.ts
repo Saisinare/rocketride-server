@@ -21,7 +21,6 @@ import { randomBytes } from 'crypto';
 import { ConnectionManager } from '../connection/connection';
 import { GenericEvent } from '../shared/types';
 import { appIconDataUri, MAX_README_IMAGE_BYTES, scanWorkspaceApps } from '../appdev/appScan';
-import { DEV_SESSION_NONCE } from '../appdev/devSession';
 import type { ScannedApp } from '../appdev/appScan';
 import { ensureAppTrigger, ensureProjectId, readAppListing, saveAppListing } from '../appdev/appMarker';
 import type { AppListing } from '../appdev/appMarker';
@@ -68,6 +67,8 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	// The running dev server's remoteEntry.js URL per app — the webview
 	// injects it into the preview shell (replayed at view:ready like status).
 	private devEntries = new Map<string, string>();
+	/** Workspace manifests riding each dev registration (dev = local truth). */
+	private devManifests = new Map<string, Record<string, unknown> | undefined>();
 
 	constructor(private readonly context: vscode.ExtensionContext) {
 		this.setupEventListeners();
@@ -194,13 +195,12 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 							type: 'appdev:init',
 							app: this.buildAppSummary(appId, app),
 							previewUrl: this.buildPreviewUrl(appId),
-							// VSCode variant: files are native, F5 debugs, no Code pane.
+							// VSCode variant: files are native, F5 debugs.
 							// hasReviewLadder mirrors the server's account backend
 							// (base.py review_ladder): only a server declaring 'oss'
 							// publishes @public directly; unknown/disconnected keeps
 							// the gated default.
 							capabilities: {
-								hasCodePane: false,
 								hasNativeFiles: true,
 								canDebug: true,
 								hasReviewLadder: !(this.connectionManager.getClient()?.getAccountInfo()?.capabilities ?? []).includes('oss'),
@@ -217,7 +217,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 						const last = this.lastWatch.get(appId);
 						if (last) await panel.webview.postMessage({ type: 'appdev:watch', status: last });
 						const devEntry = this.devEntries.get(appId);
-						if (devEntry) await panel.webview.postMessage({ type: 'appdev:devServer', entry: devEntry });
+						if (devEntry) await panel.webview.postMessage({ type: 'appdev:devServer', entry: devEntry, manifest: this.devManifests.get(appId) });
 						// Session handoff: this window is already authenticated —
 						// give the preview shell the same credential so apps
 						// requiring auth render with a real signed-in session.
@@ -230,14 +230,9 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 						// The resolve-time watch start can lose a race with the
 						// workspace scan — retry here (idempotent when running)
 						if (app && !getWatchManager()?.isRunning(appId)) void ensureWatch(app);
-						// Config sanity: the dev overlay registers on the
-						// CONNECTED server — a preview shell pointing anywhere
-						// else can never see the dev bundle. Warn loudly.
-						const override = vscode.workspace.getConfiguration('rocketride.appdev').get<string>('shellUrl', '');
-						const connected = this.connectionManager.getHttpUrl?.() ?? '';
-						if (override && connected && new URL(override).origin !== new URL(connected).origin) {
-							this.notifyConsole(appId, 'warn', `Preview shell is ${override} but this window is connected to ${connected}. The dev overlay registers on the connected server, so the preview will show "App not found" — clear or fix rocketride.appdev.shellUrl, or switch Development Mode to the matching server.`);
-						}
+						// (No origin sanity warning anymore: LOCAL-FIRST previews
+						// deliberately live on the dev server's proxy origin,
+						// which differs from the engine origin by design.)
 						break;
 					}
 
@@ -680,10 +675,14 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	 *
 	 * @param appId - The app whose dev server came up (or repointed).
 	 * @param entry - The dev server's remoteEntry.js URL.
+	 * @param manifest - The WORKSPACE manifest payload (appManifest +
+	 *   top-level version) — in dev the workspace is the truth for the
+	 *   preview shell's app metadata, not the server registry.
 	 */
-	public notifyDevServer(appId: string, entry: string): void {
+	public notifyDevServer(appId: string, entry: string, manifest?: Record<string, unknown>): void {
 		this.devEntries.set(appId, entry);
-		this.panels.get(appId)?.webview.postMessage({ type: 'appdev:devServer', entry });
+		this.devManifests.set(appId, manifest);
+		this.panels.get(appId)?.webview.postMessage({ type: 'appdev:devServer', entry, manifest });
 	}
 
 	/**
@@ -802,9 +801,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 		const base = override || this.connectionManager.getHttpUrl?.() || 'http://localhost:5565';
 		// _ts busts the browser's cached index.html — the flavor picker lives
 		// in the html, and a stale copy silently serves the wrong shell flavor.
-		// rrsession routes the preview to THIS editor's dev-overlay entry when
-		// several editors dev-serve the same app.
-		return `${base.replace(/\/$/, '')}/?appid=${encodeURIComponent(appId)}&rrdev=1&rrsession=${DEV_SESSION_NONCE}&_ts=${Date.now()}`;
+		return `${base.replace(/\/$/, '')}/?appid=${encodeURIComponent(appId)}&rrdev=1&_ts=${Date.now()}`;
 	}
 
 	// =========================================================================

@@ -27,9 +27,11 @@
 /**
  * Direct-mounts the shared AppBuilderScreen for one app document (opened by
  * the sidebar's MY APPS list as the static doc `app:<appId>`). The web
- * host: the adapter wraps the live client, the Code pane renders the dev
- * session's models, and the preview is a same-origin iframe of this very
- * shell.
+ * host: the adapter wraps the live client, and the preview is a same-origin
+ * iframe of this very shell. There is NO Code tab here — the workspace
+ * Explorer + file-editor tabs are the code surface; the dev session runs
+ * headless (models + design loop) and adopts those tabs' saves off the
+ * notification bus.
  *
  * The preview is LIVE only — `?appid=<id>&rrdev=1`: the dev-flavor shell;
  * the session injects the LINKED build via registerLocalApp after the
@@ -49,10 +51,8 @@ import type { CSSProperties } from 'react';
 import { useShellConnection, ConnectionManager } from 'shell';
 import { AppBuilderScreen } from 'shared/modules/appdev';
 import type { AppBuilderStage, AppSummary } from 'shared/modules/appdev';
-// Deep import by design: CodePane carries the Monaco module and only
-// Code-pane hosts pay for it (see the appdev barrel's note).
-import { CodePane } from 'shared/modules/appdev/CodePane';
-import { scanApps } from '../appdev/appStore';
+import { readAppPackage, scanApps } from '../appdev/appStore';
+import { getWorkspaceVfs } from '../workspace/workspace';
 import type { StoredApp } from '../appdev/appStore';
 import { createWebAppBuilderHost } from '../appdev/webHost';
 import { WebDevSession } from '../appdev/devSession';
@@ -172,7 +172,7 @@ const AppBuilderProvider: React.FC<{
 	useEffect(() => {
 		if (!client || !isConnected) return;
 		let cancelled = false;
-		void scanApps(client).then((apps) => {
+		void scanApps().then((apps) => {
 			if (!cancelled) setStored(apps.find((a) => a.id === appId) ?? null);
 		});
 		return () => {
@@ -211,10 +211,12 @@ const AppBuilderProvider: React.FC<{
 			if (!fromIframe && !fromDebug) return;
 			const data = e.data as { type?: string } | undefined;
 			if (data?.type === 'shell:devReady') {
-				// step: ALWAYS answer with the definitive session state — the
-				// token from the top-level shell's localStorage ('' = signed
-				// out) — so any embedded dev shell boots authenticated
-				const token = window.localStorage.getItem('rr:user_token') ?? '';
+				// step: ALWAYS answer with the definitive session state ('' =
+				// signed out) so any embedded dev shell boots authenticated.
+				// Through loadToken(), NOT raw localStorage: when this shell is
+				// itself an embedded dev preview (VS Code hosting), its adopted
+				// token lives in the frame-local store (devGate.tokenStore).
+				const token = ConnectionManager.getInstance().loadToken();
 				(e.source as Window).postMessage({ type: 'rrdev:auth', token }, window.location.origin);
 				// step: the embedded preview and the debug tab both become
 				// the linked-injection target
@@ -265,18 +267,43 @@ const AppBuilderProvider: React.FC<{
 		});
 	}, [client, stored, appId, liveUrl, session]);
 
+	// ── Live manifest facts for the header ──────────────────────────────
+	// `stored` stays FROZEN on purpose (the dev-session effect keys on it —
+	// re-scanning would tear the session down on every manifest save); the
+	// header overlays these instead, refreshed whenever package.json changes.
+	const [liveMeta, setLiveMeta] = useState<{ name?: string; version?: string; description?: string } | null>(null);
+	useEffect(() => {
+		if (!client || !stored) return;
+		// Through the view's change stream (staged writes tick it even when
+		// nothing reaches the server); cross-page writes arrive as view
+		// ticks too via the session's bus translation. The re-read is
+		// cache-served except right after an actual change.
+		return getWorkspaceVfs().subscribe(() => {
+			void readAppPackage(stored.folder)
+				.then((pkg) => {
+					const m = (pkg.appManifest ?? {}) as Record<string, unknown>;
+					setLiveMeta({
+						name: typeof m.name === 'string' && m.name ? m.name : undefined,
+						version: typeof pkg.version === 'string' ? pkg.version : undefined,
+						description: typeof m.description === 'string' ? m.description : undefined,
+					});
+				})
+				.catch(() => { /* unreadable mid-edit — keep the last header */ });
+		});
+	}, [client, stored]);
+
 	// ── App summary for the screen header ────────────────────────────────
 	const app: AppSummary | null = useMemo(() => {
 		if (!stored) return null;
 		return {
 			id: stored.id,
 			moduleId: stored.moduleId,
-			name: stored.name,
-			version: stored.version || undefined,
+			name: liveMeta?.name ?? stored.name,
+			version: liveMeta?.version ?? (stored.version || undefined),
 			status: 'local',
-			description: stored.description || undefined,
+			description: liveMeta?.description ?? (stored.description || undefined),
 		};
-	}, [stored]);
+	}, [stored, liveMeta]);
 
 	// ── Stage persistence (per EDITOR INSTANCE, via the workspace file) ──
 	// The editor's view-state row is the per-panel slot (editor-1/editor-2
@@ -286,7 +313,11 @@ const AppBuilderProvider: React.FC<{
 	// won across every panel on reload).
 	const initialStage = useMemo(() => {
 		const persisted = initialViewState?.stage ?? host?.getPref?.('stage');
-		return persisted === 'dashboard' || persisted === 'design' || persisted === 'code' || persisted === 'package' || persisted === 'store' || persisted === 'deploy' ? (persisted as AppBuilderStage) : undefined;
+		// 'code' is deliberately NOT accepted: the web host dropped the CODE
+		// tab (the Explorer's file tabs are the code surface), and restoring
+		// a pre-drop persisted 'code' stage would land on a tab that no
+		// longer exists — those fall through to the default landing view.
+		return persisted === 'dashboard' || persisted === 'design' || persisted === 'package' || persisted === 'store' || persisted === 'deploy' ? (persisted as AppBuilderStage) : undefined;
 		// initialViewState is INITIAL state by contract (frozen at mount by
 		// the pane) — live changes persist via onViewStateChange below.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -311,7 +342,6 @@ const AppBuilderProvider: React.FC<{
 						}}
 					/>
 				}
-				codePane={session ? <CodePane store={session.store} vfs={session.vfs} /> : undefined}
 				initialStage={initialStage}
 				// Per-panel persistence: the editor view-state row when the pane
 				// provides one; the per-app pref bag only as the legacy path.

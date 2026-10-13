@@ -34,13 +34,22 @@ import type { CSSProperties } from 'react';
 import type { ShellAppProps } from 'shell';
 import type { IVirtualFileSystem } from 'shell';
 import { commonStyles } from 'shell';
-import { useShellConnection, useWorkspace, DocTabs, DocSplitLayout, AppLayout } from 'shell';
+import { useShellConnection, useAuthUser, useWorkspace, DocTabs, DocSplitLayout, AppLayout, ConfirmDialog } from 'shell';
+import { AgentIcon } from './components/AgentIcon';
+import type { SidebarViewContainer } from 'shell';
+import { CodiconFiles, CodiconSourceControl, CodiconExtensions, CodiconCircuitBoard, CodiconTypeHierarchy } from 'shared/components/icons/Codicon';
 import { createDocs, destroyDocs, getDocs } from './docs';
-import { loadProject, saveProject, listProjectDir, renameProject, deleteProject, mkdirProject } from './utils/projectStore';
+import { createWorkspace, getWorkspace, resolveWorkspaceScope } from './workspace/workspace';
+import { ModeSwitchBlockedError } from 'shared/workspace/commitPolicy';
+import { createProjectVfs } from './utils/projectVfs';
 import ProjectProvider from './providers/ProjectProvider';
 import MonitorProvider from './providers/MonitorProvider';
 import WebviewProvider from './providers/WebviewProvider';
 import SidebarProvider from './providers/SidebarProvider';
+import WorkspaceExplorerProvider from './providers/WorkspaceExplorerProvider';
+import ScmProvider from './providers/ScmProvider';
+import FileProvider from './providers/FileProvider';
+import DiffProvider from './providers/DiffProvider';
 import AppBuilderProvider from './providers/AppBuilderProvider';
 import NewAppProvider from './providers/NewAppProvider';
 import AgentProvider from './providers/AgentProvider';
@@ -74,6 +83,26 @@ const styles = {
 		minWidth: 0,
 		overflow: 'hidden',
 	} as CSSProperties,
+	statusPending: {
+		display: 'flex',
+		alignItems: 'center',
+		gap: 10,
+		fontSize: 12,
+		color: 'var(--rr-text-secondary)',
+		fontFamily: 'var(--rr-font-family)',
+	} as CSSProperties,
+	statusAction: {
+		background: 'none',
+		border: '1px solid var(--rr-border-color)',
+		borderRadius: 4,
+		color: 'var(--rr-text-primary)',
+		cursor: 'pointer',
+		fontSize: 11.5,
+		padding: '2px 8px',
+	} as CSSProperties,
+	statusError: {
+		color: 'var(--rr-error-color, #d9534f)',
+	} as CSSProperties,
 	welcome: {
 		display: 'flex',
 		flex: 1,
@@ -102,58 +131,167 @@ const styles = {
  */
 const RocketApp: React.FC<ShellAppProps> = (_props) => {
 	const { client } = useShellConnection();
-	const { loaded, appState, updateAppState } = useWorkspace();
+	const authUser = useAuthUser();
+	const { loaded, appState, updateAppState, activeAppId, settings } = useWorkspace();
 	const [ready, setReady] = useState(false);
 
-	// --- Initialise Documents on mount ---------------------------------------
+	// --- Workspace scope (dev team → shared tree) -----------------------------
+
+	// The storage scope: the account's development team (shared source tree)
+	// when it validly names a team of the active org, else the user's own
+	// store. The KEY is a bootstrap-effect dependency: a dev-team (or org)
+	// change tears the whole document down — createWorkspace parks the
+	// outgoing scope's unsaved buffers as staged layers and rebuilds against
+	// the new tree, and Documents/sidebar remount on the fresh view.
+	const workspaceScope = useMemo(() => resolveWorkspaceScope(authUser), [authUser]);
+	const workspaceScopeKey = workspaceScope.kind === 'team' ? `team-${workspaceScope.teamId}` : 'user';
+
+	// --- Workspace mode (autoCommit setting → CommitPolicy) -------------------
+
+	// The autoCommit setting value; a ref carries the latest into the
+	// bootstrap effect without retriggering it on every settings change.
+	const settingAutoCommit = settings['rocketride.pipeBuilder.autoCommit'] !== false;
+	const autoCommitRef = useRef(settingAutoCommit);
+	autoCommitRef.current = settingAutoCommit;
+	// True while the auto-commit switch is held up by pending staged
+	// changes — drives the commit / discard / stay prompt below.
+	const [modeSwitchBlocked, setModeSwitchBlocked] = useState(false);
+	const [modeSwitchError, setModeSwitchError] = useState<string | null>(null);
+
+	/**
+	 * Resolves the blocked auto-commit switch: commit or discard everything
+	 * pending, then enter auto mode. Conflicts (base changed since staging)
+	 * block with nothing written and surface in the dialog.
+	 */
+	const resolveModeSwitch = useCallback(async (action: 'commit' | 'discard') => {
+		const { policy } = getWorkspace();
+		try {
+			if (action === 'commit') {
+				const result = await policy.commitAll();
+				if (result.conflicts.length > 0) {
+					setModeSwitchError(`${result.conflicts.length} file(s) changed on the server since they were staged — nothing was committed. Resolve them from the pending changes list first.`);
+					return;
+				}
+			} else {
+				await policy.discardAll();
+			}
+			policy.setMode(true);
+			setModeSwitchBlocked(false);
+			setModeSwitchError(null);
+		} catch (err) {
+			setModeSwitchError((err as Error).message);
+		}
+	}, []);
+
+	// --- Pending-state surface (manual mode) -----------------------------------
+
+	// Live count of staged-but-uncommitted changes; drives the status line.
+	const [pendingCount, setPendingCount] = useState(0);
+	const [pendingError, setPendingError] = useState<string | null>(null);
+	// True while the status line's "Discard all" awaits its confirmation.
+	const [discardConfirm, setDiscardConfirm] = useState(false);
+	useEffect(() => {
+		if (!ready) return;
+		const view = getWorkspace().view;
+		const update = () => setPendingCount(view.changedPaths().size);
+		update();
+		return view.subscribe(update);
+	}, [ready]);
+
+	/** Status line's "Commit all": one commit of everything pending. */
+	const commitAllPending = useCallback(async () => {
+		try {
+			const result = await getWorkspace().policy.commitAll();
+			setPendingError(result.conflicts.length > 0
+				? `${result.conflicts.length} file(s) changed on the server since they were staged — nothing was committed.`
+				: null);
+		} catch (err) {
+			setPendingError((err as Error).message);
+		}
+	}, []);
+
+	/** Confirmed "Discard all": drops every staged layer, base untouched. */
+	const discardAllPending = useCallback(async () => {
+		setDiscardConfirm(false);
+		try {
+			await getWorkspace().policy.discardAll();
+			setPendingError(null);
+		} catch (err) {
+			setPendingError((err as Error).message);
+		}
+	}, []);
+
+	// The status-bar content: silent until something is pending, then it says
+	// what the state means and offers the two ways out.
+	const statusNode = useMemo(() => {
+		if (!ready || pendingCount === 0) return undefined;
+		return (
+			<div style={styles.statusPending}>
+				<span>
+					{pendingCount} uncommitted change{pendingCount === 1 ? '' : 's'} — saved to your workspace, not yet committed to the server.
+				</span>
+				<button style={styles.statusAction} onClick={() => { void commitAllPending(); }}>Commit all</button>
+				<button style={styles.statusAction} onClick={() => setDiscardConfirm(true)}>Discard all</button>
+				{pendingError && <span style={styles.statusError}>{pendingError}</span>}
+			</div>
+		);
+	}, [ready, pendingCount, pendingError, commitAllPending]);
+
+	// --- Initialise workspace + Documents on mount ----------------------------
 
 	useEffect(() => {
 		// Wait until workspace is loaded from disk — loaded is only set true
 		// after the disk read completes, never during pre-auth seeding.
 		if (!client || !loaded) return;
 
+		// The composition root runs FIRST: the staged workspace view (with
+		// its persisted layers rehydrated and the real commit mode applied)
+		// must exist before any consumer — Documents, sidebar, builders —
+		// performs its first read. An unmount mid-build only flags
+		// cancellation; the workspace itself lives for the document.
+		let cancelled = false;
+		void (async () => {
+		const ws = await createWorkspace({ hostAppId: activeAppId, autoCommit: autoCommitRef.current, scope: workspaceScope });
+		if (cancelled) return;
+		// step: restored pending changes refuse auto mode — prompt the user
+		if (ws.pendingBlocksAuto) setModeSwitchBlocked(true);
+
 		/**
-		 * Content adapter that reads/writes pipeline JSON files via the
-		 * RocketRide client's project store API.
+		 * Content adapter for pipeline documents: the shared project VFS
+		 * (the staged workspace view's pipelines mount), with the Documents
+		 * singleton's lenient error contract preserved — listing/read
+		 * failures degrade to empty/null, save failures log and surface via
+		 * the save paths that re-save explicitly. Routing through the VIEW
+		 * is what makes staged (uncommitted) pipeline edits visible in tabs
+		 * and keeps tab saves from clobbering staged layers.
 		 */
+		const projectVfs = createProjectVfs(client);
 		const vfs: IVirtualFileSystem = {
 			list: async (dir: string) => {
-				if (!client) return [];
 				try {
-					const result = await listProjectDir(client, dir);
-					return (result.entries ?? []).map((e: any) => ({ name: e.name, type: e.type ?? 'file' }));
+					return await projectVfs.list(dir);
 				} catch {
 					return [];
 				}
 			},
 			read: async (uri: string) => {
-				if (!client) return null;
 				try {
-					return await loadProject(client, uri);
+					return await projectVfs.read(uri);
 				} catch {
 					return null;
 				}
 			},
 			write: async (uri: string, content: unknown) => {
-				if (!client || !content) return;
+				if (!content) return;
 				try {
-					await saveProject(client, uri, content);
+					await projectVfs.write(uri, content);
 				} catch (err) {
 					console.error('[RocketApp] Failed to save:', err);
 				}
 			},
-			rename: async (oldPath: string, newPath: string) => {
-				if (!client) return;
-				await renameProject(client, oldPath, newPath);
-			},
-			delete: async (path: string) => {
-				if (!client) return;
-				await deleteProject(client, path);
-			},
-			mkdir: async (path: string) => {
-				if (!client) return;
-				await mkdirProject(client, path);
-			},
+			rename: (oldPath: string, newPath: string) => projectVfs.rename(oldPath, newPath),
+			delete: (path: string) => projectVfs.delete(path),
+			mkdir: (path: string) => projectVfs.mkdir(path),
 		};
 
 		// Create the instance — both App and Sidebar will use it
@@ -169,12 +307,31 @@ const RocketApp: React.FC<ShellAppProps> = (_props) => {
 		}
 
 		setReady(true);
+		})();
 
 		return () => {
+			cancelled = true;
 			destroyDocs();
 			setReady(false);
 		};
-	}, [client, loaded]);
+		// workspaceScopeKey (not the scope object) keys the rebuild: the
+		// bootstrap must re-run only when the scope MATERIALLY changes.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [client, loaded, activeAppId, workspaceScopeKey]);
+
+	// --- Setting changes flow to the policy (the single mode owner) -----------
+
+	useEffect(() => {
+		if (!ready) return;
+		try {
+			getWorkspace().policy.setMode(settingAutoCommit);
+			setModeSwitchBlocked(false);
+		} catch (err) {
+			// step: pending changes block manual -> auto; the prompt decides
+			if (err instanceof ModeSwitchBlockedError) setModeSwitchBlocked(true);
+			else throw err;
+		}
+	}, [settingAutoCommit, ready]);
 
 	// --- Sign-out -------------------------------------------------------------
 	// Logout is handled entirely by the shell, in-place: handleLogout switches the
@@ -189,13 +346,63 @@ const RocketApp: React.FC<ShellAppProps> = (_props) => {
 	// its state from the shared singletons, so the slot registration is stable.
 	const sidebar = useMemo(() => <SidebarProvider />, []);
 
-	// The layout declaration: two columns (pipelines Explorer) + status bar.
-	// The sidebar only mounts once Documents is ready — SidebarProvider shares
-	// the singleton with the editor surface.
+	// Explorer and Source Control bring their OWN panel content (the raw
+	// workspace tree and the pending-changes list); memoized once so a badge
+	// update never remounts them (an element identity change would drop tree
+	// expansion and scroll state).
+	const explorerNode = useMemo(() => <WorkspaceExplorerProvider />, []);
+	const scmNode = useMemo(() => <ScmProvider />, []);
+
+	// The workbench rail containers, VS Code's order: Explorer first, then
+	// Source Control, then this platform's modes. Agent carries isDefault —
+	// rail POSITION and startup view are independent. The four mode
+	// containers are deliberately WITHOUT content: they share the one
+	// SidebarProvider node above, which mirrors the rail's selection through
+	// useSidebarActiveView(), so there is exactly one data owner behind the
+	// rail (one task monitor, one store scan) exactly as before. Icons are
+	// VS Code's own (codicons) wherever an exact analogue exists; Agent
+	// gets its own animated robot glyph — VS Code has no agent concept to
+	// borrow from.
+	const sidebarViews = useMemo<SidebarViewContainer[]>(() => [
+		{ id: 'explorer', title: 'Explorer', icon: <CodiconFiles size={20} />, content: explorerNode },
+		{ id: 'scm', title: 'Source Control', icon: <CodiconSourceControl size={20} />, content: scmNode, ...(pendingCount > 0 ? { badge: pendingCount } : {}) },
+		{ id: 'agent', title: 'Agent', icon: <AgentIcon size={20} />, isDefault: true },
+		{ id: 'apps', title: 'Apps', icon: <CodiconExtensions size={20} /> },
+		{ id: 'nodes', title: 'Nodes', icon: <CodiconCircuitBoard size={20} /> },
+		{ id: 'pipelines', title: 'Pipelines', icon: <CodiconTypeHierarchy size={20} /> },
+	], [explorerNode, scmNode, pendingCount]);
+
+	// The layout declaration: VS Code-style chrome (activity rail + panel) +
+	// status bar. The sidebar only mounts once Documents is ready —
+	// SidebarProvider shares the singleton with the editor surface. Below the
+	// compact breakpoint the shell renders the classic drawer regardless of
+	// mode, where SidebarProvider falls back to its own tab strip.
 	if (!ready) return <AppLayout showStatus><div style={styles.welcome}>Initialising...</div></AppLayout>;
 	return (
-		<AppLayout sidebar={sidebar} showStatus>
+		<AppLayout sidebar={sidebar} sidebarMode="vscode" sidebarViews={sidebarViews} showStatus status={statusNode}>
 			<RocketAppReady docs={getDocs()!} />
+			{discardConfirm && (
+				<ConfirmDialog
+					title="Discard all pending changes"
+					message={`Discard ${pendingCount} uncommitted change(s)? Your workspace returns to the last committed state; this cannot be undone.`}
+					confirmLabel="Discard all"
+					destructive
+					onConfirm={() => { void discardAllPending(); }}
+					onCancel={() => setDiscardConfirm(false)}
+				/>
+			)}
+			{modeSwitchBlocked && (
+				<ConfirmDialog
+					title="Uncommitted changes"
+					message={modeSwitchError ?? `Auto-commit is on, but ${getWorkspace().view.changedPaths().size} change(s) are still pending from manual mode. Commit them to the server (or discard them) to enter auto-commit, or stay in manual mode.`}
+					confirmLabel="Commit all"
+					secondaryLabel="Discard all"
+					cancelLabel="Stay in manual"
+					onConfirm={() => { void resolveModeSwitch('commit'); }}
+					onSecondary={() => { void resolveModeSwitch('discard'); }}
+					onCancel={() => { setModeSwitchBlocked(false); setModeSwitchError(null); }}
+				/>
+			)}
 		</AppLayout>
 	);
 };
@@ -396,6 +603,10 @@ const RocketEditorContent: React.FC<{
 	if (uri.startsWith('agent:')) return <AgentProvider sessionId={uri.slice('agent:'.length)} />;
 	// Embedded "Introduction to ..." pages from the sidebar modes.
 	if (uri.startsWith('intro:')) return <IntroProvider mode={uri.slice('intro:'.length)} />;
+	// Workspace Explorer's read-only text viewer for files with no designer.
+	if (uri.startsWith('file:')) return <FileProvider path={uri.slice('file:'.length)} />;
+	// Source Control's unified diff of one pending change.
+	if (uri.startsWith('diff:')) return <DiffProvider path={uri.slice('diff:'.length)} />;
 	// App Builder panels persist per-panel view state (the active stage)
 	// through the editor's view-state row — the same channel the pipeline
 	// editor uses — so two panels of one app restore independently.

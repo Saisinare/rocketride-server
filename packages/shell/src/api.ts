@@ -258,6 +258,8 @@ import { Modal, CLOSE_GLYPH, acquireOverlayLayer, isTopOverlayLayer, releaseOver
 import { SaveFileDialog } from './components/save-file-dialog/SaveFileDialog';
 import { SidebarMenu } from './components/sidebar-menu/SidebarMenu';
 import { SidebarCollapsedProvider, SidebarCollapsedGate, useSidebarCollapsed } from './components/sidebar-menu/SidebarCollapsedContext';
+import { SidebarActiveViewProvider, useSidebarActiveView } from './components/sidebar-menu/SidebarActiveViewContext';
+import { viewsFromMenu, menuSectionEntries } from './components/sidebar-menu/viewsFromMenu';
 import { SidebarFooter } from './components/sidebar-footer/SidebarFooter';
 import { DataGrid } from './components/data-grid/DataGrid';
 import { CardDataGrid } from './components/data-grid/CardDataGrid';
@@ -298,6 +300,12 @@ export {
 	SaveFileDialog,
 	SidebarMenu, SidebarCollapsedProvider, SidebarCollapsedGate,
 	useSidebarCollapsed, SidebarFooter,
+	// Workbench sidebar modes ('vscode'/'cursor'): the active-view channel
+	// shared sidebar content reads when the shell rail owns the selection.
+	SidebarActiveViewProvider, useSidebarActiveView,
+	// Opt-in projection of a menu-shaped sidebar onto the activity rail
+	// (sections -> rail views); never applied automatically by the shell.
+	viewsFromMenu, menuSectionEntries,
 	DataGrid, CardDataGrid, FilterStrip, createActionsColumn, autoFormatter,
 	badgeEl, buttonEl, avatarEl, monoEl, mutedEl, matchesSearch,
 	createMessageGridPersistence, GRID_CONFIG_GET, GRID_CONFIG_SET,
@@ -338,6 +346,10 @@ export type { IConfirmDialogProps } from './components/modal/ConfirmDialog';
 export type { ISaveFileDialogProps, ISaveFileType } from './components/save-file-dialog/SaveFileDialog';
 export type { ISidebarMenuProps } from './components/sidebar-menu/SidebarMenu';
 export type { ISidebarCollapsedProviderProps, ISidebarCollapsedGateProps } from './components/sidebar-menu/SidebarCollapsedContext';
+export type { SidebarActiveView, ISidebarActiveViewProviderProps } from './components/sidebar-menu/SidebarActiveViewContext';
+// Sidebar chrome declaration types (AppLayout's sidebarMode/sidebarViews).
+export type { ShellSidebarMode, SidebarViewContainer } from './types/sidebarChrome';
+export type { ViewsFromMenuOptions } from './components/sidebar-menu/viewsFromMenu';
 export type { SidebarFooterProps, SidebarFooterMenuItem } from './components/sidebar-footer/SidebarFooter';
 export type { IDataGridProps, IDataGridHandle, IDataGridPage, IDataGridPageRequest } from './components/data-grid/DataGrid';
 export type { ICardDataGridProps } from './components/data-grid/CardDataGrid';
@@ -445,6 +457,8 @@ export const shellApi = {
 	get SidebarCollapsedProvider() { return SidebarCollapsedProvider; },
 	get SidebarCollapsedGate() { return SidebarCollapsedGate; },
 	get useSidebarCollapsed() { return useSidebarCollapsed; },
+	get SidebarActiveViewProvider() { return SidebarActiveViewProvider; },
+	get useSidebarActiveView() { return useSidebarActiveView; },
 	get SidebarFooter() { return SidebarFooter; },
 	get DataGrid() { return DataGrid; },
 	get CardDataGrid() { return CardDataGrid; },

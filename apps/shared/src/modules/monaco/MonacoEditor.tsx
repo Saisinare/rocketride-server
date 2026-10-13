@@ -56,6 +56,15 @@ export interface IMonacoEditorProps {
 	value?: string;
 	/** Language id for value mode. */
 	language?: string;
+	/**
+	 * Stable model URI for value mode (e.g. 'file:///workspace/src/App.tsx').
+	 * With a real file path the TS worker resolves the script kind from the
+	 * extension (.tsx = JSX) and the model participates in module resolution
+	 * against registered extraLibs — an anonymous inmemory model does neither.
+	 * URI-keyed models are PAGE-LIFETIME: reused when already present and
+	 * never disposed on unmount (another tab may share them).
+	 */
+	uri?: string;
 	/** Change callback (both modes). */
 	onChange?: (value: string) => void;
 	/** Runs before the editor is created (extra setup on the namespace). */
@@ -105,19 +114,21 @@ const DEFAULT_OPTIONS: MonacoEditorNs.IStandaloneEditorConstructionOptions = {
  *
  * @param props - See {@link IMonacoEditorProps}.
  */
-export const MonacoEditor: React.FC<IMonacoEditorProps> = ({ model, value, language, onChange, beforeMount, onMount, options }) => {
+export const MonacoEditor: React.FC<IMonacoEditorProps> = ({ model, value, language, uri, onChange, beforeMount, onMount, options }) => {
 	const containerRef = useRef<HTMLDivElement | null>(null);
 	const editorRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null);
 	const monacoRef = useRef<Monaco | null>(null);
 	/** The internally owned model (value mode only). */
 	const ownedModelRef = useRef<MonacoEditorNs.ITextModel | null>(null);
+	/** True when the value-mode model is URI-keyed — page-lifetime, never disposed. */
+	const persistentModelRef = useRef(false);
 	/** Suppresses onChange echoes while the component itself sets text. */
 	const silentRef = useRef(false);
 	const themeVersion = useThemeVersion();
 
 	// Latest props for the async create step (create runs once).
-	const propsRef = useRef({ model, value, language, onChange, beforeMount, onMount, options });
-	propsRef.current = { model, value, language, onChange, beforeMount, onMount, options };
+	const propsRef = useRef({ model, value, language, uri, onChange, beforeMount, onMount, options });
+	propsRef.current = { model, value, language, uri, onChange, beforeMount, onMount, options };
 
 	// ── Create once ──────────────────────────────────────────────────────
 	useEffect(() => {
@@ -131,6 +142,26 @@ export const MonacoEditor: React.FC<IMonacoEditorProps> = ({ model, value, langu
 			p.beforeMount?.(monaco);
 			// step: pick the binding — caller model, or an owned value model
 			let boundModel = p.model ?? null;
+			if (!boundModel && p.uri) {
+				// step: URI-keyed value model — reuse an existing model at this
+				// URI (another tab, an earlier mount) or create it there. These
+				// persist for the page: never disposed on unmount, so a shared
+				// model cannot be pulled out from under a sibling editor.
+				const parsed = monaco.Uri.parse(p.uri);
+				const existing = monaco.editor.getModel(parsed);
+				if (existing) {
+					if (p.value !== undefined && existing.getValue() !== p.value) {
+						silentRef.current = true;
+						existing.setValue(p.value);
+						silentRef.current = false;
+					}
+					boundModel = existing;
+				} else {
+					boundModel = monaco.editor.createModel(p.value ?? '', p.language ?? 'plaintext', parsed);
+				}
+				ownedModelRef.current = boundModel;
+				persistentModelRef.current = true;
+			}
 			if (!boundModel) {
 				boundModel = monaco.editor.createModel(p.value ?? '', p.language ?? 'plaintext');
 				ownedModelRef.current = boundModel;
@@ -153,7 +184,9 @@ export const MonacoEditor: React.FC<IMonacoEditorProps> = ({ model, value, langu
 			disposed = true;
 			editorRef.current?.dispose();
 			editorRef.current = null;
-			ownedModelRef.current?.dispose();
+			// step: anonymous value models die with the editor; URI-keyed ones
+			// are page-lifetime (see the uri prop contract)
+			if (!persistentModelRef.current) ownedModelRef.current?.dispose();
 			ownedModelRef.current = null;
 		};
 	}, []);

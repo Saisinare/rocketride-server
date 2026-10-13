@@ -60,6 +60,15 @@
 	--rr-font-size-widget: var(--vscode-font-size, 13px);
 
 	/* ================================================================== */
+	/* Workbench activity rail                                             */
+	/* ================================================================== */
+
+	--rr-bg-rail: var(--vscode-activityBar-background, #2c2c2c);
+	--rr-bg-rail-hover: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.12));
+	--rr-fg-rail: var(--vscode-activityBar-inactiveForeground, rgba(255, 255, 255, 0.6));
+	--rr-fg-rail-active: var(--vscode-activityBar-foreground, #ffffff);
+
+	/* ================================================================== */
 	/* Text                                                                */
 	/* ================================================================== */
 

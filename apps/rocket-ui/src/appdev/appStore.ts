@@ -38,6 +38,7 @@
 import { PROJECT_DIR } from 'rocketride';
 import type { RocketRideClient } from 'shell';
 import { emitFsChange } from 'shared/utils/fsNotify';
+import { getStagedWorkspace, getWorkspaceVfs, toScopedStorePath } from '../workspace/workspace';
 import { renderTemplate } from 'shared/modules/appdev';
 import type { FrameOptions, PackageJsonLike, TemplateName } from 'shared/modules/appdev';
 
@@ -54,12 +55,19 @@ const MAX_PREVIEW_BYTES = 512 * 1024;
 /**
  * The store path of a file inside an app folder.
  *
+ * ESCAPE-HATCH ONLY: consumers speak VIRTUAL paths ('apps/<folder>/...')
+ * through the workspace view; this physical mapping exists solely for the
+ * raw binary reads the text-only view contract cannot serve yet
+ * (readAppImageDataUri, pack's fsReadMany batch).
+ *
  * @param folder - The app's folder name under .appdev (e.g. 'brandy-ui').
  * @param rel - App-folder-relative POSIX path ('' = the folder itself).
  * @returns The full store path.
  */
 export function appPath(folder: string, rel = ''): string {
-	return rel ? `${PROJECT_DIR}/${APPDEV_DIR}/${folder}/${rel}` : `${PROJECT_DIR}/${APPDEV_DIR}/${folder}`;
+	// step: through the workspace scope — the raw reads must hit the SAME
+	// tree (user or team) the view translates into.
+	return toScopedStorePath(rel ? `${PROJECT_DIR}/${APPDEV_DIR}/${folder}/${rel}` : `${PROJECT_DIR}/${APPDEV_DIR}/${folder}`);
 }
 
 // =============================================================================
@@ -110,14 +118,17 @@ export interface StoredApp {
  * Lists the folder names under .appdev ([] when the directory does not
  * exist yet — nothing has been scaffolded).
  *
- * @param client - The connected RocketRide client.
  * @returns Folder names, unsorted.
  */
-export async function listAppFolders(client: RocketRideClient): Promise<string[]> {
+export async function listAppFolders(): Promise<string[]> {
 	try {
-		const result = await client.fsListDir(`${PROJECT_DIR}/${APPDEV_DIR}`);
-		return (result.entries ?? []).filter((e) => e.type === 'dir').map((e) => e.name);
-	} catch {
+		// step: through the workspace VIEW so staged (uncommitted) apps list too
+		const entries = await getWorkspaceVfs().list('apps');
+		return entries.filter((e) => e.type === 'dir').map((e) => e.name);
+	} catch (err) {
+		// Named, not swallowed: an empty MY APPS with a healthy workspace is
+		// this failing — the console must say why.
+		console.log('[appStore] listing apps/ failed:', err);
 		return [];
 	}
 }
@@ -127,17 +138,19 @@ export async function listAppFolders(client: RocketRideClient): Promise<string[]
  * carries an appManifest with an id. Unreadable folders are skipped, not
  * fatal — a half-written scaffold must not hide the rest of the list.
  *
- * @param client - The connected RocketRide client.
  * @returns The scanned apps, sorted by display name.
  */
-export async function scanApps(client: RocketRideClient): Promise<StoredApp[]> {
-	const folders = await listAppFolders(client);
+export async function scanApps(): Promise<StoredApp[]> {
+	const folders = await listAppFolders();
 	const apps: StoredApp[] = [];
 	for (const folder of folders) {
 		try {
-			const pkg = await readAppPackage(client, folder);
+			const pkg = await readAppPackage(folder);
 			const m = (pkg.appManifest ?? {}) as Record<string, unknown>;
-			if (typeof m.id !== 'string' || !m.id) continue;
+			if (typeof m.id !== 'string' || !m.id) {
+				console.log('[appStore] skipping apps/' + folder + ' — package.json has no appManifest.id');
+				continue;
+			}
 			apps.push({
 				id: m.id,
 				name: typeof m.name === 'string' && m.name ? m.name : (pkg.name ?? m.id),
@@ -146,7 +159,10 @@ export async function scanApps(client: RocketRideClient): Promise<StoredApp[]> {
 				version: typeof pkg.version === 'string' ? pkg.version : '',
 				description: typeof m.description === 'string' ? m.description : '',
 			});
-		} catch {
+		} catch (err) {
+			// A half-written scaffold must not hide the rest of the list —
+			// but the skip has to be VISIBLE, or "no apps" is undebuggable.
+			console.log('[appStore] skipping apps/' + folder + ' — package.json unreadable:', err);
 			continue;
 		}
 	}
@@ -160,29 +176,26 @@ export async function scanApps(client: RocketRideClient): Promise<StoredApp[]> {
 /**
  * Reads and parses an app folder's package.json.
  *
- * @param client - The connected RocketRide client.
  * @param folder - The app's folder name under .appdev.
  * @returns The parsed package.json object.
  */
-export async function readAppPackage(client: RocketRideClient, folder: string): Promise<PackageJsonLike> {
-	return JSON.parse(await client.fsReadString(appPath(folder, 'package.json'))) as PackageJsonLike;
+export async function readAppPackage(folder: string): Promise<PackageJsonLike> {
+	// step: through the workspace VIEW — staged manifest edits are visible
+	return JSON.parse(String(await getWorkspaceVfs().read(`apps/${folder}/package.json`))) as PackageJsonLike;
 }
 
 /**
  * Serializes and writes an app folder's package.json (tab-indented, like
- * the scaffold emits it), announcing the write on the notification bus.
+ * the scaffold emits it) through the workspace view — the write stages or
+ * passes through per the commit mode, and the view's backend announces it.
  *
- * @param client - The connected RocketRide client.
  * @param folder - The app's folder name under .appdev.
  * @param pkg - The parsed package.json object to persist.
  * @param origin - The writer's identity for the onFsChange notification
- *                 ('' when the writer holds no dev session, e.g. the
- *                 Store pane's listing save).
+ *                 (a dev-session id; omitted = the backend default).
  */
-export async function writeAppPackage(client: RocketRideClient, folder: string, pkg: PackageJsonLike, origin = ''): Promise<void> {
-	const uri = appPath(folder, 'package.json');
-	await client.fsWriteString(uri, `${JSON.stringify(pkg, null, '\t')}\n`);
-	emitFsChange(uri, origin);
+export async function writeAppPackage(folder: string, pkg: PackageJsonLike, origin?: string): Promise<void> {
+	await getWorkspaceVfs().write(`apps/${folder}/package.json`, `${JSON.stringify(pkg, null, '\t')}\n`, origin);
 }
 
 // =============================================================================
@@ -191,16 +204,16 @@ export async function writeAppPackage(client: RocketRideClient, folder: string, 
 
 /**
  * Reads one app-folder-relative TEXT file for preview (icon SVG, README
- * markdown). Traversal-guarded; size-capped after the read (the store has
- * no cheap stat, and preview files are small by convention).
+ * markdown) through the workspace view, so staged edits preview live.
+ * Traversal-guarded; size-capped after the read (the store has no cheap
+ * stat, and preview files are small by convention).
  *
- * @param client - The connected RocketRide client.
  * @param folder - The app's folder name under .appdev.
  * @param relPath - App-folder-relative path from the manifest.
  * @returns The file text.
  */
-export async function readAppText(client: RocketRideClient, folder: string, relPath: string): Promise<string> {
-	const text = await client.fsReadString(appPath(folder, safeRel(relPath)));
+export async function readAppText(folder: string, relPath: string): Promise<string> {
+	const text = String(await getWorkspaceVfs().read(`apps/${folder}/${safeRel(relPath)}`));
 	if (text.length > MAX_PREVIEW_BYTES) throw new Error('File is over the 512KB preview limit.');
 	return text;
 }
@@ -219,6 +232,10 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
  * Reads one app-folder-relative IMAGE as a data: URI (README images are
  * binary — a text read would corrupt them). Uses the batch read op for the
  * one-shot binary fetch.
+ *
+ * RAW BY DESIGN: this is the documented binary escape hatch — the view
+ * contract is text-only (see vfsTypes), so binary assets read the store
+ * directly until view binary reads land.
  *
  * @param client - The connected RocketRide client.
  * @param folder - The app's folder name under .appdev.
@@ -243,17 +260,16 @@ export async function readAppImageDataUri(client: RocketRideClient, folder: stri
 }
 
 /**
- * Whether an app-folder-relative file exists in the store.
+ * Whether an app-folder-relative file exists in the workspace (staged
+ * creations count; staged deletions do not).
  *
- * @param client - The connected RocketRide client.
  * @param folder - The app's folder name under .appdev.
  * @param relPath - App-folder-relative path from the manifest.
- * @returns True when readable.
+ * @returns True when present.
  */
-export async function appFileExists(client: RocketRideClient, folder: string, relPath: string): Promise<boolean> {
+export async function appFileExists(folder: string, relPath: string): Promise<boolean> {
 	try {
-		const [entry] = await client.fsReadMany([appPath(folder, safeRel(relPath))]);
-		return !!entry?.ok;
+		return (await getWorkspaceVfs().stat(`apps/${folder}/${safeRel(relPath)}`)) !== null;
 	} catch {
 		return false;
 	}
@@ -279,21 +295,22 @@ export interface ScaffoldRequest {
 
 /**
  * Scaffolds a new app into `.appdev/<appName>-ui/`: renders the shared
- * template set and writes every file into the store VFS. Nothing else — no
- * install, no tgz vendoring (the design loop compiles in the browser and
- * the server build materializes its own toolchain).
+ * template set and writes every file through the workspace view — in
+ * manual mode the whole scaffold stages (and rolls back) as one
+ * checkpoint. Nothing else — no install, no tgz vendoring (the design
+ * loop compiles in the browser and the server build materializes its own
+ * toolchain).
  *
- * @param client - The connected RocketRide client.
  * @param req - The scaffold inputs.
  * @returns The created app's id and folder name.
  */
-export async function scaffoldApp(client: RocketRideClient, req: ScaffoldRequest): Promise<{ appId: string; folder: string }> {
+export async function scaffoldApp(req: ScaffoldRequest): Promise<{ appId: string; folder: string }> {
 	const appId = `${req.publisher}.${req.appName}`;
 	const folder = `${req.appName}-ui`;
 
 	// step: refuse a live collision (the form checks too, but the scan can
 	// be stale by the time Create lands)
-	const existing = await listAppFolders(client);
+	const existing = await listAppFolders();
 	if (existing.includes(folder)) throw new Error(`Folder "${APPDEV_DIR}/${folder}" already exists.`);
 
 	// step: render the shared template set — identical files to the VSCode
@@ -307,12 +324,15 @@ export async function scaffoldApp(client: RocketRideClient, req: ScaffoldRequest
 		previewUrl: `${window.location.origin}/?appid=${encodeURIComponent(appId)}&rrdev=1`,
 	}, req.frame);
 
-	// step: write every file (nested store paths create parents implicitly)
+	// step: write every file through the view (nested store paths create
+	// parents implicitly; the backend announces each write)
+	const view = getWorkspaceVfs();
 	for (const file of files) {
-		const uri = appPath(folder, file.path);
-		await client.fsWriteString(uri, file.content);
-		emitFsChange(uri, 'scaffold');
+		await view.write(`apps/${folder}/${file.path}`, file.content, 'scaffold');
 	}
+	// step: one checkpoint per scaffold — in manual mode the whole scaffold
+	// becomes a single reviewable/rollbackable unit (no-op in auto mode)
+	await getStagedWorkspace().checkpoint(`Scaffold ${appId}`);
 
 	return { appId, folder };
 }

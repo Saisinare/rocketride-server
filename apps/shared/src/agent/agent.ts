@@ -54,10 +54,10 @@ export type AgentCallback = (type: string, content: string) => void;
  * The low-level agent transport — the seam the real backend call replaces.
  * The stub answers every request with a single content chunk.
  *
- * @param request - The user's request text.
+ * @param _request - The user's request text (unused by the stub).
  * @param callback - Receives each output chunk as (type, content).
  */
-export async function agent(request: string, callback: AgentCallback): Promise<void> {
+export async function agent(_request: string, callback: AgentCallback): Promise<void> {
 	callback('content', 'TO DO');
 }
 

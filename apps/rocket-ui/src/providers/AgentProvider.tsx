@@ -48,6 +48,7 @@ import { ChatView, useChatMessages, useShellConnection, commonStyles } from 'she
 import type { TextResult } from 'shell';
 import { AgentSession } from 'shared/agent/agent';
 import { buttonize } from 'shared/utils/buttonize';
+import { AgentIcon } from '../components/AgentIcon';
 
 // =============================================================================
 // EXAMPLE PROMPTS
@@ -99,6 +100,21 @@ const styles: Record<string, CSSProperties> = {
 		padding: '24px 28px',
 		textAlign: 'center',
 	},
+	// Header row: the agent glyph beside the title + lede block. The row is
+	// left-aligned internally (an icon beside centered text reads lopsided)
+	// but centered as a unit by the welcome column.
+	welcomeHeader: {
+		display: 'flex',
+		alignItems: 'center',
+		gap: 16,
+		textAlign: 'left',
+		marginBottom: 28,
+	},
+	welcomeIcon: {
+		flexShrink: 0,
+		display: 'flex',
+		color: 'var(--rr-text-primary)',
+	},
 	welcomeTitle: {
 		fontSize: 20,
 		fontWeight: 600,
@@ -110,7 +126,6 @@ const styles: Record<string, CSSProperties> = {
 		color: 'var(--rr-text-secondary)',
 		maxWidth: 520,
 		lineHeight: 1.5,
-		marginBottom: 28,
 	},
 	// Example prompt cards — two columns, clicking sends the prompt.
 	exampleGrid: {
@@ -229,8 +244,13 @@ const AgentConversation: React.FC<{ session: AgentSession; isConnected: boolean 
 	// for, plus example prompts that send on click.
 	const welcome = (
 		<div style={styles.welcome}>
-			<div style={styles.welcomeTitle}>What should the agent build for you?</div>
-			<div style={styles.welcomeLede}>The agent works across your whole workspace — it can create and modify pipelines, apps, and nodes, run and validate them, and investigate failures. Try one of these, or describe your own task below.</div>
+			<div style={styles.welcomeHeader}>
+				<div style={styles.welcomeIcon}><AgentIcon size={64} /></div>
+				<div>
+					<div style={styles.welcomeTitle}>What do you want me to build for you today?</div>
+					<div style={styles.welcomeLede}>I work across your whole workspace — I can create and modify pipelines, apps, and nodes, run and validate them, and investigate failures. Try one of these, or describe your own task below.</div>
+				</div>
+			</div>
 			<div style={styles.exampleGrid}>
 				{EXAMPLE_PROMPTS.map((example) => (
 					<ExampleCard key={example.heading} heading={example.heading} prompt={example.prompt} onPick={handleSend} />

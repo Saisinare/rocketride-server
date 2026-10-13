@@ -134,6 +134,19 @@ export class CachedVfs implements IVirtualFileSystem {
 	}
 
 	/**
+	 * The type of a path, loading the tree inventory first when it has not
+	 * been walked yet — the ASYNC counterpart of entryType() for callers
+	 * that must have a real answer (e.g. a rename's directory guard).
+	 *
+	 * @param path - The relative path.
+	 * @returns 'file' | 'dir', or null when the path does not exist.
+	 */
+	async stat(path: string): Promise<'file' | 'dir' | null> {
+		if (!this.treeLoaded) await this.refresh();
+		return this.entryType(path);
+	}
+
+	/**
 	 * Records an entry (plus its ancestor directories) without a backend
 	 * round trip — for adopting externally announced changes.
 	 *
@@ -193,6 +206,33 @@ export class CachedVfs implements IVirtualFileSystem {
 	invalidate(path?: string): void {
 		if (path === undefined) this.contents.clear();
 		else this.contents.delete(path);
+	}
+
+	/**
+	 * The cached content of a path — the BASELINE an open editor buffer was
+	 * read from (undefined = never read/primed). Synchronous and side-effect
+	 * free: the freshness gate compares this against peekBase() before a
+	 * write-through save.
+	 *
+	 * @param path - The relative file path.
+	 * @returns The cached content, or undefined when not cached.
+	 */
+	cachedContent(path: string): unknown {
+		return this.contents.get(path);
+	}
+
+	/**
+	 * Reads CURRENT backend truth, bypassing overlays AND the content cache
+	 * — and deliberately NOT updating the cache: the cache is the baseline
+	 * an open buffer was read from, and a freshness probe that replaced it
+	 * would make the very conflict it just detected invisible to the next
+	 * probe (a blind retry-save would then pass the gate).
+	 *
+	 * @param path - The relative file path.
+	 * @returns The backend's current content.
+	 */
+	peekBase(path: string): Promise<unknown> {
+		return this.backend.read(path);
 	}
 
 	/**
@@ -284,13 +324,50 @@ export class CachedVfs implements IVirtualFileSystem {
 	}
 
 	/**
+	 * Reads many files in one call: dirty overlays and cache hits answer
+	 * locally; the misses go to the backend in ONE batch when it offers
+	 * readMany (falling back to parallel single reads). Unreadable paths
+	 * are OMITTED from the result rather than failing the batch.
+	 *
+	 * @param paths - Relative file paths.
+	 * @returns Map of path to content for every readable path.
+	 */
+	async readMany(paths: string[]): Promise<Map<string, unknown>> {
+		const out = new Map<string, unknown>();
+		const misses: string[] = [];
+		for (const path of paths) {
+			const overlay = this.overlays.get(path);
+			if (overlay?.isDirty()) { out.set(path, overlay.getContent()); continue; }
+			if (this.contents.has(path)) { out.set(path, this.contents.get(path)); continue; }
+			misses.push(path);
+		}
+		if (misses.length === 0) return out;
+		if (this.backend.readMany) {
+			for (const [path, content] of await this.backend.readMany(misses)) {
+				this.contents.set(path, content);
+				out.set(path, content);
+			}
+			return out;
+		}
+		await Promise.all(misses.map(async (path) => {
+			try {
+				const content = await this.backend.read(path);
+				this.contents.set(path, content);
+				out.set(path, content);
+			} catch { /* unreadable — omitted by contract */ }
+		}));
+		return out;
+	}
+
+	/**
 	 * Writes one file through the backend and updates the caches.
 	 *
 	 * @param path - Relative file path.
 	 * @param content - The content to persist.
+	 * @param origin - The writer's identity, forwarded to the backend.
 	 */
-	async write(path: string, content: unknown): Promise<void> {
-		await this.backend.write(path, content);
+	async write(path: string, content: unknown, origin?: string): Promise<void> {
+		await this.backend.write(path, content, origin);
 		this.ensureEntry(path, 'file');
 		this.contents.set(path, content);
 		this.notify();
@@ -301,9 +378,10 @@ export class CachedVfs implements IVirtualFileSystem {
 	 *
 	 * @param oldPath - Current relative path.
 	 * @param newPath - New relative path.
+	 * @param origin - The writer's identity, forwarded to the backend.
 	 */
-	async rename(oldPath: string, newPath: string): Promise<void> {
-		await this.backend.rename(oldPath, newPath);
+	async rename(oldPath: string, newPath: string, origin?: string): Promise<void> {
+		await this.backend.rename(oldPath, newPath, origin);
 		const type = this.entries.get(oldPath) ?? 'file';
 		// step: migrate the subtree's cached entries/content to the new prefix
 		const prefix = `${oldPath}/`;
@@ -320,9 +398,10 @@ export class CachedVfs implements IVirtualFileSystem {
 	 * Deletes through the backend and evicts the cached subtree.
 	 *
 	 * @param path - Relative path to delete.
+	 * @param origin - The writer's identity, forwarded to the backend.
 	 */
-	async delete(path: string): Promise<void> {
-		await this.backend.delete(path);
+	async delete(path: string, origin?: string): Promise<void> {
+		await this.backend.delete(path, origin);
 		this.evict(path);
 		this.notify();
 	}
@@ -331,9 +410,10 @@ export class CachedVfs implements IVirtualFileSystem {
 	 * Creates a directory through the backend and records it.
 	 *
 	 * @param path - Relative directory path.
+	 * @param origin - The writer's identity, forwarded to the backend.
 	 */
-	async mkdir(path: string): Promise<void> {
-		await this.backend.mkdir(path);
+	async mkdir(path: string, origin?: string): Promise<void> {
+		await this.backend.mkdir(path, origin);
 		this.ensureEntry(path, 'dir');
 		this.notify();
 	}

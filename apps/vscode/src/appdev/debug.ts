@@ -21,8 +21,7 @@ import { mkdirSync } from 'fs';
 import { ConnectionManager } from '../connection/connection';
 import { scanWorkspaceApps } from './appScan';
 import { resolveBrowserDebugTarget } from './browser';
-import { DEV_SESSION_NONCE } from './devSession';
-import { ensureWatch } from './watchManager';
+import { ensureWatch, getWatchManager } from './watchManager';
 
 // =============================================================================
 // DEBUG LAUNCH
@@ -54,7 +53,11 @@ export async function debugApp(appId: string, profileDir: string): Promise<void>
 	mkdirSync(profileDir, { recursive: true });
 
 	// Standard js-debug external-browser launch (stock UI from here on).
-	const base = (ConnectionManager.getInstance().getHttpUrl?.() || 'http://localhost:5565').replace(/\/$/, '');
+	// The tab loads the shell THROUGH THE DEV PROXY origin: the proxy serves
+	// `/apps/<id>/dev/**` from disk and passes everything else to the engine,
+	// and the shell self-registers the dev app from that URL convention.
+	const devOrigin = await getWatchManager()?.whenReady(appId);
+	const base = (devOrigin || ConnectionManager.getInstance().getHttpUrl?.() || 'http://localhost:5565').replace(/\/$/, '');
 	const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(app.folder));
 	// The developer's default browser when Chromium-based; Edge otherwise
 	const browser = await resolveBrowserDebugTarget();
@@ -63,9 +66,9 @@ export async function debugApp(appId: string, profileDir: string): Promise<void>
 		type: browser.type,
 		...(browser.runtimeExecutable ? { runtimeExecutable: browser.runtimeExecutable } : {}),
 		request: 'launch',
-		// rrsession routes the browser preview to THIS editor's dev-overlay
-		// entry when several editors dev-serve the same app.
-		url: `${base}/?appid=${encodeURIComponent(appId)}&rrdev=1&rrsession=${DEV_SESSION_NONCE}`,
+		// rrdev=1 on a top-level tab makes the shell self-register the dev
+		// app by URL convention (manifest + entry from /apps/<id>/dev/).
+		url: `${base}/?appid=${encodeURIComponent(appId)}&rrdev=1`,
 		// The app bundles' sourcemaps carry sources RELATIVE to the build
 		// root's parent (the workspace root), e.g.
 		// "../../../../../../apps/home-ui/src/HomeApp.tsx" — the browser

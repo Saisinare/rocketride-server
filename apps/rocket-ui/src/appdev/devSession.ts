@@ -27,14 +27,16 @@
 /**
  * One app document's design loop. Owns:
  *
- *  - The VFS: a CachedVfs over the app folder — the tree inventory (ALL
- *    files, binary assets included), the content cache, and the dirty
- *    aggregate the Code pane's Explorer renders. Models register as
- *    overlays, so `vfs.read()` always serves the CURRENT truth (the buffer
- *    while dirty, the cache/store otherwise).
- *  - The MODEL STORE: every working-tree TEXT file as a Monaco model
- *    (per-app URI namespace file:///<appId>/...), loaded in one fsReadMany
- *    sweep; dirty tracking; saves through the VFS back to the store.
+ *  - The VFS: a lens over the shared staged workspace view, scoped to the
+ *    app folder — the tree inventory (ALL files, binary assets included),
+ *    the content cache, and the models' overlays, so `vfs.read()` always
+ *    serves the CURRENT truth (the buffer while dirty, the cache/store
+ *    otherwise).
+ *  - The MODELS: every working-tree TEXT file as a Monaco model (per-app
+ *    URI namespace file:///<appId>/...), loaded in one fsReadMany sweep —
+ *    the compiler's input. There is NO editor over them anymore (the
+ *    workspace Explorer's file tabs are the editing surface); the session
+ *    adopts those tabs' saves off the notification bus and re-renders.
  *  - The TS setup: compiler options + bundled React types + the fetched
  *    platform types (shell.d.ts, vendored SDK) + automatic type acquisition
  *    (ata.ts) for everything the source imports.
@@ -55,13 +57,16 @@ import * as LocalJsxRuntime from 'react/jsx-runtime';
 import * as LocalJsxDevRuntime from 'react/jsx-dev-runtime';
 import * as LocalRocketride from 'rocketride';
 import type { editor as MonacoEditorNs } from 'monaco-editor';
-import { ConnectionManager, CachedVfs } from 'shell';
+import { ConnectionManager } from 'shell';
+import type { IWorkspaceFileSystem } from 'shared/workspace/vfsTypes';
+import { scopedFileSystem } from 'shared/workspace/scopedFileSystem';
+import { getWorkspaceVfs, storePathToVirtual } from '../workspace/workspace';
 import type { RocketRideClient, ShellNotification } from 'shell';
-import type { AppCodeStore, ConsoleRow, AppErrorRow, WatchStatus } from 'shared/modules/appdev';
+import type { ConsoleRow, AppErrorRow, WatchStatus } from 'shared/modules/appdev';
 import { loadMonaco, setupAppTypescript, emitModel, detectLanguage } from 'shared/modules/monaco';
 import type { Monaco, TypescriptSetupHandle } from 'shared/modules/monaco';
-import { createAppVfsBackend, isTextFile, loadAppFiles, SKIP_DIRS } from './appFiles';
-import { appPath, readAppPackage } from './appStore';
+import { isTextFile } from './appFiles';
+import { readAppImageDataUri, readAppPackage, readAppText } from './appStore';
 import { fetchPlatformTypeLibs } from './typesFeed';
 import { linkModules, revokeLink, ensureLexer } from './linker';
 import type { LinkModule, LinkResult } from './linker';
@@ -120,7 +125,72 @@ function emitKey(uri: string, version: number): string {
 /**
  * The web App Builder dev session (see the module doc).
  */
+/**
+ * The registration meta handed to the preview shell: the WORKSPACE
+ * manifest's display + contribution facts, so the shell's chrome and
+ * Settings overlay track the files under development (structurally matches
+ * the shell's LocalAppMeta; this call crosses the window boundary).
+ */
+interface DevRegistrationMeta {
+	name?: string;
+	moduleId?: string;
+	description?: string;
+	version?: string;
+	/** Icon as a data: URI — workspace files have no serving route. */
+	icon?: string;
+	configuration?: Record<string, unknown>;
+	categories?: string[];
+}
+
+/** Icon size cap (chars) — mirrors the server dev overlay's discipline. */
+const ICON_MAX_CHARS = 128 * 1024;
+
 export class WebDevSession {
+	/** Workspace-manifest registration meta; refreshed with each deps settle. */
+	private registrationMeta: DevRegistrationMeta | null = null;
+
+	/**
+	 * Rebuilds the registration meta from a freshly read package.json — in
+	 * dev, the workspace manifest is the truth for name, icon, description,
+	 * version, and the settings schema. Icon resolves to a data: URI.
+	 *
+	 * @param pkg - The parsed package.json (possibly {} on read failure).
+	 */
+	private async refreshRegistrationMeta(pkg: Record<string, unknown>): Promise<void> {
+		const m = (pkg.appManifest ?? {}) as Record<string, unknown>;
+		// step: contributes.configuration preferred, bare configuration
+		// tolerated — the same extraction shape the server deploy uses
+		const contributes = m.contributes;
+		const configuration = (contributes && typeof contributes === 'object' && !Array.isArray(contributes)
+			? (contributes as Record<string, unknown>).configuration
+			: m.configuration) as Record<string, unknown> | undefined;
+		const meta: DevRegistrationMeta = {
+			name: typeof m.name === 'string' && m.name ? m.name : this.appName,
+			moduleId: typeof m.moduleId === 'string' && m.moduleId ? m.moduleId : this.moduleId,
+			description: typeof m.description === 'string' ? m.description : undefined,
+			version: typeof pkg.version === 'string' ? pkg.version : undefined,
+			configuration,
+			categories: Array.isArray(m.categories) ? (m.categories as string[]) : undefined,
+		};
+		// step: icon -> data URI; unreadable/oversize icons fall back silently
+		if (typeof m.icon === 'string' && m.icon) {
+			try {
+				const rel = m.icon.replace(/^\.\//, '');
+				if (rel.toLowerCase().endsWith('.svg')) {
+					const svg = await readAppText(this.folder, rel);
+					const uri = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+					if (uri.length <= ICON_MAX_CHARS) meta.icon = uri;
+				} else {
+					const uri = await readAppImageDataUri(this.client, this.folder, rel);
+					if (uri && uri.length <= ICON_MAX_CHARS) meta.icon = uri;
+				}
+			} catch {
+				/* icon unreadable — chrome falls back to the monogram */
+			}
+		}
+		this.registrationMeta = meta;
+	}
+
 	private readonly client: RocketRideClient;
 	private readonly appId: string;
 	private readonly folder: string;
@@ -141,11 +211,8 @@ export class WebDevSession {
 	// ── Models + dirty state ─────────────────────────────────────────────
 	private readonly models = new Map<string, MonacoEditorNs.ITextModel>();
 	private readonly dirty = new Set<string>();
-	private readonly storeListeners = new Set<() => void>();
 	/** Unregister functions for the models' VFS overlays. */
 	private readonly overlayDisposers: Array<() => void> = [];
-	/** Why open() failed ('' = it did not) — the Code pane renders this. */
-	private openError = '';
 
 	// ── Build state ──────────────────────────────────────────────────────
 	private lastLink: LinkResult | null = null;
@@ -166,15 +233,12 @@ export class WebDevSession {
 	private watchStatus: WatchStatus = { state: 'idle' };
 	private readonly watchListeners = new Set<(status: WatchStatus) => void>();
 
-	/** The Code pane's view of this session. */
-	public readonly store: AppCodeStore;
-
 	/**
 	 * The working tree as a caching VFS: the FULL inventory (binary assets
-	 * included), content cache, and the models' dirty overlays. The Code
-	 * pane's Explorer and preview panes read through this seam.
+	 * included), content cache, and the models' dirty overlays. Preview
+	 * surfaces and the build loop read through this seam.
 	 */
-	public readonly vfs: CachedVfs;
+	public readonly vfs: IWorkspaceFileSystem;
 
 	/**
 	 * @param client - The connected RocketRide client.
@@ -188,18 +252,9 @@ export class WebDevSession {
 		this.folder = folder;
 		this.appName = appName;
 		this.moduleId = appId.replace(/[^a-zA-Z0-9_$]/g, '_');
-		this.vfs = new CachedVfs(createAppVfsBackend(client, folder, this.sessionId), { skipDirs: SKIP_DIRS });
-		this.store = {
-			listFiles: () => [...this.models.keys()].sort(),
-			getModel: (path) => this.models.get(path) ?? null,
-			isDirty: (path) => this.dirty.has(path),
-			save: (path) => this.saveFile(path),
-			getLoadError: () => this.openError || null,
-			subscribe: (listener) => {
-				this.storeListeners.add(listener);
-				return () => this.storeListeners.delete(listener);
-			},
-		};
+		// step: a prefix lens over the ONE shared staged workspace view —
+		// editor overlays, staged state, and agent writes all converge there
+		this.vfs = scopedFileSystem(getWorkspaceVfs(), `apps/${folder}`);
 	}
 
 	// =========================================================================
@@ -210,9 +265,9 @@ export class WebDevSession {
 	 * Opens the session: loads Monaco + the working tree into models and
 	 * registers the type feeds. Injection waits for attachPreview().
 	 *
-	 * Every failure is SURFACED (openError -> Code pane, watch 'error',
-	 * errors feed) — a swallowed rejection here reads as an eternal
-	 * "Loading files" and cost a debugging session; never again.
+	 * Every failure is SURFACED (watch 'error', errors feed) — a swallowed
+	 * rejection here reads as an eternal "Loading..." and cost a debugging
+	 * session; never again.
 	 */
 	async open(): Promise<void> {
 		try {
@@ -243,14 +298,18 @@ export class WebDevSession {
 				.filter((e) => e.type === 'file' && isTextFile(e.path))
 				.map((e) => e.path);
 			console.log(`[appdev] session open: loading ${paths.length} files...`);
-			const files = await loadAppFiles(this.client, this.folder, paths);
+			// step: ONE view batch — staged content resolves from the layers,
+			// the committed remainder rides the backend's native batch read
+			const files = await this.vfs.readMany(paths);
 			if (this.disposed) return;
 			for (const [path, text] of files) {
-				this.vfs.prime(path, text);
-				this.wireModel(path, text);
+				this.vfs.prime(path, String(text));
+				this.wireModel(path, String(text));
 			}
 			console.log(`[appdev] session open: ${this.models.size} models ready`);
-			this.notifyStore();
+			// step: the inventory landed outside the view's own write paths —
+			// tick its bus so tree consumers (Explorer) re-render
+			this.vfs.notify();
 			this.setWatch({ state: 'idle' });
 
 			// step: join the notification bus AFTER the tree is loaded — an
@@ -259,12 +318,11 @@ export class WebDevSession {
 				if (n.kind === 'onFsChange') this.onFsChange(n.uri, n.origin);
 			});
 		} catch (err) {
-			const reason = err instanceof Error ? (err.stack ?? err.message) : String(err);
-			console.error('[appdev] session open FAILED:', reason);
-			this.openError = err instanceof Error ? err.message : String(err);
-			this.pushError(`[open] ${this.openError}`);
-			this.setWatch({ state: 'error', reason: this.openError });
-			this.notifyStore();
+			const stack = err instanceof Error ? (err.stack ?? err.message) : String(err);
+			console.error('[appdev] session open FAILED:', stack);
+			const message = err instanceof Error ? err.message : String(err);
+			this.pushError(`[open] ${message}`);
+			this.setWatch({ state: 'error', reason: message });
 		}
 	}
 
@@ -326,7 +384,6 @@ export class WebDevSession {
 		this.consoleListeners.clear();
 		this.errorListeners.clear();
 		this.watchListeners.clear();
-		this.storeListeners.clear();
 	}
 
 	// =========================================================================
@@ -355,7 +412,9 @@ export class WebDevSession {
 			if (isSource) this.ata?.enqueue(path, () => model.getValue());
 			if (!this.dirty.has(path)) {
 				this.dirty.add(path);
-				this.notifyStore();
+				// step: dirty flips live in this session's set — the VFS cannot
+				// see them, so announce on its bus (the Explorer subscribes there)
+				this.vfs.notify();
 			}
 		});
 		this.overlayDisposers.push(this.vfs.registerOverlay(path, {
@@ -366,43 +425,7 @@ export class WebDevSession {
 	}
 
 	// =========================================================================
-	// SAVE -> BUILD
-	// =========================================================================
-
-	/**
-	 * Persists one file and re-renders: the hot path (component-only .tsx
-	 * save with refresh attached) re-imports just that module; everything
-	 * else re-links and remounts.
-	 *
-	 * @param path - The project-relative file path.
-	 */
-	async saveFile(path: string): Promise<void> {
-		const model = this.models.get(path);
-		if (!model) return;
-		// step: through the VFS — persists, updates the content cache, and
-		// announces the write (origin-stamped) on the notification bus
-		await this.vfs.write(path, model.getValue());
-		this.dirty.delete(path);
-		this.notifyStore();
-
-		// step: a package.json save re-settles dependencies
-		if (path === 'package.json') {
-			this.deps = null;
-		}
-
-		// step: hot path — component-only module with an attached refresh
-		if (this.mounted && this.refresh && path.endsWith('.tsx') && path !== ENTRY_PATH && this.lastLink) {
-			const emitted = await this.emitOne(path);
-			if (emitted && (await isComponentOnlyModule(emitted.js))) {
-				const ok = await this.hotSwap(path, emitted);
-				if (ok) return;
-			}
-		}
-		await this.rebuild();
-	}
-
-	// =========================================================================
-	// FOREIGN CHANGES — the notification bus (another session, Store pane, …)
+	// FOREIGN CHANGES — the notification bus (file tabs, the agent, Store pane, …)
 	// =========================================================================
 
 	/**
@@ -414,9 +437,12 @@ export class WebDevSession {
 	 */
 	private onFsChange(uri: string, origin: string): void {
 		if (this.disposed || origin === this.sessionId) return;
-		const prefix = `${appPath(this.folder)}/`;
-		if (!uri.startsWith(prefix)) return;
-		void this.adoptExternalChange(uri.slice(prefix.length));
+		// step: bus events carry PHYSICAL store paths — the workspace module
+		// owns the one translation point back into virtual paths
+		const virtual = storePathToVirtual(uri);
+		const prefix = `apps/${this.folder}/`;
+		if (!virtual || !virtual.startsWith(prefix)) return;
+		void this.adoptExternalChange(virtual.slice(prefix.length));
 	}
 
 	/**
@@ -445,20 +471,22 @@ export class WebDevSession {
 		}
 
 		try {
-			const text = await this.client.fsReadString(appPath(this.folder, path));
+			// step: through the VIEW — staged content must never be clobbered
+			// by committed content on adoption
+			const text = String(await this.vfs.read(path));
 			if (this.disposed) return;
 			this.vfs.prime(path, text);
 			const model = this.models.get(path);
 			if (!model) {
 				// step: a NEW file — wire it exactly like open() does
 				this.wireModel(path, text);
-				this.notifyStore();
+				this.vfs.notify();
 			} else if (model.getValue() === text) {
 				// step: model already matches the store. Split panels share
 				// Monaco models, so the writer's keystrokes marked THIS
 				// session's dirty flag too — the store now agrees, so nothing
 				// here is unsaved: clear the mark.
-				if (this.dirty.delete(path)) this.notifyStore();
+				if (this.dirty.delete(path)) this.vfs.notify();
 			} else if (this.dirty.has(path)) {
 				// step: genuine divergence against unsaved local edits — the
 				// user's work is never clobbered
@@ -469,15 +497,26 @@ export class WebDevSession {
 				// source of this content, nothing here is unsaved
 				model.setValue(text);
 				this.dirty.delete(path);
-				this.notifyStore();
+				this.vfs.notify();
 			}
 		} catch {
 			// Unreadable (deleted mid-flight, transient store error) — the
 			// rebuild below still runs from the models we have.
 		}
 
-		// step: re-render an attached preview from the updated truth
-		if (this.previewWindow) await this.rebuild();
+		// step: re-render an attached preview from the updated truth. The hot
+		// path moved here from the old Code pane's save verb: a component-only
+		// .tsx change with refresh attached re-imports just that module
+		// (state survives); everything else re-links and remounts.
+		if (!this.previewWindow) return;
+		if (this.mounted && this.refresh && path.endsWith('.tsx') && path !== ENTRY_PATH && this.lastLink) {
+			const emitted = await this.emitOne(path);
+			if (emitted && (await isComponentOnlyModule(emitted.js))) {
+				const ok = await this.hotSwap(path, emitted);
+				if (ok) return;
+			}
+		}
+		await this.rebuild();
 	}
 
 	/** Queues/coalesces a full rebuild. */
@@ -528,7 +567,7 @@ export class WebDevSession {
 		const monaco = this.monaco;
 		const win = this.previewWindow;
 		if (!monaco || !win || this.disposed) return;
-		const api = (win as unknown as { __rrShellDev?: { version: number; registerLocalApp: (id: string, load: () => Promise<unknown>, meta?: { name?: string; moduleId?: string }) => void; invalidateApp: (id: string) => void; getShareScope: () => Record<string, unknown> | undefined } }).__rrShellDev;
+		const api = (win as unknown as { __rrShellDev?: { version: number; registerLocalApp: (id: string, load: () => Promise<unknown>, meta?: DevRegistrationMeta) => void; invalidateApp: (id: string) => void; getShareScope: () => Record<string, unknown> | undefined } }).__rrShellDev;
 		const rawScope = api?.getShareScope();
 		if (!api || !rawScope) {
 			this.setWatch({ state: 'error', reason: 'The preview shell exposes no dev share scope — reload the preview.' });
@@ -554,11 +593,14 @@ export class WebDevSession {
 		this.setWatch({ state: 'building' });
 
 		try {
-			// step: settle dependencies once per package.json state
+			// step: settle dependencies once per package.json state — and
+			// refresh the registration meta from the SAME fresh read: in dev
+			// the workspace manifest is the truth for name/icon/settings too
 			if (!this.deps) {
-				const pkg = await readAppPackage(this.client, this.folder).catch(() => ({}));
-				this.deps = await prepareDependencies(this.client, this.folder, this.appId, pkg, scope);
+				const pkg = await readAppPackage(this.folder).catch(() => ({}));
+				this.deps = await prepareDependencies(this.folder, this.appId, pkg, scope);
 				for (const problem of this.deps.problems) this.pushError(`[deps] ${problem}`);
+				await this.refreshRegistrationMeta(pkg as Record<string, unknown>);
 			}
 
 			// step: emit + instrument every source module; css rides verbatim
@@ -599,12 +641,14 @@ export class WebDevSession {
 				return;
 			}
 
-			// step: inject — fresh descriptor per call, remount via invalidate
+			// step: inject — fresh descriptor per call, remount via invalidate;
+			// meta carries the WORKSPACE manifest (refreshed whenever deps
+			// resettle) so the preview shell's chrome and Settings track it
 			const entryUrl = result.entryUrl;
 			api.registerLocalApp(
 				this.appId,
 				() => import(/* webpackIgnore: true */ entryUrl).then((m: { default?: unknown }) => m.default ?? m),
-				{ name: this.appName, moduleId: this.moduleId },
+				this.registrationMeta ?? { name: this.appName, moduleId: this.moduleId },
 			);
 			api.invalidateApp(this.appId);
 			this.mounted = true;
@@ -760,11 +804,4 @@ export class WebDevSession {
 		return () => this.watchListeners.delete(listener);
 	}
 
-	/** Store-change fan-out (store listeners + the VFS's subscribers). */
-	private notifyStore(): void {
-		for (const listener of this.storeListeners) listener();
-		// step: dirty flips live in this session's set — the VFS cannot see
-		// them, so announce on its bus too (the Explorer subscribes there)
-		this.vfs.notify();
-	}
 }

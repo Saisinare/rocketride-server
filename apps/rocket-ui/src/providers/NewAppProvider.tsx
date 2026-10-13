@@ -87,7 +87,7 @@ const NewAppProvider: React.FC = () => {
 			return;
 		}
 		let cancelled = false;
-		void listAppFolders(client).then((folders) => {
+		void listAppFolders().then((folders) => {
 			if (cancelled) return;
 			const developerId = client.getAccountInfo()?.organization?.developerId ?? undefined;
 			setIdentity({
@@ -113,7 +113,7 @@ const NewAppProvider: React.FC = () => {
 			setError(null);
 			setCreating(true);
 			try {
-				const { appId } = await scaffoldApp(client, {
+				const { appId } = await scaffoldApp({
 					appName,
 					displayName,
 					publisher: identity.developerId || 'local',

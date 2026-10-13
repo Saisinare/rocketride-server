@@ -41,7 +41,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Hand, Monitor, RotateCw, Settings, Smartphone, Tablet } from 'lucide-react';
+import { Hand, Monitor, RefreshCw, RotateCw, Settings, Smartphone, Tablet } from 'lucide-react';
 import { AnchoredPopup, ToggleGroup } from 'shell';
 import { ComponentGallery } from './gallery';
 import { LogList, LOG_LIST_CAP } from './LogList';
@@ -728,22 +728,25 @@ export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane }) =>
 	// The zoom the frame actually renders at — Fit owns it while on.
 	const effectiveZoom = fitMode ? (fitZoom ?? previewZoom) : previewZoom;
 
-	/** Toggles Fit: entering recenters and drops the hand tool (both are
-	 *  meaningless under fit); leaving adopts the fitted zoom so the frame
-	 *  does not jump when the slider takes over. */
-	const toggleFit = (): void => {
-		if (fitMode) {
-			// Consume the pending one-shot auto-fit — the auto-fit effect
-			// fires on the fitMode flip and would overwrite the adopted
-			// zoom, making the frame jump.
-			needsFitRef.current = false;
-			if (fitZoom !== null) setPreviewZoom(Math.round(fitZoom * 100) / 100);
-			setFitMode(false);
-		} else {
-			setFitMode(true);
-			setHandTool(false);
-			setPan({ x: 0, y: 0 });
-		}
+	/** Selects Fit (radio-style — a second click is a no-op): entering
+	 *  recenters and drops the hand tool (both are meaningless under fit). */
+	const selectFit = (): void => {
+		if (fitMode) return;
+		setFitMode(true);
+		setHandTool(false);
+		setPan({ x: 0, y: 0 });
+	};
+
+	/** Selects manual Zoom (radio-style counterpart of Fit): adopts the
+	 *  fitted zoom so the frame does not jump when the slider takes over. */
+	const selectZoom = (): void => {
+		if (!fitMode) return;
+		// Consume the pending one-shot auto-fit — the auto-fit effect
+		// fires on the fitMode flip and would overwrite the adopted
+		// zoom, making the frame jump.
+		needsFitRef.current = false;
+		if (fitZoom !== null) setPreviewZoom(Math.round(fitZoom * 100) / 100);
+		setFitMode(false);
 	};
 
 	// Auto-fit on mode entry, rotation, or resolution change: the zoom is
@@ -939,16 +942,20 @@ export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane }) =>
 						<span style={styles.toolbarDivider} />
 						<button
 							style={fitMode ? { ...styles.toolBtn, ...styles.toolBtnOn } : styles.toolBtn}
-							title="Fit: size the preview proportionally to the pane (10px margins) and keep it centered. Zoom and the hand tool take over when off."
-							onClick={toggleFit}
+							title="Fit: size the preview proportionally to the pane (10px margins) and keep it centered."
+							onClick={selectFit}
 						>Fit</button>
+						<button
+							style={!fitMode ? { ...styles.toolBtn, ...styles.toolBtnOn } : styles.toolBtn}
+							title="Zoom: scale the preview manually with the slider (100% = actual size) and pan with the hand tool."
+							onClick={selectZoom}
+						>Zoom</button>
 						<label
 							style={fitMode ? { ...styles.zoomControl, ...styles.ctlDisabled } : styles.zoomControl}
 							title={fitMode
-								? 'Zoom is driven by Fit. Toggle Fit off to zoom manually.'
+								? 'Zoom is driven by Fit. Select Zoom to scale manually.'
 								: 'Preview zoom: absolute scale, 100% = actual size. Drag the gray canvas to pan when zoomed in. Double-click the slider for 100%.'}
 						>
-							Zoom
 							<button
 								style={styles.zoomStepBtn}
 								title="Zoom out 5%"
@@ -974,6 +981,13 @@ export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane }) =>
 							>+</button>
 							<span style={styles.zoomValue}>{Math.round(effectiveZoom * 100)}%</span>
 						</label>
+						{host.reloadPreview && (
+							<button
+								style={styles.layoutBtn}
+								title="Refresh the preview"
+								onClick={() => host.reloadPreview?.()}
+							><RefreshCw size={14} /></button>
+						)}
 						<button
 							style={{
 								...(handTool ? { ...styles.layoutBtn, ...styles.toolBtnOn } : styles.layoutBtn),
@@ -1013,12 +1027,6 @@ export const DesignView: React.FC<IDesignViewProps> = ({ host, previewPane }) =>
 									style={styles.gearMenuRow}
 									onClick={() => applyTheme(previewTheme === 'light' ? 'dark' : 'light')}
 								>Theme: {previewTheme === 'light' ? 'Light' : 'Dark'}</button>
-							)}
-							{host.reloadPreview && (
-								<button
-									style={styles.gearMenuRow}
-									onClick={() => { host.reloadPreview?.(); setGearOpen(false); }}
-								>Reload</button>
 							)}
 							{caps.canDebug && host.debug && (
 								<button

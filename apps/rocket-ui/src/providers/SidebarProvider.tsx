@@ -37,15 +37,17 @@ import { useShellConnection, ConnectionManager, ConfirmDialog, useWorkspace } fr
 import type { ShellNotification } from 'shell';
 import { getDocs } from '../docs';
 import { SidebarView } from 'shared/modules/sidebar/SidebarView';
-import { BxExport, useSidebarCollapsed } from 'shell';
+import { BxExport, useSidebarCollapsed, useSidebarActiveView } from 'shell';
 import { foldTaskEvent } from 'shared/modules/sidebar/taskFold';
 import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, SidebarMode, AgentSidebar, AppBuilderSidebar, AppListItem } from 'shared/modules/sidebar/types';
 import type { TaskLifecycleEvent } from 'shared/modules/sidebar/taskFold';
 import { AgentSession, AGENTS_DIR } from 'shared/agent/agent';
 import type { AgentSessionMeta } from 'shared/agent/agent';
-import { loadProject, listProjectDir, isPipelineFile, pipelineExtension } from '../utils/projectStore';
+import { isPipelineFile, pipelineExtension } from '../utils/projectStore';
+import { createProjectVfs } from '../utils/projectVfs';
+import { getWorkspaceVfs, storePathToVirtual } from '../workspace/workspace';
 import { downloadJson } from '../utils/downloadFile';
-import { scanApps, appPath } from '../appdev/appStore';
+import { scanApps } from '../appdev/appStore';
 import { INTRO_PAGES } from 'shared/modules/intro/introPages';
 import type { IntroMode } from 'shared/modules/intro/introPages';
 
@@ -85,6 +87,9 @@ const SidebarCollapsedGate: React.FC<{ children: ReactNode }> = ({ children }) =
  */
 const SidebarProvider: React.FC = () => {
 	const { client, isConnected } = useShellConnection();
+	// The pipelines mount of the shared staged view, project-relative — the
+	// ONE adapter every pipeline file operation goes through.
+	const projectVfs = useMemo(() => createProjectVfs(client), [client]);
 
 	// --- Build entries from server file tree ----------------------------------
 
@@ -128,9 +133,11 @@ const SidebarProvider: React.FC = () => {
 		const id = ++refreshCountRef.current;
 
 		try {
-			// Recursive list
+			// Recursive list — through the workspace VIEW, so staged
+			// (uncommitted) pipelines list exactly like committed ones.
+			const view = getWorkspaceVfs();
 			const listRecursive = async (dir: string): Promise<ProjectEntry[]> => {
-				const result = await listProjectDir(client, dir);
+				const result = { entries: await view.list(dir ? `pipelines/${dir}` : 'pipelines') };
 				const out: ProjectEntry[] = [];
 				for (const e of result.entries ?? []) {
 					// Dot-directories at the store root are OTHER surfaces'
@@ -143,7 +150,7 @@ const SidebarProvider: React.FC = () => {
 					} else if (isPipelineFile(e.name)) {
 						// Parse pipeline for projectId + sources
 						try {
-							const pipeline = await loadProject(client, path);
+							const pipeline = JSON.parse(String(await view.read(`pipelines/${path}`)));
 							out.push({
 								path,
 								type: 'file',
@@ -175,6 +182,8 @@ const SidebarProvider: React.FC = () => {
 		window.addEventListener('project:saved', handler);
 		return () => window.removeEventListener('project:saved', handler);
 	}, [refresh]);
+	// Staged workspace ticks (agent writes, commits, rollbacks) re-list too
+	useEffect(() => getWorkspaceVfs().subscribe(() => refresh()), [refresh]);
 
 	// --- Active tasks (from server events) -----------------------------------
 
@@ -322,7 +331,6 @@ const SidebarProvider: React.FC = () => {
 	const handleFileManage = useCallback(
 		async (action: 'rename' | 'delete' | 'createFolder' | 'createFile', path: string, newName?: string) => {
 			if (!client) return;
-			const { saveProject, deleteProject, renameProject, mkdirProject, rmdirProject } = await import('../utils/projectStore');
 			try {
 				switch (action) {
 					case 'rename': {
@@ -334,7 +342,7 @@ const SidebarProvider: React.FC = () => {
 						const ext = pipelineExtension(path);
 						const newPath = dir ? `${dir}/${newName}${ext}` : `${newName}${ext}`;
 						if (newPath !== path) {
-							await renameProject(client, path, newPath);
+							await projectVfs.rename(path, newPath);
 							// Update open editor tabs: close old, reopen at new path
 							const docs = getDocs();
 							if (docs) {
@@ -354,10 +362,9 @@ const SidebarProvider: React.FC = () => {
 						const confirmed = await showConfirm('Delete', `Are you sure you want to delete "${label}"?`, 'Delete');
 						if (!confirmed) break;
 
-						// Server's fs_delete only handles files; folders need fs_rmdir.
-						const isFile = isPipelineFile(path);
-						if (isFile) await deleteProject(client, path);
-						else await rmdirProject(client, path);
+						// The view routes by actual kind (files delete, folders
+						// remove recursively) — one verb covers both.
+						await projectVfs.delete(path);
 
 						// Force-remove the document and all editors regardless of dirty state
 						// so stale content doesn't linger if a new file reuses the same name
@@ -365,10 +372,10 @@ const SidebarProvider: React.FC = () => {
 						break;
 					}
 					case 'createFolder':
-						await mkdirProject(client, path);
+						await projectVfs.mkdir(path);
 						break;
 					case 'createFile':
-						await saveProject(client, path, { project_id: crypto.randomUUID(), components: [] });
+						await projectVfs.write(path, { project_id: crypto.randomUUID(), components: [] });
 						break;
 				}
 				refresh();
@@ -377,7 +384,7 @@ const SidebarProvider: React.FC = () => {
 				console.error('[SidebarProvider] action failed:', action, err);
 			}
 		},
-		[client, refresh]
+		[client, refresh, projectVfs]
 	);
 
 	/**
@@ -388,14 +395,16 @@ const SidebarProvider: React.FC = () => {
 		async (path: string) => {
 			if (!client) return;
 			try {
-				const pipeline = await loadProject(client, path);
+				// Through the view: an export of a staged (uncommitted)
+				// pipeline downloads what the user SEES, not the server copy.
+				const pipeline = await projectVfs.read(path);
 				const filename = path.split('/').pop() ?? 'pipeline.pipe';
 				downloadJson(filename, pipeline);
 			} catch (err) {
 				console.error('[SidebarProvider] export failed:', err);
 			}
 		},
-		[client]
+		[client, projectVfs]
 	);
 
 	// Action error state — shown as a dialog when run/stop fails
@@ -409,7 +418,9 @@ const SidebarProvider: React.FC = () => {
 			if (!client || !isConnected) return;
 			if (action === 'run' && filePath) {
 				try {
-					const pipeline = await loadProject(client, filePath);
+					// D1: a run executes what is SAVED to the workspace (staged
+					// included) — the view, not necessarily the server copy.
+					const pipeline = JSON.parse(String(await projectVfs.read(filePath)));
 					const name =
 						filePath
 							.split('/')
@@ -475,7 +486,7 @@ const SidebarProvider: React.FC = () => {
 			return;
 		}
 		try {
-			const scanned = await scanApps(client);
+			const scanned = await scanApps();
 			setApps(scanned.map((a) => ({ id: a.id, name: a.name })));
 		} catch {
 			setApps([]);
@@ -530,18 +541,22 @@ const SidebarProvider: React.FC = () => {
 		void refreshSessions();
 	}, [refreshSessions]);
 
-	// ONE shell-bus subscription serves both list refreshes: app-dev
-	// working-copy writes re-scan MY APPS; agent history writes re-list
-	// MY SESSIONS. (The bus is the only notification channel — no window
-	// events.)
+	// Two change sources serve the list refreshes: the workspace view's
+	// change stream covers in-page writes (staged ones included — those
+	// never reach the server, so no bus event exists for them), and the
+	// shell bus covers CROSS-page writers, translated once by the workspace
+	// module. Agent history is a separate store tree (not a workspace
+	// mount), so it stays bus-only.
 	useEffect(() => {
-		const unsub = ConnectionManager.getInstance().on('shell:notify', (notification: ShellNotification) => {
+		const unsubView = getWorkspaceVfs().subscribe(() => void refreshApps());
+		const unsubBus = ConnectionManager.getInstance().on('shell:notify', (notification: ShellNotification) => {
 			if (notification.kind !== 'onFsChange') return;
-			if (notification.uri.startsWith(`${appPath('')}`)) void refreshApps();
+			if (storePathToVirtual(notification.uri)?.startsWith('apps')) void refreshApps();
 			else if (notification.uri.startsWith(`${AGENTS_DIR}/${hostAppId}/`)) void refreshSessions();
 		});
 		return () => {
-			unsub();
+			unsubView();
+			unsubBus();
 		};
 	}, [refreshApps, refreshSessions, hostAppId]);
 
@@ -594,6 +609,16 @@ const SidebarProvider: React.FC = () => {
 		[updatePrefs]
 	);
 
+	// The shell workbench rail (AppLayout sidebarMode 'vscode'/'cursor') owns
+	// the mode selection when it encloses this content: mirror its active
+	// view and hide the in-panel strip — one switcher on screen. Null outside
+	// a workbench (classic sidebar, compact drawer), where the strip and the
+	// prefs-backed state behave exactly as before.
+	const shellView = useSidebarActiveView();
+	/** Narrows a rail container id to the SidebarView mode union. */
+	const isKnownMode = (id: string | undefined): id is SidebarMode => id === 'agent' || id === 'apps' || id === 'nodes' || id === 'pipelines';
+	const effectiveMode = shellView && isKnownMode(shellView.activeViewId) ? shellView.activeViewId : sidebarMode;
+
 	// The sidebar node — the pipelines Explorer plus its confirm/error dialogs.
 	// Only the Explorer sits behind the collapse gate: the shell frame owns the
 	// collapse behaviour and hides free-form content while the sidebar is
@@ -604,7 +629,7 @@ const SidebarProvider: React.FC = () => {
 	return (
 		<>
 			<SidebarCollapsedGate>
-				<SidebarView connection={connection} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} activeFilePath={activeFilePath} onNavigate={handleNavigate} onOpenFile={handleOpenFile} onFileManage={handleFileManage} fileActions={[{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }]} onSourceAction={handleSourceAction} onOpenUnknownTask={handleOpenUnknownTask} onRefresh={refresh} appBuilder={appBuilder} agent={agent} showModeStrip sidebarMode={sidebarMode} onSidebarModeChange={handleSidebarModeChange} onShowIntro={handleShowIntro} />
+				<SidebarView connection={connection} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} activeFilePath={activeFilePath} onNavigate={handleNavigate} onOpenFile={handleOpenFile} onFileManage={handleFileManage} fileActions={[{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }]} onSourceAction={handleSourceAction} onOpenUnknownTask={handleOpenUnknownTask} onRefresh={refresh} appBuilder={appBuilder} agent={agent} showModeStrip hideModeStrip={!!shellView} sidebarMode={effectiveMode} onSidebarModeChange={handleSidebarModeChange} onShowIntro={handleShowIntro} />
 			</SidebarCollapsedGate>
 			{confirmState && <ConfirmDialog title={confirmState.title} message={confirmState.message} confirmLabel={confirmState.confirmLabel} cancelLabel="Cancel" onConfirm={() => handleConfirmResult(true)} onCancel={() => handleConfirmResult(false)} />}
 			{actionError && <ConfirmDialog title="Pipeline Error" message={actionError} confirmLabel="OK" onConfirm={() => setActionError(null)} onCancel={() => setActionError(null)} />}

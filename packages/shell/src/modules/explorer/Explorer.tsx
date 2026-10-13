@@ -61,16 +61,10 @@ const S = {
 		flex: 1,
 		color: 'var(--rr-text-secondary)',
 	} as CSSProperties,
-	headerAction: {
-		background: 'none',
-		border: 'none',
-		cursor: 'pointer',
-		padding: 4,
-		borderRadius: 5,
-		color: 'var(--rr-text-secondary)',
-		display: 'flex',
-		alignItems: 'center',
-	} as CSSProperties,
+	// The platform-standard pane-header treatment (commonStyles) — hover-
+	// revealed cluster, 18px icons in 4px-padding buttons.
+	headerActions: commonStyles.paneHeaderActions,
+	headerAction: commonStyles.paneHeaderButton,
 	treeList: {
 		flex: 1,
 		overflowY: 'auto' as const,
@@ -114,6 +108,16 @@ const S = {
 	dirtyDotActive: {
 		backgroundColor: 'var(--rr-fg-list-active)',
 	} as CSSProperties,
+	// Source-control letter badge (M/A/D) — VS Code's decoration treatment:
+	// same color as the tinted filename, trailing position, never ellipsized.
+	scmBadge: (color: string): CSSProperties => ({
+		fontSize: 11,
+		fontWeight: 600,
+		color,
+		flexShrink: 0,
+		marginLeft: 2,
+		marginRight: 2,
+	}),
 	badge: (color: string): CSSProperties => ({
 		fontSize: 10,
 		color,
@@ -408,12 +412,29 @@ function childTooltip(child: { id: string; name: string; provider?: string }, ta
  * sources, or any app-specific concepts.  The hosting container provides
  * entries, statuses, and callbacks.
  */
-export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses = new Map(), isConnected, showChildActions = true, activeFilePath, modifiedPaths, onOpenFile, onFileManage, onChildAction, fileActions, onRefresh, onMove, onUpload }) => {
+/** VS Code's git-decoration palette, themeable with the stock fallbacks. */
+const SCM_COLORS: Record<'added' | 'modified' | 'deleted', string> = {
+	added: 'var(--rr-scm-added, #81b88b)',
+	modified: 'var(--rr-scm-modified, #e2c08d)',
+	deleted: 'var(--rr-scm-deleted, #c74e39)',
+};
+
+/** The decoration letter per change kind — VS Code's vocabulary. */
+const SCM_LETTERS: Record<'added' | 'modified' | 'deleted', string> = {
+	added: 'A',
+	modified: 'M',
+	deleted: 'D',
+};
+
+export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses = new Map(), isConnected, showChildActions = true, activeFilePath, modifiedPaths, decorations, onOpenFile, onFileManage, onChildAction, fileActions, onRefresh, onMove, onUpload }) => {
 	const [viewMode, setViewMode] = useState<'tree' | 'flat'>('tree');
 	const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
 	const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
 	const [hoveredRow, setHoveredRow] = useState<string | null>(null);
 	const [hoveredAction, setHoveredAction] = useState<string | null>(null);
+	/** Pointer-over-the-pane gate for the header action buttons (VS Code's
+	    view-title behavior: actions appear on hover, not permanently). */
+	const [paneHovered, setPaneHovered] = useState(false);
 	const [selectedPath, setSelectedPath] = useState<string>(activeFilePath ?? '');
 	const [menuPath, setMenuPath] = useState<string | null>(null);
 	const [submenuId, setSubmenuId] = useState<string | null>(null);
@@ -636,6 +657,23 @@ export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses =
 		return dirs;
 	}, [modifiedPaths]);
 
+	// Decoration roll-up: every ancestor directory of a changed path carries
+	// the modified tint on its NAME (VS Code behavior — expanded or not), so
+	// uncommitted work is findable from the tree root.
+	const decoratedDirs = useMemo(() => {
+		const dirs = new Set<string>();
+		if (decorations) {
+			for (const p of decorations.keys()) {
+				let idx = p.lastIndexOf('/');
+				while (idx > 0) {
+					dirs.add(p.substring(0, idx));
+					idx = p.lastIndexOf('/', idx - 1);
+				}
+			}
+		}
+		return dirs;
+	}, [decorations]);
+
 	const renderChildren = useCallback(
 		(parent?: string, depth: number = 0): React.ReactNode[] => {
 			const children = getChildren(parent);
@@ -690,11 +728,17 @@ export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses =
 									onClick={(e) => e.stopPropagation()}
 								/>
 							) : (
-								<span style={S.rowName}>{dir.name}</span>
+								/* SCM tint on the folder NAME whenever changes hide below
+								   it — selection foreground wins on the selected row. */
+								<span style={{ ...S.rowName, ...(decoratedDirs.has(dir.path) && !isSelected ? { color: SCM_COLORS.modified } : {}) }}>{dir.name}</span>
 							)}
 							{/* Modified roll-up only while COLLAPSED — expanded, the
 							    dirty children carry their own dots. */}
 							{!isExpanded && modifiedDirs.has(dir.path) && <div style={{ ...S.dirtyDot, ...(isSelected ? S.dirtyDotActive : {}) }} />}
+							{/* SCM roll-up badge — VS Code's folder dot: an uncommitted
+							    change lives somewhere below, expanded or not (the M/A/D
+							    letter stays on the changed file itself). */}
+							{decoratedDirs.has(dir.path) && <span style={S.scmBadge(isSelected ? 'var(--rr-fg-list-active)' : SCM_COLORS.modified)}>&#9679;</span>}
 							{dirStat && dirStat.errorCount > 0 && <span style={S.badge('var(--rr-color-error)')}>&#10006; {dirStat.errorCount}</span>}
 							{dirStat && dirStat.warningCount > 0 && <span style={S.badge('var(--rr-color-warning)')}>&#9888; {dirStat.warningCount}</span>}
 							{dirDot && <div style={S.dot(dirDot)} />}
@@ -751,6 +795,7 @@ export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses =
 					const dotColor = statusDotColor(status);
 					const rowKey = `file:${file.path}`;
 					const isRenaming = renamePath === file.path;
+					const decoration = decorations?.get(file.path);
 
 					nodes.push(
 						<div
@@ -784,9 +829,13 @@ export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses =
 									onClick={(e) => e.stopPropagation()}
 								/>
 							) : (
-								<span style={S.rowName}>{displayName}</span>
+								/* SCM tint on the filename; the selected row keeps the
+								   selection foreground and only the letter badge speaks. */
+								<span style={{ ...S.rowName, ...(decoration && !isFileSelected ? { color: SCM_COLORS[decoration] } : {}) }}>{displayName}</span>
 							)}
 							{modifiedPaths?.has(file.path) && <div style={{ ...S.dirtyDot, ...(isFileSelected ? S.dirtyDotActive : {}) }} />}
+							{/* The M/A/D letter — VS Code's decoration badge. */}
+							{decoration && <span style={S.scmBadge(isFileSelected ? 'var(--rr-fg-list-active)' : SCM_COLORS[decoration])}>{SCM_LETTERS[decoration]}</span>}
 							{status.errorCount > 0 && <span style={S.badge('var(--rr-color-error)')}>&#10006; {status.errorCount}</span>}
 							{status.warningCount > 0 && <span style={S.badge('var(--rr-color-warning)')}>&#9888; {status.warningCount}</span>}
 							{dotColor && <div style={S.dot(dotColor)} />}
@@ -964,31 +1013,36 @@ export const Explorer: React.FC<IExplorerProps> = ({ config, entries, statuses =
 	// --- Render ---------------------------------------------------------------
 
 	return (
-		<div style={S.container}>
+		<div style={S.container} onMouseEnter={() => setPaneHovered(true)} onMouseLeave={() => setPaneHovered(false)}>
 			{/* ── Header ──────────────────────────────────────────────── */}
 			<div style={S.sectionHeader}>
 				<span style={S.sectionLabel}>{config.title}</span>
-				{hasFileManage && (
-					<>
-						<button title={`New ${config.title.replace(/s$/, '')}`} aria-label={`New ${config.title.replace(/s$/, '')}`} style={{ ...S.headerAction, ...actionHoverBg('newFile') }} onClick={() => startCreate('file')} onMouseEnter={() => setHoveredAction('newFile')} onMouseLeave={() => setHoveredAction(null)}>
-							<BxFilePlus size={16} />
-						</button>
-						{config.allowFolders !== false && (
-							<button title="New folder" aria-label="New folder" style={{ ...S.headerAction, ...actionHoverBg('newFolder') }} onClick={() => startCreate('folder')} onMouseEnter={() => setHoveredAction('newFolder')} onMouseLeave={() => setHoveredAction(null)}>
-								<BxFolderPlus size={16} />
+				{/* Hover-gated, like VS Code's view-title actions; an open
+				    inline-create keeps them up so the affordance that started
+				    the flow never vanishes mid-interaction. */}
+				<div style={S.headerActions(paneHovered || createState !== null)}>
+					{hasFileManage && (
+						<>
+							<button title={`New ${config.title.replace(/s$/, '')}`} aria-label={`New ${config.title.replace(/s$/, '')}`} style={{ ...S.headerAction, ...actionHoverBg('newFile') }} onClick={() => startCreate('file')} onMouseEnter={() => setHoveredAction('newFile')} onMouseLeave={() => setHoveredAction(null)}>
+								<BxFilePlus size={18} />
 							</button>
-						)}
-					</>
-				)}
-				<button title={viewMode === 'tree' ? 'Switch to flat view' : 'Switch to tree view'} aria-label={viewMode === 'tree' ? 'Switch to flat view' : 'Switch to tree view'} style={{ ...S.headerAction, ...actionHoverBg('viewMode') }} onClick={() => setViewMode((m) => (m === 'tree' ? 'flat' : 'tree'))} onMouseEnter={() => setHoveredAction('viewMode')} onMouseLeave={() => setHoveredAction(null)}>
-					{viewMode === 'tree' ? <BxListUl size={16} /> : <BxGridAlt size={16} />}
-				</button>
-				<button title="Collapse all" aria-label="Collapse all" style={{ ...S.headerAction, ...actionHoverBg('collapse') }} onClick={collapseAll} onMouseEnter={() => setHoveredAction('collapse')} onMouseLeave={() => setHoveredAction(null)}>
-					<BxCollapseAll size={16} />
-				</button>
-				<button title="Refresh" aria-label="Refresh" style={{ ...S.headerAction, ...actionHoverBg('refresh') }} onClick={onRefresh} onMouseEnter={() => setHoveredAction('refresh')} onMouseLeave={() => setHoveredAction(null)}>
-					<BxRefresh size={16} />
-				</button>
+							{config.allowFolders !== false && (
+								<button title="New folder" aria-label="New folder" style={{ ...S.headerAction, ...actionHoverBg('newFolder') }} onClick={() => startCreate('folder')} onMouseEnter={() => setHoveredAction('newFolder')} onMouseLeave={() => setHoveredAction(null)}>
+									<BxFolderPlus size={18} />
+								</button>
+							)}
+						</>
+					)}
+					<button title={viewMode === 'tree' ? 'Switch to flat view' : 'Switch to tree view'} aria-label={viewMode === 'tree' ? 'Switch to flat view' : 'Switch to tree view'} style={{ ...S.headerAction, ...actionHoverBg('viewMode') }} onClick={() => setViewMode((m) => (m === 'tree' ? 'flat' : 'tree'))} onMouseEnter={() => setHoveredAction('viewMode')} onMouseLeave={() => setHoveredAction(null)}>
+						{viewMode === 'tree' ? <BxListUl size={18} /> : <BxGridAlt size={18} />}
+					</button>
+					<button title="Collapse all" aria-label="Collapse all" style={{ ...S.headerAction, ...actionHoverBg('collapse') }} onClick={collapseAll} onMouseEnter={() => setHoveredAction('collapse')} onMouseLeave={() => setHoveredAction(null)}>
+						<BxCollapseAll size={18} />
+					</button>
+					<button title="Refresh" aria-label="Refresh" style={{ ...S.headerAction, ...actionHoverBg('refresh') }} onClick={onRefresh} onMouseEnter={() => setHoveredAction('refresh')} onMouseLeave={() => setHoveredAction(null)}>
+						<BxRefresh size={18} />
+					</button>
+				</div>
 			</div>
 
 			{/* ── File tree ───────────────────────────────────────────── */}

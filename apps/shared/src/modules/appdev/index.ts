@@ -55,12 +55,6 @@ export { applyListing, projectListing } from './listing';
 export type { PackageJsonLike } from './listing';
 export { NewAppForm, deriveDisplayName } from './NewAppForm';
 export type { INewAppFormProps, NewAppIdentity } from './NewAppForm';
-// CodePane is deliberately NOT exported here: it pulls the shared Monaco
-// module (editor + worker chunks) into every barrel consumer, and most
-// hosts (the VSCode webviews) have no Code pane. Hosts that render it
-// import 'shared/modules/appdev/CodePane' directly; its store seam type
-// stays available for adapters.
-export type { AppCodeStore, ICodePaneProps } from './CodePane';
 export { probePackage } from './compatProbe';
 export type { CompatVerdict, ProbeOptions } from './compatProbe';
 export { ComponentGallery, KnobsPanel, GALLERY_ENTRIES, GALLERY_GROUPS } from './gallery';

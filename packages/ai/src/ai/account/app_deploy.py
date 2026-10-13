@@ -818,7 +818,7 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
         # Refresh the acting user's manifest (data + signal); other audience
         # members pick the row up on their next account rebuild/login.
         try:
-            from ai.account.dev_overlay import push_refresh
+            from ai.account.manifest_push import push_refresh
 
             await push_refresh(conn._server, conn._account_info.userId, source='app-publish')
         except Exception as exc:

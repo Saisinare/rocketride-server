@@ -41,7 +41,7 @@ import { commonStyles } from 'shell';
 import { useShellConnection, useWorkspace, DocTabs, DocSplitLayout, AppLayout, EmptyState, BxFolderOpen } from 'shell';
 import type { Documents } from 'shell';
 import { createDocs, destroyDocs, getDocs } from './docs';
-import { createStoreVfs, isFileLoadError } from './store';
+import { createStoreVfs, isFileLoadError, isLiveBlobUrl, forgetBlobUrl } from './store';
 import { getMediaInfo } from './mediaTypes';
 import {
 	AudioViewer, BinaryViewer, DocxViewer, HexViewer, ImageViewer,
@@ -69,6 +69,10 @@ function releaseBlobUrl(url: string): void {
 	if (count <= 0) {
 		blobRefCounts.delete(url);
 		URL.revokeObjectURL(url);
+		// A document may still hold this string as content — forgetting it
+		// makes isLiveBlobUrl false, so the next pane re-reads instead of
+		// rendering a dead reference.
+		forgetBlobUrl(url);
 	} else {
 		blobRefCounts.set(url, count);
 	}
@@ -252,10 +256,15 @@ const FilePane: React.FC<{ docs: Documents; uri: string; editorId: string }> = (
 	const { category, contentMode } = getMediaInfo(uri);
 	const viewerOverride = editor?.viewState?.viewerId as ViewerId | undefined;
 
-	// Blob documents store a local blob: URL as content.  These aren't
-	// persisted, so re-read from the server when content is missing.
+	// Blob documents store a local blob: URL as content — but the Documents
+	// store can hand back content that OUTLIVED the session that minted it
+	// (a dead blob: URL after a reload, or raw text from before the media
+	// table classified this extension as blob). Anything that is not a
+	// this-session blob URL and not a load-error sentinel is stale: re-read
+	// it from the server. A pending load (content === '') re-reads too,
+	// exactly as before.
 	useEffect(() => {
-		if (contentMode === 'blob' && doc && !doc.content) {
+		if (contentMode === 'blob' && doc && !isLiveBlobUrl(doc.content) && !isFileLoadError(doc.content)) {
 			docs.revertDocument(uri);
 		}
 	}, [contentMode, doc, uri, docs]);
@@ -293,7 +302,11 @@ const FilePane: React.FC<{ docs: Documents; uri: string; editorId: string }> = (
 	// its message so viewers can show the error instead of hanging on "Loading...".
 	// Genuine pending loads keep content === '' (loadError undefined) → "Loading...".
 	const loadError = isFileLoadError(doc.content) ? doc.content.message : undefined;
-	const content = typeof doc.content === 'string' ? doc.content : '';
+	// Blob viewers only ever see a LIVE blob URL — stale content (see the
+	// revert effect above) reads as "still loading" while the re-read runs.
+	const content = typeof doc.content === 'string'
+		? (contentMode === 'blob' && doc.content && !isLiveBlobUrl(doc.content) ? '' : doc.content)
+		: '';
 
 	// --- Viewer override: if the user chose "Open with…", use that viewer ---
 

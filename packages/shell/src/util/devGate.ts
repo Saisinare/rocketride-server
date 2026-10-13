@@ -112,6 +112,25 @@ export function isEmbeddedDevShell(): boolean {
 	} catch { return false; }
 }
 
+/**
+ * Whether this shell is framed by a SAME-ORIGIN embedder (the web App
+ * Builder's preview iframe lives on the cloud shell's own origin). A
+ * cross-origin embedder (the VS Code webview framing the preview served
+ * from its app's dev-proxy origin) makes the parent's location unreadable —
+ * the throw IS the signal.
+ *
+ * The distinction gates origin-wide side effects: a same-origin embed
+ * shares the embedding user's cookie jar and must not stamp it, while a
+ * cross-origin embed owns its jar outright.
+ *
+ * @returns True when framed and the embedder shares this page's origin.
+ */
+export function isSameOriginEmbed(): boolean {
+	try {
+		return window.self !== window.top && window.parent.location.origin === window.location.origin;
+	} catch { return false; }
+}
+
 // =============================================================================
 // TOKEN STORAGE SCOPE
 // =============================================================================

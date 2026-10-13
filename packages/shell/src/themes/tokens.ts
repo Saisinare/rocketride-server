@@ -51,6 +51,10 @@ export type ThemeTokens = {
 	'--rr-btn-sm-font-size': string;
 	'--rr-btn-sm-radius': string;
 	'--rr-bg-input': string;
+	'--rr-bg-rail': string;
+	'--rr-bg-rail-hover': string;
+	'--rr-fg-rail': string;
+	'--rr-fg-rail-active': string;
 	'--rr-bg-list-hover': string;
 	'--rr-bg-list-active': string;
 	'--rr-fg-list-active': string;

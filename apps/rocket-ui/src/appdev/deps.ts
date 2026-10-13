@@ -44,9 +44,8 @@
  */
 
 import { init as initLexer, parse as parseModule } from 'es-module-lexer';
-import type { RocketRideClient } from 'shell';
 import type { PackageJsonLike } from 'shared/modules/appdev';
-import { appPath } from './appStore';
+import { getWorkspaceVfs } from '../workspace/workspace';
 import { cacheGet, cachePut } from './idbCache';
 import { mintBlob, mintShareShim } from './linker';
 
@@ -79,14 +78,14 @@ const MAX_MODULES_PER_DEP = 200;
 export const LOCK_FILE = 'rr-lock.json';
 
 /**
- * Reads the app's lock map ({} when absent).
+ * Reads the app's lock map ({} when absent) — through the workspace view,
+ * so a staged (uncommitted) lock file resolves exactly like a saved one.
  *
- * @param client - The connected RocketRide client.
  * @param folder - The app's .appdev folder name.
  */
-export async function readLockMap(client: RocketRideClient, folder: string): Promise<Record<string, string>> {
+export async function readLockMap(folder: string): Promise<Record<string, string>> {
 	try {
-		return JSON.parse(await client.fsReadString(appPath(folder, LOCK_FILE))) as Record<string, string>;
+		return JSON.parse(String(await getWorkspaceVfs().read(`apps/${folder}/${LOCK_FILE}`))) as Record<string, string>;
 	} catch {
 		return {};
 	}
@@ -96,14 +95,13 @@ export async function readLockMap(client: RocketRideClient, folder: string): Pro
  * Settles one dependency's exact version into the lock map: the module
  * source resolves the range once, and the answer is persisted.
  *
- * @param client - The connected RocketRide client.
  * @param folder - The app's .appdev folder name.
  * @param name - Package name.
  * @param range - The declared range.
  * @param lock - The current lock map (mutated + persisted on change).
  * @returns The exact version.
  */
-async function settleVersion(client: RocketRideClient, folder: string, name: string, range: string, lock: Record<string, string>): Promise<string> {
+async function settleVersion(folder: string, name: string, range: string, lock: Record<string, string>): Promise<string> {
 	const existing = lock[name];
 	if (existing) return existing;
 	const response = await fetch(`${BASE_URL}/${name}@${encodeURIComponent(range || 'latest')}/package.json`);
@@ -111,7 +109,7 @@ async function settleVersion(client: RocketRideClient, folder: string, name: str
 	const pkg = (await response.json()) as { version?: string };
 	if (!pkg.version) throw new Error(`Cannot resolve ${name}@${range || 'latest'}: no version in its package.json.`);
 	lock[name] = pkg.version;
-	await client.fsWriteString(appPath(folder, LOCK_FILE), `${JSON.stringify(lock, null, '\t')}\n`);
+	await getWorkspaceVfs().write(`apps/${folder}/${LOCK_FILE}`, `${JSON.stringify(lock, null, '\t')}\n`);
 	return pkg.version;
 }
 
@@ -192,14 +190,13 @@ async function linkDependencyGraph(entryUrl: string, shims: Map<string, string>)
  * Failures per dependency degrade to problems — the rest of the loop keeps
  * working.
  *
- * @param client - The connected RocketRide client.
  * @param folder - The app's .appdev folder name.
  * @param appId - The app id (shim registry key).
  * @param pkg - The parsed package.json.
  * @param scope - The preview realm's share scope (for the external shims).
  * @returns The dependency set for the linker.
  */
-export async function prepareDependencies(client: RocketRideClient, folder: string, appId: string, pkg: PackageJsonLike, scope: Record<string, unknown>): Promise<DependencySet> {
+export async function prepareDependencies(folder: string, appId: string, pkg: PackageJsonLike, scope: Record<string, unknown>): Promise<DependencySet> {
 	const problems: string[] = [];
 	const resolved = new Map<string, string>();
 
@@ -216,10 +213,10 @@ export async function prepareDependencies(client: RocketRideClient, folder: stri
 		if (moduleObject) shims.set(name, mintShareShim(appId, name, moduleObject));
 	}
 
-	const lock = await readLockMap(client, folder);
+	const lock = await readLockMap(folder);
 	for (const [name, range] of declared) {
 		try {
-			const version = await settleVersion(client, folder, name, range, lock);
+			const version = await settleVersion(folder, name, range, lock);
 			const entryUrl = `${BASE_URL}/${name}@${version}?external=react,react-dom`;
 			const blob = await linkDependencyGraph(entryUrl, shims);
 			resolved.set(name, blob);

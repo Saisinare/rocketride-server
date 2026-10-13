@@ -30,9 +30,7 @@
 // silently (the frozen-preview bug).
 import 'react/jsx-dev-runtime';
 
-import React from 'react';
 import type { AppDescriptor } from 'shell';
-import { RocketRideMark } from 'shell';
 import SqlApp from './SqlApp';
 
 /**
@@ -46,10 +44,10 @@ const SQL_APP: AppDescriptor = {
 	name: 'SQL Explorer',
 	branding: {
 		appName: 'SQL Explorer',
-		// style fills the shell's sized icon wrapper (the shared mark defaults to a
-		// fixed 24px; width/height:100% preserves the fill-to-slot behaviour).
-		iconDark: React.createElement(RocketRideMark, { bodyColor: '#E0DDF0', style: { width: '100%', height: '100%' } }),
-		iconLight: React.createElement(RocketRideMark, { bodyColor: '#1E1A34', style: { width: '100%', height: '100%' } }),
+		// NO iconDark/iconLight here: branding icons OUTRANK the manifest icon
+		// by contract, and the RocketRideMark entries this block used to carry
+		// (wordmark-header era) masked the app's real icon on the rail and
+		// panel header. Absent, the shell falls through to the manifest icon.
 	},
 	// Two-column app: SqlApp's root AppLayout declares the navigation/schema
 	// sidebar and the status bar.

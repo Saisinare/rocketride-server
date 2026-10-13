@@ -31,9 +31,12 @@
  * <AppBuilderScreen host={adapter}> where the adapter wraps the live
  * client").
  *
- * Capability shape: no native files, no Code pane yet (Phase 2 flips it),
- * debug opens the preview in a NEW browser tab (same-origin — DevTools
- * against the real page), review ladder mirrors the server flavor.
+ * Capability shape: no native files, no Code pane — the workspace
+ * Explorer + file-editor tabs are the web host's code surface (the dev
+ * session still runs headless underneath: its rebuild loop adopts those
+ * tabs' saves off the notification bus and re-renders the preview). Debug
+ * opens the preview in a NEW browser tab (same-origin — DevTools against
+ * the real page), review ladder mirrors the server flavor.
  */
 
 import { ConnectionManager } from 'shell';
@@ -88,7 +91,6 @@ export function createWebAppBuilderHost(o: WebHostOptions): IAppBuilderHost {
 
 	return {
 		capabilities: {
-			hasCodePane: !!session,
 			hasNativeFiles: false,
 			canDebug: true,
 			hasReviewLadder,
@@ -191,15 +193,15 @@ export function createWebAppBuilderHost(o: WebHostOptions): IAppBuilderHost {
 		// ── Store — the listing IS the .appdev package.json appManifest ──
 		loadListing: async () => {
 			try {
-				return projectListing(await readAppPackage(client, folder));
+				return projectListing(await readAppPackage(folder));
 			} catch {
 				return null;
 			}
 		},
 		saveListing: async (draft) => {
-			const pkg = await readAppPackage(client, folder);
+			const pkg = await readAppPackage(folder);
 			applyListing(pkg, draft);
-			await writeAppPackage(client, folder, pkg);
+			await writeAppPackage(folder, pkg);
 		},
 		runPreflight: async () => {
 			// The SHARED tiered bar (one implementation for every host), fed
@@ -207,19 +209,19 @@ export function createWebAppBuilderHost(o: WebHostOptions): IAppBuilderHost {
 			// dependency probe (the hard gate for Node-only packages).
 			let pkg;
 			try {
-				pkg = await readAppPackage(client, folder);
+				pkg = await readAppPackage(folder);
 			} catch {
 				return runListingPreflight(null, { fileExists: async () => false });
 			}
 			return runListingPreflight(projectListing(pkg), {
-				fileExists: (rel) => appFileExists(client, folder, rel),
+				fileExists: (rel) => appFileExists(folder, rel),
 				dependencies: (pkg.dependencies as Record<string, string> | undefined) ?? {},
 				probeDependency: (name, range) => probePackage({ name, version: range }),
 			});
 		},
 		// Manifest-asset previews ride the store VFS. The native pickers stay
 		// unimplemented — a store-backed file picker is Phase 2 UI.
-		readAppTextFile: async (relPath) => await readAppText(client, folder, relPath),
+		readAppTextFile: async (relPath) => await readAppText(folder, relPath),
 		readAppImageDataUri: async (relPath) => await readAppImageDataUri(client, folder, relPath),
 	};
 }

@@ -50,7 +50,7 @@ import type { DeployArtifact } from 'shell';
 import { useDeployments } from '../hooks/useDeployments';
 import { PrefsProvider } from 'shell';
 import type { TaskEventMessage, TaskEventSession, TaskStatus, TaskTimeline, TraceLevel, ViewState } from 'shared/modules/project';
-import { saveProject, displayName as projectDisplayName } from '../utils/projectStore';
+import { displayName as projectDisplayName } from '../utils/projectStore';
 import { createProjectVfs } from '../utils/projectVfs';
 import { downloadJson } from '../utils/downloadFile';
 import DeploymentProvider from './DeploymentProvider';
@@ -320,7 +320,7 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 		async (saveFilename: string, project: PipelineConfig, opts?: { rethrow?: boolean }) => {
 			if (!client || !isConnected) return;
 			try {
-				await saveProject(client, saveFilename, project);
+				await projectVfs.write(saveFilename, project);
 				// Mark clean in Documents model
 				await getDocs()?.saveDocument(uri);
 				window.dispatchEvent(new CustomEvent('project:saved', { detail: { projectId } }));
@@ -334,7 +334,7 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 				if (opts?.rethrow) throw err;
 			}
 		},
-		[client, isConnected, projectId, uri]
+		[client, isConnected, projectId, uri, projectVfs]
 	);
 
 	// --- Pipeline run/stop/restart -------------------------------------------
@@ -446,7 +446,7 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 
 			// Save to the new path
 			try {
-				await saveProject(client, fileRelPath, pipeline);
+				await projectVfs.write(fileRelPath, pipeline);
 			} catch (err) {
 				console.error('[ProjectProvider] Save-as failed:', err);
 				// Surface the failure — a silent catch leaves the user believing
@@ -475,7 +475,7 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 				executePipelineAction(deferredRun.action, deferredRun.source);
 			}
 		},
-		[pipeline, client, isConnected, uri, projectId, executePipelineAction]
+		[pipeline, client, isConnected, uri, projectId, executePipelineAction, projectVfs]
 	);
 
 	/**
@@ -526,13 +526,13 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 		const run = pendingRun;
 		setPendingRun(null);
 		if (!client || !isConnected) return;
-		saveProject(client, filename, pipeline)
+		projectVfs.write(filename, pipeline)
 			.then(() => {
 				getDocs()?.saveDocument(uri);
 				executePipelineAction(run.action, run.source);
 			})
 			.catch((err) => setPipelineError(err instanceof Error ? err.message : String(err)));
-	}, [pendingRun, isNew, filename, pipeline, client, isConnected, uri, executePipelineAction]);
+	}, [pendingRun, isNew, filename, pipeline, client, isConnected, uri, executePipelineAction, projectVfs]);
 
 	// --- ProjectView callbacks ------------------------------------------------
 

@@ -50,7 +50,7 @@ type IncomingMessage =
 	| { type: 'appdev:watch'; status: WatchStatus }
 	| { type: 'appdev:buildStatus'; appId: string; version?: number; status: string }
 	| { type: 'appdev:deployChanged'; appId: string }
-	| { type: 'appdev:devServer'; entry: string }
+	| { type: 'appdev:devServer'; entry: string; manifest?: Record<string, unknown> }
 	| { type: 'appdev:auth'; token: string }
 	| { type: 'appdev:reload' }
 	| { type: 'appdev:accountChanged' }
@@ -247,7 +247,7 @@ function formatElapsed(sec: number): string {
  * @param props.app - App facts for the injected registration.
  * @param props.devEntry - The dev server's remoteEntry.js URL, when up.
  */
-const PreviewFrame: React.FC<{ url: string; reloadSeq: number; app: AppSummary | null; devEntry: string; authToken: string; inheritAuth: boolean; explicitAuthSeq: number }> = ({ url, reloadSeq, app, devEntry, authToken, inheritAuth, explicitAuthSeq }) => {
+const PreviewFrame: React.FC<{ url: string; reloadSeq: number; app: AppSummary | null; devEntry: string; devManifest?: Record<string, unknown>; authToken: string; inheritAuth: boolean; explicitAuthSeq: number }> = ({ url, reloadSeq, app, devEntry, devManifest, authToken, inheritAuth, explicitAuthSeq }) => {
 	// Shell page lifecycle: 'loading' until the shell's dev hooks post
 	// devReady; 'unresponsive' when they never arrive (server down, wrong
 	// URL — the iframe would be sitting on a silent chrome error page);
@@ -274,8 +274,8 @@ const PreviewFrame: React.FC<{ url: string; reloadSeq: number; app: AppSummary |
 	// re-subscribing: the shell can boot ANY number of times inside one
 	// iframe mount (its auth flow navigates internally), and every boot
 	// must be re-injected.
-	const registrationRef = useRef<{ app: AppSummary | null; devEntry: string; authToken: string; inheritAuth: boolean }>({ app: null, devEntry: '', authToken: '', inheritAuth: true });
-	registrationRef.current = { app, devEntry, authToken, inheritAuth };
+	const registrationRef = useRef<{ app: AppSummary | null; devEntry: string; devManifest?: Record<string, unknown>; authToken: string; inheritAuth: boolean }>({ app: null, devEntry: '', authToken: '', inheritAuth: true });
+	registrationRef.current = { app, devEntry, devManifest, authToken, inheritAuth };
 	// Whether THIS shell page has been injected already. Every injection
 	// spawns a live container instance with its own HMR client — injecting
 	// per rebuild leaves zombie instances whose hot-update hashes are gone
@@ -296,7 +296,7 @@ const PreviewFrame: React.FC<{ url: string; reloadSeq: number; app: AppSummary |
 
 	/** Posts the dev-remote registration into the (current) preview shell. */
 	const inject = useCallback((): void => {
-		const { app: a, devEntry: entry } = registrationRef.current;
+		const { app: a, devEntry: entry, devManifest } = registrationRef.current;
 		if (!a || !entry) return;
 		injectedRef.current = true;
 		iframeRef.current?.contentWindow?.postMessage(
@@ -306,6 +306,10 @@ const PreviewFrame: React.FC<{ url: string; reloadSeq: number; app: AppSummary |
 				moduleId: a.moduleId,
 				name: a.name,
 				entry,
+				// The WORKSPACE manifest rides the registration — in dev it is
+				// the truth for the shell's app metadata (name, icon path under
+				// the /dev/ prefix, settings schema), not the server registry.
+				manifest: devManifest,
 			},
 			shellOrigin
 		);
@@ -395,6 +399,19 @@ const PreviewFrame: React.FC<{ url: string; reloadSeq: number; app: AppSummary |
 		if (ready && devEntry && app && !injectedRef.current) inject();
 	}, [ready, devEntry, app, inject]);
 
+	// Manifest-only change (package.json saved, same container): re-post the
+	// registration so the shell refreshes metadata (name/icon/settings) —
+	// registerLocalApp is re-entrant; no container re-injection happens.
+	const manifestMountedRef = useRef(false);
+	React.useEffect(() => {
+		if (!manifestMountedRef.current) {
+			manifestMountedRef.current = true;
+			return;
+		}
+		if (ready && injectedRef.current) inject();
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- fires on manifest change only
+	}, [devManifest]);
+
 	// Fresh cache-buster per attempt: the _ts from the init payload is fixed
 	// for the panel's lifetime, so retries mint their own.
 	const attemptUrl = attemptSeq === 0 ? url : `${url.replace(/([?&])_ts=\d+/, '$1_ts=' + Date.now())}`;
@@ -436,10 +453,29 @@ const AppWebview: React.FC = () => {
 	const [previewUrl, setPreviewUrl] = useState('');
 	// hasReviewLadder defaults true (the gated flow) until init declares the
 	// server; an OSS server flips it off and @public publishes directly.
-	const [capabilities, setCapabilities] = useState({ hasCodePane: false, hasNativeFiles: true, canDebug: true, hasReviewLadder: true });
+	const [capabilities, setCapabilities] = useState({ hasNativeFiles: true, canDebug: true, hasReviewLadder: true });
 	const [initialStage, setInitialStage] = useState<AppBuilderStage>('dashboard');
 	const [reloadSeq, setReloadSeq] = useState(0);
 	const [devEntry, setDevEntry] = useState('');
+	// The workspace manifest riding the dev registration (dev = local truth)
+	const [devManifest, setDevManifest] = useState<Record<string, unknown> | undefined>(undefined);
+
+	// LOCAL-FIRST: the preview loads through the dev server's passthrough
+	// proxy, so its URL is the DEV ORIGIN carrying the init URL's path and
+	// query (?appid, rrdev, rrsession). Derived, never configured — the
+	// frame only renders once the dev entry is known (previewLive gates on
+	// it), so the origin is always available by then. Falls back to the
+	// init URL while no dev entry exists (e.g. watch disabled).
+	const proxyPreviewUrl = React.useMemo(() => {
+		if (!previewUrl) return '';
+		if (!devEntry) return previewUrl;
+		try {
+			const init = new URL(previewUrl);
+			return `${new URL(devEntry).origin}${init.pathname}${init.search}`;
+		} catch {
+			return previewUrl;
+		}
+	}, [previewUrl, devEntry]);
 	// Latest watch status — drives the Initializing pane's phase line and,
 	// on error, its center-screen reason.
 	const [watchStatus, setWatchStatus] = useState<WatchStatus>({ state: 'installing' });
@@ -592,6 +628,7 @@ const AppWebview: React.FC = () => {
 					}
 					prevDevEntryBaseRef.current = base;
 					setDevEntry(msg.entry);
+					setDevManifest(msg.manifest);
 					break;
 				}
 				case 'appdev:auth':
@@ -648,10 +685,10 @@ const AppWebview: React.FC = () => {
 	// Console feed beside pnpm and rsbuild.
 	React.useEffect(() => {
 		// Only the preview shell's frame may drive the sign-in flow or write
-		// diagnostic rows.
+		// diagnostic rows. LOCAL-FIRST: the frame lives on the PROXY origin.
 		const shellOrigin = ((): string => {
 			try {
-				return new URL(previewUrl).origin;
+				return new URL(proxyPreviewUrl || previewUrl).origin;
 			} catch {
 				return '';
 			}
@@ -679,7 +716,7 @@ const AppWebview: React.FC = () => {
 		};
 		window.addEventListener('message', onWindowMessage);
 		return () => window.removeEventListener('message', onWindowMessage);
-	}, [sendMessage, previewUrl, emitConsole, emitError]);
+	}, [sendMessage, previewUrl, proxyPreviewUrl, emitConsole, emitError]);
 
 	/** One RPC round trip to the extension host over the bridge. */
 	const rpc = useCallback(
@@ -765,7 +802,10 @@ const AppWebview: React.FC = () => {
 			subscribeBuildStatus,
 			subscribeDeployChanged,
 			// Preview chrome
-			getPreviewUrl: () => previewUrl,
+			// External opens (browser tab, F5) get the PROXY URL — the tab
+			// self-registers from it by URL convention (?appid + rrdev on the
+			// dev origin), no message channel needed.
+			getPreviewUrl: () => proxyPreviewUrl || previewUrl,
 			// Reload = full inner-loop reset in the extension host (kill dev
 			// server → pnpm install → fresh rsbuild). The iframe is NOT bumped
 			// here: remounting now would load against a dead dev server — the
@@ -845,7 +885,7 @@ const AppWebview: React.FC = () => {
 				await rpc('reply', version === undefined ? [message] : [message, version]);
 			},
 		};
-	}, [capabilities, previewUrl, sendMessage, rpc, accountSeq, subscribeEvents, subscribeConsole, subscribeErrors, subscribeWatch, subscribeBuildStatus, subscribeDeployChanged]);
+	}, [capabilities, previewUrl, proxyPreviewUrl, sendMessage, rpc, accountSeq, subscribeEvents, subscribeConsole, subscribeErrors, subscribeWatch, subscribeBuildStatus, subscribeDeployChanged]);
 
 	// ── Render ──────────────────────────────────────────────────────────
 	if (!app) {
@@ -854,7 +894,7 @@ const AppWebview: React.FC = () => {
 
 	return (
 		<div style={styles.root}>
-			<AppBuilderScreen host={host} app={app} previewPane={previewUrl && previewLive ? <PreviewFrame url={previewUrl} reloadSeq={reloadSeq} app={app} devEntry={devEntry} authToken={authToken} inheritAuth={inheritAuth} explicitAuthSeq={explicitAuthSeq} /> : <PreviewInitializing status={watchStatus} subscribeConsole={subscribeConsole} />} initialStage={initialStage} onStageChange={(stage) => sendMessage({ type: 'appdev:stage', stage })} />
+			<AppBuilderScreen host={host} app={app} previewPane={proxyPreviewUrl && previewLive ? <PreviewFrame url={proxyPreviewUrl} reloadSeq={reloadSeq} app={app} devEntry={devEntry} devManifest={devManifest} authToken={authToken} inheritAuth={inheritAuth} explicitAuthSeq={explicitAuthSeq} /> : <PreviewInitializing status={watchStatus} subscribeConsole={subscribeConsole} />} initialStage={initialStage} onStageChange={(stage) => sendMessage({ type: 'appdev:stage', stage })} />
 		</div>
 	);
 };

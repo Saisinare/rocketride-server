@@ -180,7 +180,7 @@ const PIPELINE_CONFIG: ExplorerConfig = {
  * Maps ISidebarViewProps (pipeline-specific) to IExplorerProps (generic).
  * The Explorer component handles all file tree rendering internally.
  */
-export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscribed = true, entries, activeTasks, unknownTasks, headerSlot, onNavigate, onOpenFile, onFileManage, fileActions, onSourceAction, onRefresh, footerSlot, onOpenUnknownTask, activeFilePath, appBuilder, agent, showModeStrip = false, sidebarMode = 'pipelines', onSidebarModeChange, onShowIntro }) => {
+export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscribed = true, entries, activeTasks, unknownTasks, headerSlot, onNavigate, onOpenFile, onFileManage, fileActions, onSourceAction, onRefresh, footerSlot, onOpenUnknownTask, activeFilePath, appBuilder, agent, showModeStrip = false, hideModeStrip = false, sidebarMode = 'pipelines', onSidebarModeChange, onShowIntro }) => {
 	const [hoveredRow, setHoveredRow] = useState<string | null>(null);
 	const [unknownExpanded, setUnknownExpanded] = useState(true);
 
@@ -192,8 +192,13 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 	// to Pipelines.
 	const hasAppBuilder = Boolean(appBuilder);
 	const hasAgent = Boolean(agent);
-	const tabsVisible = hasAppBuilder || hasAgent || showModeStrip;
-	const mode = (sidebarMode === 'agent' && hasAgent) || (sidebarMode === 'apps' && hasAppBuilder) || (sidebarMode === 'nodes' && tabsVisible) ? sidebarMode : 'pipelines';
+	// `hideModeStrip` wins: the hosting chrome (shell workbench rail) owns the
+	// selection and the strip would be a second, competing switcher. Mode
+	// VALIDATION stays on "are modes wired at all" rather than on the strip's
+	// visibility, so a rail-driven 'nodes' still lands on the Nodes body.
+	const modesWired = hasAppBuilder || hasAgent || showModeStrip || hideModeStrip;
+	const tabsVisible = !hideModeStrip && (hasAppBuilder || hasAgent || showModeStrip);
+	const mode = (sidebarMode === 'agent' && hasAgent) || (sidebarMode === 'apps' && hasAppBuilder) || (sidebarMode === 'nodes' && modesWired) ? sidebarMode : 'pipelines';
 	// --- Static nav menus ----------------------------------------------------
 
 	// Monitor sits ABOVE the mode tabs — it is mode-independent chrome shared

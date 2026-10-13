@@ -39,6 +39,7 @@
 import { zipSync } from 'fflate';
 import type { RocketRideClient } from 'shell';
 import { appPath } from './appStore';
+import { getStagedWorkspace, getWorkspaceVfs } from '../workspace/workspace';
 
 /** The server's receipt cap on zipped bytes (mirrors _ZIP_MAX_ZIPPED). */
 const MAX_ZIP_BYTES = 50 * 1024 * 1024;
@@ -55,11 +56,13 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git']);
  * @returns The zip bytes, ready for client.deploy.add.
  */
 export async function packAppSource(client: RocketRideClient, folder: string): Promise<Uint8Array> {
-	// step: walk the whole folder (every file — binaries included)
+	// step: walk through the workspace VIEW (identical to the base once the
+	// commit-first gate below holds; one inventory path either way)
+	const view = getWorkspaceVfs();
 	const paths: string[] = [];
 	const walk = async (rel: string): Promise<void> => {
-		const result = await client.fsListDir(rel ? appPath(folder, rel) : appPath(folder));
-		for (const entry of result.entries ?? []) {
+		const entries = await view.list(rel ? `apps/${folder}/${rel}` : `apps/${folder}`);
+		for (const entry of entries) {
 			const childRel = rel ? `${rel}/${entry.name}` : entry.name;
 			if (entry.type === 'dir') {
 				if (!SKIP_DIRS.has(entry.name)) await walk(childRel);
@@ -73,7 +76,15 @@ export async function packAppSource(client: RocketRideClient, folder: string): P
 		throw new Error('The app folder has no package.json — nothing deployable.');
 	}
 
-	// step: bulk-read the bytes (fsReadMany batches of 256)
+	// step: D2 — pack operates on COMMITTED files only. With the gate held,
+	// the view and the base agree, so the whole tree bulk-reads from the
+	// store in one path (binaries included; the raw batch is the documented
+	// binary escape hatch — the view contract is text-only).
+	const pendingCount = [...getStagedWorkspace().changedPaths().keys()]
+		.filter((vp) => vp === `apps/${folder}` || vp.startsWith(`apps/${folder}/`)).length;
+	if (pendingCount > 0) {
+		throw new Error(`${pendingCount} uncommitted change(s) in this app — commit them first (status bar: Commit all), then deploy.`);
+	}
 	const tree: Record<string, Uint8Array> = {};
 	for (let i = 0; i < paths.length; i += 256) {
 		const chunk = paths.slice(i, i + 256);

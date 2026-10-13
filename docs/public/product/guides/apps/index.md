@@ -266,6 +266,8 @@ Settings are:
 - Persisted to `.workspace/settings.json`
 - Available to your app via `useShellApiConfig()`, access as `config['mycompany.myApp.apiKey']`
 
+The shell contributes its own **General** section (keys under `rocketride.general.*`), which always appears first in the Settings overlay. Its keys are reserved — an app redeclaring one is ignored. `rocketride.general.sidebar` (`default` | `vscode` | `cursor` | `rocketride`, default `default`) picks the sidebar layout for every app: `default` defers to each app's declared `sidebarMode`, any other choice overrides it. `vscode`/`cursor` take effect only on apps that declare `sidebarViews`; apps with a classic `sidebar` node keep the classic column.
+
 ---
 
 ## The App Descriptor
@@ -340,13 +342,29 @@ interface ShellAppProps {
 
 | Zone | Owner | Content |
 |------|-------|---------|
-| **Sidebar** | Your `app` component's layout (`AppLayout`) | App switcher header, your sidebar content, theme/account/settings footer |
+| **Sidebar** | Your `app` component's layout (`AppLayout`) | Classic column for a `sidebar` node; activity rail + panel when the app declares `sidebarViews` (app icon and name in the panel header, your content in the panel, account footer on the rail) |
 | **Client Area** | Your `app` component | Whatever your app renders |
 | **Debug Panel** | Shell (ALT+D toggle) | Live event log, postMessage traffic |
 | **Status Bar** | Shell | Connection status, app name, ready state |
 | **Overlays** | Shell | Account, Billing, Settings (triggered from sidebar footer) |
 
 If your app's layout renders no sidebar, the client area gets the full window width.
+
+**Sidebar chrome.** The chrome follows the declaration. A plain
+`sidebar={content}` node renders the classic single column (which iconifies
+when collapsed). Declaring `sidebarViews` (one entry per rail icon; see
+`SidebarViewContainer`) unlocks the VS Code-style frame instead: a fixed
+activity rail beside a resizable panel holding your content. There,
+collapsing closes the panel; the rail and account footer never disappear,
+and your content is never asked to render an iconified form of itself. An
+existing menu can be projected onto the rail with `viewsFromMenu(menu)` —
+an explicit opt-in, never applied automatically. `sidebarMode: 'rocketride'`
+opts a view-declaring app back into the classic column; compact (mobile)
+widths always render a drawer. The user's **General > Sidebar** setting
+(`rocketride.general.sidebar`) overrides `sidebarMode` whenever it is set to
+anything other than `default`; on `default` the app's declaration applies.
+The `vscode`/`cursor` choices apply only to apps that declare `sidebarViews`
+— a classic sidebar is never shoehorned onto the rail.
 
 ---
 

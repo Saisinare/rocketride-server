@@ -644,7 +644,7 @@ export class RocketRideClient extends DAPClient {
 	// INTERNAL CONNECTION HELPERS
 	// ============================================================================
 
-	private _resolveCredential(credential?: string | { code: string; verifier: string; redirectUri: string }): string {
+	private _resolveCredential(credential?: string | { code: string; verifier: string; redirectUri: string; clientId?: string }): string {
 		if (credential && typeof credential === 'object') {
 			// Keep the established deterministic PKCE wire encoding.
 			return (
@@ -654,6 +654,12 @@ export class RocketRideClient extends DAPClient {
 						code: credential.code,
 						verifier: credential.verifier,
 						redirectUri: credential.redirectUri,
+						// The Zitadel client that MINTED the code — Zitadel
+						// binds codes to their client, so non-web clients
+						// (VS Code native app, CLI) must name themselves or
+						// the server-side exchange fails with invalid_client.
+						// Omitted = the server's default (web) client.
+						...(credential.clientId ? { clientId: credential.clientId } : {}),
 					})
 				)
 			);
@@ -903,7 +909,7 @@ export class RocketRideClient extends DAPClient {
 		return operation;
 	}
 
-	private _startForegroundLogin(credential?: string | { code: string; verifier: string; redirectUri: string }, options?: { uri?: string; timeout?: number }): Promise<ConnectResult> {
+	private _startForegroundLogin(credential?: string | { code: string; verifier: string; redirectUri: string; clientId?: string }, options?: { uri?: string; timeout?: number }): Promise<ConnectResult> {
 		const endpoint = options?.uri ? this._getWebsocketUri(options.uri) : this._uri;
 		const credentialKey = this._resolveCredential(credential);
 		const current = this._lifecycleOperation;
@@ -1091,7 +1097,7 @@ export class RocketRideClient extends DAPClient {
 	 * resolution checks the argument, configured environment, and stored client state
 	 * (initialized by `config.auth` and updated after authentication). The transport stays attached.
 	 */
-	async login(credential?: string | { code: string; verifier: string; redirectUri: string }, options?: { uri?: string; timeout?: number }): Promise<ConnectResult> {
+	async login(credential?: string | { code: string; verifier: string; redirectUri: string; clientId?: string }, options?: { uri?: string; timeout?: number }): Promise<ConnectResult> {
 		return this._startForegroundLogin(credential, options);
 	}
 
@@ -1184,7 +1190,7 @@ export class RocketRideClient extends DAPClient {
 	 * resolution checks the argument, configured environment, and stored client state
 	 * (initialized by `config.auth` and updated after authentication).
 	 */
-	async connect(credential?: string | { code: string; verifier: string; redirectUri: string }, options?: { uri?: string; timeout?: number }): Promise<ConnectResult> {
+	async connect(credential?: string | { code: string; verifier: string; redirectUri: string; clientId?: string }, options?: { uri?: string; timeout?: number }): Promise<ConnectResult> {
 		return this._startForegroundLogin(credential, options);
 	}
 
@@ -2852,26 +2858,9 @@ export class RocketRideClient extends DAPClient {
 		return (body as any)?.pins ?? [];
 	}
 
-	/**
-	 * Register (or clear) a per-user dev overlay for an app module: the
-	 * served app list is overridden with the given entry URL for THIS
-	 * user's connections — the App Builder's "built"/dev preview plumbing.
-	 * The overlay is scoped to the REGISTERING connection and dies with it
-	 * (a reconnected client re-registers).
-	 *
-	 * @param options - Overlay registration:
-	 *   - moduleId: the MF container name (required)
-	 *   - url: entry URL — http(s) or server-relative like
-	 *     '/apps/<appId>/v<N>/remoteEntry.js' (required unless unregister)
-	 *   - appId: the app id (defaults to moduleId)
-	 *   - session: preview-session nonce for embedded routing
-	 *   - name/description/appVersion/icon: display metadata for synthetic tiles
-	 *   - unregister: true removes this connection's override
-	 * @returns {registered} or {unregistered} echoing the moduleId
-	 */
-	async registerDev(options: { moduleId: string; url?: string; appId?: string; session?: string; name?: string; description?: string; appVersion?: string; icon?: string; unregister?: boolean }): Promise<{ registered?: string; unregistered?: string }> {
-		return (await this.call('rrext_deploy_app', { subcommand: 'register_dev', ...options })) as any;
-	}
+	// (registerDev is RETIRED: dev previews are LOCAL-FIRST — the app's dev
+	// server proxies the engine and preview pages register the app
+	// client-side; the server holds no dev state.)
 
 	// (appEntry is RETIRED: versions serve from stable constructed URLs —
 	// /apps/<appId>/v<N>/remoteEntry.js — with entitlement enforced per

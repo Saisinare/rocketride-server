@@ -244,6 +244,12 @@ export interface ISidebarViewProps {
 	 * Nodes placeholder (the web host: more modes will land on that strip).
 	 */
 	showModeStrip?: boolean;
+	/**
+	 * Suppress the mode tabs even when modes are wired — the host's own
+	 * chrome (the shell workbench's activity rail) owns the mode selection
+	 * and drives `sidebarMode` directly. Wins over `showModeStrip`.
+	 */
+	hideModeStrip?: boolean;
 	/** Active sidebar mode when the tabs are shown. Defaults to 'pipelines'. */
 	sidebarMode?: SidebarMode;
 	/** Mode tab selection callback (hosts persist the choice). */

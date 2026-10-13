@@ -42,7 +42,6 @@
     "markdown-to-jsx": "~7.7.16",
     "moment": "~2.30.1",
     "monaco-editor": "^0.55.1",
-    "posthog-js": "~1.274.1",
     "react": "^18.2.0",
     "react-canny": "~0.0.8",
     "react-chartjs-2": "^5.2.0",
@@ -60,7 +59,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
-    "@rsbuild/core": "~2.0.11",
+    "@rsbuild/core": "~2.2.12",
     "@rsbuild/plugin-react": "~2.0.1",
     "@rsbuild/plugin-sass": "~1.5.3",
     "@types/d3": "~7.4.3",
@@ -78,6 +77,7 @@
   },
   "exports": {
     "./agent/*": "./src/agent/*",
+    "./workspace/*": "./src/workspace/*",
     "./api/*": "./src/api/*",
     "./components/*": "./src/components/*",
     "./services/*": "./src/services/*",

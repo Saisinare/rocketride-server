@@ -26,18 +26,18 @@
 
 /**
  * The App Builder's entire view surface: a top TabControl strip switching
- * the activity views — DASHBOARD | DESIGN | CODE | PACKAGE | STORE | DEPLOY —
+ * the activity views — DASHBOARD | DESIGN | PACKAGE | STORE | DEPLOY —
  * with the app's `id · version` in the trailing slot (revised decision D1:
  * activity names, no coach bar, no artifact views). DASHBOARD is the
  * landing view; PACKAGE is the complete-app bar, STORE is commerce only.
- * CODE is a top-level view only where the host supplies a Code pane
- * (`hasCodePane` — web); VSCode edits natively and never shows the tab.
+ * Code editing lives OUTSIDE this screen on every host (VSCode edits
+ * natively; the web edits through the workspace Explorer's file tabs).
  *
  * Hosts mount this ONE component in exactly one of two ways (decision D7):
  * rocket-ui direct-mounts it with an adapter over the live client; the
  * VSCode `page-app` webview mounts it with an adapter that bridges every
- * accessor/action over useMessaging to the extension host. The preview and
- * code surfaces are the only host-rendered pieces, passed in as slots.
+ * accessor/action over useMessaging to the extension host. The preview
+ * surface is the only host-rendered piece, passed in as a slot.
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
@@ -62,8 +62,6 @@ export interface IAppBuilderScreenProps {
 	app: AppSummary;
 	/** Host-rendered live preview surface (iframe wrapper). */
 	previewPane?: React.ReactNode;
-	/** Host-rendered Code surface (web: file tree + Monaco). */
-	codePane?: React.ReactNode;
 	/** Initial activity view (defaults to 'dashboard'). */
 	initialStage?: AppBuilderStage;
 	/** Notified when the user switches views (hosts persist view state). */
@@ -87,13 +85,6 @@ const styles: Record<string, React.CSSProperties> = {
 		minHeight: 0,
 		position: 'relative',
 		display: 'flex',
-		flexDirection: 'column',
-	},
-	// The kept-mounted CODE view host (CodePane fills it absolutely).
-	codeHost: {
-		flex: 1,
-		minHeight: 0,
-		position: 'relative',
 		flexDirection: 'column',
 	},
 	trailing: {
@@ -128,7 +119,7 @@ const styles: Record<string, React.CSSProperties> = {
  * @param props - See {@link IAppBuilderScreenProps}.
  */
 export const AppBuilderScreen: React.FC<IAppBuilderScreenProps> = ({
-	host, app, previewPane, codePane, initialStage, onStageChange,
+	host, app, previewPane, initialStage, onStageChange,
 }) => {
 	// ── Stage — the active activity view ─────────────────────────────────
 	const [stage, setStage] = useState<AppBuilderStage>(initialStage ?? 'dashboard');
@@ -146,18 +137,16 @@ export const AppBuilderScreen: React.FC<IAppBuilderScreenProps> = ({
 	const namespaceMismatch = developerId !== null && app.id.split('.')[0] !== developerId;
 
 	// The activity views, per the settled UI model — Dashboard lands first;
-	// Package is the complete-app bar, Store is commerce only. Code appears
-	// only where the host supplies a Code pane (web).
+	// Package is the complete-app bar, Store is commerce only.
 	const viewMenu: ViewMenu = useMemo(() => ({
 		entries: [
 			{ id: 'dashboard', label: 'Dashboard' },
 			{ id: 'design', label: 'Design' },
-			...(host.capabilities.hasCodePane ? [{ id: 'code', label: 'Code' }] : []),
 			{ id: 'package', label: 'Package' },
 			{ id: 'store', label: 'Store' },
 			{ id: 'deploy', label: 'Deploy' },
 		],
-	}), [host.capabilities.hasCodePane]);
+	}), []);
 
 	/** Switch views and let the host persist the selection. */
 	const selectStage = (id: string): void => {
@@ -199,14 +188,6 @@ export const AppBuilderScreen: React.FC<IAppBuilderScreenProps> = ({
 				)}
 				{stage === 'design' && (
 					<DesignView host={host} previewPane={previewPane} />
-				)}
-				{/* CODE — host slot (web only). KEPT MOUNTED while other views
-				    are active: the dev session's compiler/linker feed the
-				    preview through it, so the project must stay compiled
-				    without ever visiting CODE (the keep-editors-mounted
-				    pattern DesignView uses for its own panes). */}
-				{host.capabilities.hasCodePane && codePane && (
-					<div style={{ ...styles.codeHost, display: stage === 'code' ? 'flex' : 'none' }}>{codePane}</div>
 				)}
 				{/* Package edits LOCAL files (like DESIGN) — never namespace-gated. */}
 				{stage === 'package' && <PackageView host={host} app={app} />}

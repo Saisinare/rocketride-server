@@ -56,6 +56,10 @@ const ROCKETRIDE_APP: AppDescriptor = {
 	// Two-column app: RocketApp's root AppLayout declares the pipelines
 	// Explorer sidebar and the status bar.
 	app: RocketApp,
+	// Open with the sidebar panel closed (the rail stays reachable). Honored
+	// only until the person expands/collapses it themselves — their choice is
+	// remembered per app and wins on later visits.
+	sidebar: 'collapsed',
 };
 
 export default ROCKETRIDE_APP;

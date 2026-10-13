@@ -51,7 +51,7 @@ import { BaseManager } from './base-manager';
 import { RemoteManager } from './remote-manager';
 import { AUTH_REJECTED_MESSAGE, ConnectionFailure } from './errors';
 import { shouldReloadForTokenStorageUpdate } from './tokenStorageUpdate';
-import { isEmbeddedDevShell, tokenStore, sessionScopedStore } from '../util/devGate';
+import { isEmbeddedDevShell, isSameOriginEmbed, tokenStore, sessionScopedStore } from '../util/devGate';
 import { getStoredVerifier, clearStoredVerifier } from '../util/pkce';
 import {
 	LS_TOKEN,
@@ -1259,13 +1259,15 @@ export class ConnectionManager implements IConnectionManager {
 		try { tokenStore().setItem(LS_TOKEN, token); } catch (e) {
 			console.error('[ConnectionManager] Failed to save token:', e);
 		}
-		// An embedded preview must not stamp the HOST-WIDE /apps cookie: the
-		// cookie jar is shared by every same-origin frame, so a panel's
-		// injected dev session would swap the bundle credentials out from
-		// under the embedding user's real session and every sibling panel.
-		// The preview's own dev bundle is served by the dev overlay, not
-		// /apps, so the prime is not needed there either.
-		if (isEmbeddedDevShell()) return;
+		// A SAME-ORIGIN embedded preview (the web App Builder iframe) must
+		// not stamp the HOST-WIDE /apps cookie: the jar is shared by every
+		// same-origin frame, so a panel's injected dev session would swap
+		// the bundle credentials out from under the embedding user's real
+		// session and every sibling panel. A CROSS-origin preview (VS Code —
+		// served from its app's dev-proxy origin) owns its jar outright, and
+		// its PUBLISHED app bundles load through the proxy's /apps routes,
+		// so the prime must run there.
+		if (isEmbeddedDevShell() && isSameOriginEmbed()) return;
 		this.primeAppsCookie(token);
 	}
 
