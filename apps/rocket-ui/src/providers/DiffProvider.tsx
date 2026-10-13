@@ -31,7 +31,7 @@
 // tab live.
 // =============================================================================
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { commonStyles } from 'shell';
 import { getStagedWorkspace } from '../workspace/workspace';
@@ -119,12 +119,18 @@ const DiffProvider: React.FC<DiffProviderProps> = ({ path }) => {
 	const [lines, setLines] = useState<DiffLine[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
+	// step: concurrent loads race during an edit burst — only the NEWEST
+	// call's result may land (and none after unmount)
+	const seqRef = useRef(0);
 	const load = useCallback(async () => {
+		const seq = ++seqRef.current;
 		try {
 			const { before, after } = await getStagedWorkspace().diff(path);
+			if (seq !== seqRef.current) return;
 			setLines(diffLines(before, after));
 			setError(null);
 		} catch (err) {
+			if (seq !== seqRef.current) return;
 			setLines(null);
 			setError(err instanceof Error ? err.message : String(err));
 		}
@@ -133,7 +139,11 @@ const DiffProvider: React.FC<DiffProviderProps> = ({ path }) => {
 	// Compute on mount; recompute on every view tick (edit/discard/commit).
 	useEffect(() => {
 		void load();
-		return getStagedWorkspace().subscribe(() => void load());
+		const unsubscribe = getStagedWorkspace().subscribe(() => void load());
+		return () => {
+			seqRef.current += 1;
+			unsubscribe();
+		};
 	}, [load]);
 
 	const added = lines?.filter((l) => l.type === 'add').length ?? 0;

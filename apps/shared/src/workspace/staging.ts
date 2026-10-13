@@ -68,6 +68,8 @@ interface ManifestEntry {
 	contentHash?: string;
 	/** Hash of the captured before-content (null = path did not exist). */
 	baseHash?: string | null;
+	/** Tombstone of a DIRECTORY (no content capture; anchors on existence). */
+	dir?: boolean;
 	stamp: number;
 }
 
@@ -208,7 +210,7 @@ export class StagingStore implements IStagingStore {
 					if (content === undefined) continue;
 					entries.set(path, { kind: 'write', content, before, baseHash: e.baseHash ?? null, stamp: e.stamp });
 				} else {
-					entries.set(path, { kind: 'tombstone', before, baseHash: e.baseHash ?? null, stamp: e.stamp });
+					entries.set(path, { kind: 'tombstone', before, baseHash: e.baseHash ?? null, dir: e.dir, stamp: e.stamp });
 				}
 			}
 			layers.push({ id: ml.id, label: ml.label, sessionId: ml.sessionId, committed: ml.committed, entries });
@@ -234,8 +236,12 @@ export class StagingStore implements IStagingStore {
 			committed: l.committed,
 			entries: new Map(l.entries),
 		}));
-		this.chain = this.chain.then(() => this.persistSnapshot(snapshot));
-		return this.chain;
+		// step: the caller gets THIS write's real outcome, but the stored tail
+		// is settle-recovered — one failed persist must not dam every later
+		// persist/sweep/gc for the rest of the page session
+		const run = this.chain.then(() => this.persistSnapshot(snapshot));
+		this.chain = run.catch(() => undefined);
+		return run;
 	}
 
 	/** The chained body of persist(). */
@@ -259,7 +265,7 @@ export class StagingStore implements IStagingStore {
 				if (entry.baseHash && entry.before !== null) {
 					await this.ensureBlob(client, entry.baseHash, entry.before);
 				}
-				entries[path] = { kind: entry.kind, contentHash, baseHash: entry.baseHash, stamp: entry.stamp };
+				entries[path] = { kind: entry.kind, contentHash, baseHash: entry.baseHash, dir: entry.kind === 'tombstone' ? entry.dir : undefined, stamp: entry.stamp };
 			}
 			manifestLayers.push({ id: layer.id, label: layer.label, sessionId: layer.sessionId, committed: layer.committed, entries });
 		}
@@ -285,7 +291,8 @@ export class StagingStore implements IStagingStore {
 	 * destroy other scopes' pending state.
 	 */
 	async sweep(): Promise<void> {
-		this.chain = this.chain.then(async () => {
+		// step: same settle-recovered tail as persist()
+		const run = this.chain.then(async () => {
 			const client = this.client();
 			try {
 				await client.fsDelete(this.manifestPath());
@@ -299,7 +306,8 @@ export class StagingStore implements IStagingStore {
 			}
 			this.knownBlobs.clear();
 		});
-		return this.chain;
+		this.chain = run.catch(() => undefined);
+		return run;
 	}
 
 	/**
@@ -308,6 +316,16 @@ export class StagingStore implements IStagingStore {
 	 * failures leave orphans for the next load()'s authoritative pass.
 	 */
 	async gc(): Promise<void> {
+		// step: through the serialized chain — an unserialized GC can read the
+		// OLD manifest while a persist is mid-flight, see its fresh blob as
+		// unreferenced, and delete it right before the new manifest lands
+		const run = this.chain.then(() => this.gcNow());
+		this.chain = run.catch(() => undefined);
+		return run;
+	}
+
+	/** The chained GC body — never runs concurrently with persist/sweep. */
+	private async gcNow(): Promise<void> {
 		const client = this.client();
 
 		// step: derive the referenced set from the manifest — never stored

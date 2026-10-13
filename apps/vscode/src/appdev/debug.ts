@@ -18,7 +18,6 @@
 
 import * as vscode from 'vscode';
 import { mkdirSync } from 'fs';
-import { ConnectionManager } from '../connection/connection';
 import { scanWorkspaceApps } from './appScan';
 import { resolveBrowserDebugTarget } from './browser';
 import { ensureWatch, getWatchManager } from './watchManager';
@@ -56,8 +55,24 @@ export async function debugApp(appId: string, profileDir: string): Promise<void>
 	// The tab loads the shell THROUGH THE DEV PROXY origin: the proxy serves
 	// `/apps/<id>/dev/**` from disk and passes everything else to the engine,
 	// and the shell self-registers the dev app from that URL convention.
-	const devOrigin = await getWatchManager()?.whenReady(appId);
-	const base = (devOrigin || ConnectionManager.getInstance().getHttpUrl?.() || 'http://localhost:5565').replace(/\/$/, '');
+	// The wait is BOUNDED and there is no engine-origin fallback — the engine
+	// does not serve /apps/<id>/dev/**, so launching against it is a broken
+	// preview, and an rsbuild that never banners would otherwise hang F5.
+	let devOrigin: string | undefined;
+	try {
+		const ready = getWatchManager()?.whenReady(appId);
+		devOrigin = ready
+			? await Promise.race([ready, new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 120_000))])
+			: undefined;
+	} catch (err) {
+		vscode.window.showErrorMessage(`Debug for ${app.name} did not start — the dev server is not serving: ${err instanceof Error ? err.message : String(err)}`);
+		return;
+	}
+	if (!devOrigin) {
+		vscode.window.showErrorMessage(`Debug for ${app.name} did not start — the dev server did not become ready.`);
+		return;
+	}
+	const base = devOrigin.replace(/\/$/, '');
 	const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(app.folder));
 	// The developer's default browser when Chromium-based; Edge otherwise
 	const browser = await resolveBrowserDebugTarget();

@@ -336,7 +336,18 @@ export class WatchManager {
 		// the preview shell loads everything through the dev server; the
 		// engine origin may differ between sessions (local-first dev design)
 		const engineOrigin = this.connectionManager.getHttpUrl() || 'http://localhost:5565';
-		const proxyConfigPath = await writeProxyConfig(app.folder, app.id, engineOrigin);
+		// step: a failed wrapper write must SETTLE readiness — an unsettled
+		// promise leaves debugApp waiting forever and the panel badge frozen,
+		// and no session record exists yet for the exit handler to clean up
+		let proxyConfigPath: string;
+		try {
+			proxyConfigPath = await writeProxyConfig(app.folder, app.id, engineOrigin);
+		} catch (err) {
+			const reason = `could not write the dev proxy config: ${err instanceof Error ? err.message : String(err)}`;
+			this.rejectReadiness(app.id, reason);
+			this.notify(app.id, { state: 'error', target: 'dev proxy', reason });
+			return;
+		}
 		const proc = spawn(process.execPath, [this.guardPath, String(process.pid), spawnArgs.shell ? '1' : '0', spawnArgs.cmd, ...spawnArgs.args, 'dev', '--config', proxyConfigPath], {
 			cwd: app.folder,
 			env: { ...process.env, NO_COLOR: '1' },

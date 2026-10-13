@@ -241,6 +241,18 @@ test('dirty editor overlay wins over staged content', async () => {
 	assert.equal(await fs.read('f.ts'), 'typing...');
 });
 
+test('staging a dirty buffer captures base truth, not the overlay', async () => {
+	// The base view serves a dirty overlay from read() — "before" must still
+	// be the BASE content, or staging the buffer itself becomes a no-op.
+	const { base, fs } = makeStaged({ 'f.ts': 'committed' });
+	base.registerOverlay('f.ts', { getContent: () => 'edited', isDirty: () => true });
+	await fs.write('f.ts', 'edited');
+	assert.equal(fs.changedPaths().get('f.ts'), 'modified');
+	const result = await fs.commit();
+	assert.equal(result.committed, 1);
+	assert.equal(base.files.get('f.ts'), 'edited');
+});
+
 // =============================================================================
 // UNION LISTINGS + INVENTORY
 // =============================================================================
@@ -531,4 +543,22 @@ test('delete of a staged directory swallows its staged children', async () => {
 	// the net effect against an empty base is nothing to commit
 	const result = await fs.commit();
 	assert.equal(result.committed, 0);
+});
+
+test('delete of a BASE directory commits as a dir tombstone', async () => {
+	const { base, fs } = makeStaged({ 'apps/x/a.ts': 'A' });
+	base.dirs.add('apps/x');
+	await fs.delete('apps/x');
+	assert.equal(fs.changedPaths().get('apps/x'), 'deleted');
+	const result = await fs.commit();
+	assert.equal(result.conflicts.length, 0);
+	assert.ok(result.committed > 0);
+	assert.equal(base.dirs.has('apps/x'), false);
+	assert.equal(base.files.has('apps/x/a.ts'), false);
+});
+
+test('delete of a missing path is refused up front', async () => {
+	const { fs } = makeStaged({});
+	await assert.rejects(() => fs.delete('nope.ts'), /No such path/);
+	assert.equal(fs.hasPendingChanges(), false);
 });

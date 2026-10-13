@@ -76,6 +76,11 @@ export type LayerEntry =
 		/** The deleted file's content at first touch (null for dirs/unknown). */
 		before: string | null;
 		baseHash: string | null;
+		/**
+		 * True when the deleted path was a DIRECTORY — dirs have no content
+		 * capture, so existence (not a content hash) is their commit anchor.
+		 */
+		dir?: boolean;
 		stamp: number;
 	}
 	| {
@@ -329,7 +334,10 @@ export class StagedFileSystem implements IWorkspaceFileSystem {
 		if (eff && eff.kind === 'write') return eff.content;
 		if (eff && eff.kind === 'mkdir') return null;
 		try {
-			const content = await this.base.read(path);
+			// step: base TRUTH, never a dirty overlay — the base view serves
+			// an open editor's buffer from read(), and capturing that as
+			// "before" would make staging the same buffer a silent no-op
+			const content = await this.base.peekBase(path);
 			return typeof content === 'string' ? content : null;
 		} catch {
 			return null;
@@ -529,6 +537,13 @@ export class StagedFileSystem implements IWorkspaceFileSystem {
 		const p = this.norm(path);
 		if (this.writeThrough) return this.base.delete(p, origin);
 		if (!p) throw new Error('Refusing to delete the workspace root.');
+		// step: rule on the path's KIND first — a missing path is an error,
+		// not an invisible forever-pending entry. The dir flag records that
+		// the BASE has the directory (a staged-only dir nets to nothing);
+		// dirs have no content capture, so existence is their commit anchor
+		const kind = await this.stat(p);
+		if (kind === null) throw new Error(`No such path: ${p}`);
+		const baseKind = kind === 'dir' ? await this.base.stat(p) : null;
 		const before = await this.effectiveBefore(p);
 		const layer = this.workingLayer();
 		// step: staged entries under a deleted directory are swallowed by it
@@ -539,7 +554,7 @@ export class StagedFileSystem implements IWorkspaceFileSystem {
 		const prior = layer.entries.get(p);
 		const keepBefore = prior && prior.kind !== 'mkdir' ? prior.before : before;
 		const baseHash = keepBefore === null ? null : await sha256Hex(keepBefore);
-		layer.entries.set(p, { kind: 'tombstone', before: keepBefore, baseHash, stamp: Date.now() });
+		layer.entries.set(p, { kind: 'tombstone', before: keepBefore, baseHash, dir: baseKind === 'dir', stamp: Date.now() });
 		await this.persistAndNotify();
 	}
 
@@ -778,9 +793,10 @@ export class StagedFileSystem implements IWorkspaceFileSystem {
 				const eff = this.effective(p);
 				if (eff === null) continue;
 				if (eff === 'gone') {
-					// visible only when the base actually had the path
+					// visible only when the base actually had the path (content
+					// capture for files, the dir flag for directories)
 					const first = this.firstEntry(p);
-					if (first && first.kind !== 'mkdir' && first.before !== null) out.set(p, 'deleted');
+					if (first && first.kind !== 'mkdir' && (first.before !== null || (first.kind === 'tombstone' && first.dir))) out.set(p, 'deleted');
 					continue;
 				}
 				if (eff.kind === 'mkdir') { out.set(p, 'added'); continue; }
@@ -838,8 +854,11 @@ export class StagedFileSystem implements IWorkspaceFileSystem {
 				const eff = this.effective(p);
 				if (eff === 'gone') {
 					const first = this.firstEntry(p);
-					// deletes only matter when the base actually has the path
-					if (first && first.kind !== 'mkdir' && first.before !== null) {
+					// deletes only matter when the base actually has the path —
+					// content capture for files, the dir flag for directories
+					if (first && first.kind === 'tombstone' && (first.before !== null || first.dir)) {
+						net.set(p, { kind: 'tombstone', before: first.before, baseHash: first.baseHash, dir: first.dir, stamp: Date.now() });
+					} else if (first && first.kind === 'write' && first.before !== null) {
 						net.set(p, { kind: 'tombstone', before: first.before, baseHash: first.baseHash, stamp: Date.now() });
 					}
 				} else if (eff) {
@@ -881,13 +900,23 @@ export class StagedFileSystem implements IWorkspaceFileSystem {
 		const net = this.netOps();
 		if (net.size === 0) return { committed: 0, conflicts: [] };
 
-		// step: verify — the base must still match every first-touch capture
+		// step: verify — the base must still match every first-touch capture.
+		// Tombstones whose outcome the base ALREADY holds are marked converged
+		// and excluded from the replay (deleting a gone path would throw).
 		const conflicts: StagedConflict[] = [];
+		const converged = new Set<string>();
 		for (const [p, entry] of net) {
 			if (entry.kind === 'mkdir') continue;
+			// step: a DIRECTORY tombstone anchors on existence, not content —
+			// gone already = converged; still a dir = passes and replays
+			if (entry.kind === 'tombstone' && entry.dir) {
+				if ((await this.base.stat(p)) === null) converged.add(p);
+				continue;
+			}
 			let current: string | null = null;
 			try {
-				const content = await this.base.read(p);
+				// step: base truth, never a dirty overlay (see effectiveBefore)
+				const content = await this.base.peekBase(p);
 				current = typeof content === 'string' ? content : null;
 			} catch {
 				current = null;
@@ -896,7 +925,10 @@ export class StagedFileSystem implements IWorkspaceFileSystem {
 			// OUTCOME (same content, or already deleted) is never a conflict;
 			// this is what lets a re-run finish a partially replayed commit
 			if (entry.kind === 'write' && current === entry.content) continue;
-			if (entry.kind === 'tombstone' && current === null) continue;
+			if (entry.kind === 'tombstone' && current === null) {
+				converged.add(p);
+				continue;
+			}
 			if (entry.baseHash === null) {
 				if (current !== null) conflicts.push({ path: p, reason: 'resurrected' });
 			} else if (current === null) {
@@ -917,7 +949,7 @@ export class StagedFileSystem implements IWorkspaceFileSystem {
 			const entry = net.get(p)! as Extract<LayerEntry, { kind: 'write' }>;
 			await this.base.write(p, entry.content);
 		}
-		for (const p of paths.filter((x) => net.get(x)!.kind === 'tombstone').sort((a, b) => depth(b) - depth(a))) {
+		for (const p of paths.filter((x) => net.get(x)!.kind === 'tombstone' && !converged.has(x)).sort((a, b) => depth(b) - depth(a))) {
 			await this.base.delete(p);
 		}
 
@@ -971,7 +1003,8 @@ export class StagedFileSystem implements IWorkspaceFileSystem {
 		for (const [p, { expected }] of inverse) {
 			let current: string | null = null;
 			try {
-				const content = await this.base.read(p);
+				// step: base truth, never a dirty overlay (see effectiveBefore)
+				const content = await this.base.peekBase(p);
 				current = typeof content === 'string' ? content : null;
 			} catch {
 				current = null;

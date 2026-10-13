@@ -150,12 +150,18 @@ export const MonacoEditor: React.FC<IMonacoEditorProps> = ({ model, value, langu
 				const parsed = monaco.Uri.parse(p.uri);
 				const existing = monaco.editor.getModel(parsed);
 				if (existing) {
-					if (p.value !== undefined && existing.getValue() !== p.value) {
-						silentRef.current = true;
-						existing.setValue(p.value);
-						silentRef.current = false;
-					}
+					// step: the live shared model IS the truth — it may hold
+					// another tab's unsaved edits, and resetting it to the
+					// stored value would clobber them (the sibling's listener
+					// would even re-mark the clobbered content dirty). When the
+					// stored value diverges, report the LIVE value instead so
+					// this host adopts it.
 					boundModel = existing;
+					if (p.value !== undefined && existing.getValue() !== p.value) {
+						queueMicrotask(() => {
+							if (!disposed) propsRef.current.onChange?.(existing.getValue());
+						});
+					}
 				} else {
 					boundModel = monaco.editor.createModel(p.value ?? '', p.language ?? 'plaintext', parsed);
 				}

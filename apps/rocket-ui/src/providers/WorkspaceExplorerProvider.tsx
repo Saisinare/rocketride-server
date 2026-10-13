@@ -95,6 +95,8 @@ const WorkspaceExplorerProvider: React.FC = () => {
 	// --- Confirmation dialog (same pattern as the pipelines sidebar) ----------
 	const confirmResolveRef = useRef<((v: boolean) => void) | null>(null);
 	const [confirmState, setConfirmState] = useState<{ title: string; message: string } | null>(null);
+	/** A refused/failed action's message — rendered as a dismissable notice. */
+	const [notice, setNotice] = useState<string | null>(null);
 
 	/** Shows a confirm dialog; resolves true/false on the user's answer. */
 	const showConfirm = useCallback((title: string, message: string): Promise<boolean> => {
@@ -125,6 +127,13 @@ const WorkspaceExplorerProvider: React.FC = () => {
 		async (action: 'rename' | 'delete' | 'createFolder' | 'createFile', path: string, newName?: string) => {
 			const view = getWorkspaceVfs();
 			try {
+				// step: refuse creates outside the three mounts BEFORE staging —
+				// a staged entry at the root passes silently here but fails every
+				// later "Commit all" until the user finds and discards it
+				if ((action === 'createFolder' || action === 'createFile') && !/^(apps|nodes|pipelines)\//.test(path)) {
+					setNotice('Files live inside apps/, nodes/, or pipelines/ — select one of those folders first.');
+					return;
+				}
 				switch (action) {
 					case 'rename': {
 						// `newName` is the full new leaf (no extension magic here —
@@ -166,7 +175,10 @@ const WorkspaceExplorerProvider: React.FC = () => {
 						break;
 				}
 			} catch (err) {
+				// step: the refusal reaches the USER — a console row is invisible
+				// and the tree would just silently not change
 				console.error('[WorkspaceExplorer] action failed:', action, err);
+				setNotice(`Could not ${action === 'createFolder' ? 'create the folder' : action === 'createFile' ? 'create the file' : action} "${path}": ${err instanceof Error ? err.message : String(err)}`);
 			}
 		},
 		[showConfirm]
@@ -195,6 +207,16 @@ const WorkspaceExplorerProvider: React.FC = () => {
 					cancelLabel="Cancel"
 					onConfirm={() => handleConfirmResult(true)}
 					onCancel={() => handleConfirmResult(false)}
+				/>
+			)}
+			{notice && (
+				<ConfirmDialog
+					title="Workspace"
+					message={notice}
+					confirmLabel="OK"
+					cancelLabel="Close"
+					onConfirm={() => setNotice(null)}
+					onCancel={() => setNotice(null)}
 				/>
 			)}
 		</>

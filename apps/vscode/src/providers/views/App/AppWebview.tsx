@@ -402,12 +402,15 @@ const PreviewFrame: React.FC<{ url: string; reloadSeq: number; app: AppSummary |
 	// Manifest-only change (package.json saved, same container): re-post the
 	// registration so the shell refreshes metadata (name/icon/settings) —
 	// registerLocalApp is re-entrant; no container re-injection happens.
-	const manifestMountedRef = useRef(false);
+	// Keyed by CONTENT: every build mints a fresh manifest object, and an
+	// identity-keyed effect would force-re-register per build (zombie-
+	// container churn) even when nothing in the manifest changed.
+	const manifestKeyRef = useRef<string | null>(null);
 	React.useEffect(() => {
-		if (!manifestMountedRef.current) {
-			manifestMountedRef.current = true;
-			return;
-		}
+		const key = JSON.stringify(devManifest ?? null);
+		const prev = manifestKeyRef.current;
+		manifestKeyRef.current = key;
+		if (prev === null || prev === key) return;
 		if (ready && injectedRef.current) inject();
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- fires on manifest change only
 	}, [devManifest]);

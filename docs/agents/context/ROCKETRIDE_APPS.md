@@ -1747,9 +1747,10 @@ Mechanics worth knowing:
 - **One version per page.** A loaded app is committed to its version for
   the life of the document — picking a different version after the app has
   loaded reloads the page once (before it loads, the switch is instant).
-- **The dev build wins.** While your watch is serving the app, the dev
-  overlay takes precedence over any override — stop the dev session to
-  test served versions.
+- **The dev build wins.** While your watch is serving the app, the local
+  dev registration (the preview page registers your dev bundle client-side)
+  takes precedence over any override — stop the dev session to test served
+  versions.
 - **Entitlement is enforced per request.** You can load any version served
   on a rung visible to you (your `@me`, a team you belong to, the approved
   store version) — or any version you deployed yourself, published or not.

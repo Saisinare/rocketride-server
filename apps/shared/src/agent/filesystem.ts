@@ -77,8 +77,23 @@ const TEXT_EXTENSIONS = new Set([
 	'py', 'yaml', 'yml', 'toml', 'env', 'sh', 'cmd', 'sql', 'csv',
 ]);
 
-/** Characters the platform store refuses in paths (client-side mirror). */
-const INVALID_PATH_CHARS = /[*?<>|"\x00-\x1f]/;
+/** Printable characters the platform store refuses in paths (client-side mirror). */
+const INVALID_PRINTABLE_CHARS = /[*?<>|"]/;
+
+/**
+ * Whether a path holds a store-illegal character. C0 controls are checked by
+ * char code — a control range inside a regex trips eslint's no-control-regex.
+ *
+ * @param p - The cleaned path.
+ * @returns True when the store would refuse it.
+ */
+function hasInvalidPathChar(p: string): boolean {
+	if (INVALID_PRINTABLE_CHARS.test(p)) return true;
+	for (let i = 0; i < p.length; i += 1) {
+		if (p.charCodeAt(i) < 0x20) return true;
+	}
+	return false;
+}
 
 /** The default group instructions — generic file-tool doctrine only. */
 const FILESYSTEM_INSTRUCTIONS = `File tools operate on the workspace virtual filesystem. Paths are workspace-relative and always use forward slashes.
@@ -109,7 +124,7 @@ function normalizePath(raw: unknown, allowRoot = false): string {
 		throw new Error('A file or directory path is required.');
 	}
 	// step: refuse traversal and store-illegal characters up front
-	if (INVALID_PATH_CHARS.test(cleaned)) {
+	if (hasInvalidPathChar(cleaned)) {
 		throw new Error(`Path contains characters the store refuses: '${String(raw)}'`);
 	}
 	const segments = cleaned.split('/').filter((s) => s.length > 0);
@@ -117,17 +132,6 @@ function normalizePath(raw: unknown, allowRoot = false): string {
 		throw new Error(`Path traversal is not allowed: '${String(raw)}'`);
 	}
 	return segments.join('/');
-}
-
-/**
- * Parent directory of a canonical path ('' for top-level entries).
- *
- * @param path - Canonical path.
- * @returns The parent directory path.
- */
-function parentOf(path: string): string {
-	const i = path.lastIndexOf('/');
-	return i < 0 ? '' : path.slice(0, i);
 }
 
 // =============================================================================
@@ -188,9 +192,10 @@ export class FilesystemTools extends AgentToolkit {
 	 * @returns 'file' | 'dir' | null.
 	 */
 	private async entryType(path: string): Promise<'file' | 'dir' | null> {
-		// step: list() lazily loads the tree inventory on first use
-		await this.vfs.list(parentOf(path));
-		return this.vfs.entryType(path);
+		// step: stat() is the view contract's definitive answer — it consults
+		// the backend when the cached inventory can't; entryType() alone only
+		// reads the cache, which scoped/staged views don't promise to fill
+		return this.vfs.stat(path);
 	}
 
 	/**

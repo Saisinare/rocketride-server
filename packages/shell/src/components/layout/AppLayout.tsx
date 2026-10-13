@@ -80,10 +80,11 @@ export interface AppLayoutProps {
 	    inside read `useSidebarCollapsed()` to choose their collapsed
 	    (icon-rail) form. */
 	sidebar?: ReactNode;
-	/** The sidebar chrome this app asks for. Defaults to 'rocketride' (the
-	    classic column — today's behavior, untouched). 'vscode' (activity rail
-	    + panel) and 'cursor' (tab-strip panel) require a non-empty
-	    `sidebarViews`; without one the shell clamps back to 'rocketride'. */
+	/** The sidebar chrome this app asks for. With a non-empty `sidebarViews`
+	    an omitted mode renders the 'vscode' workbench; without declared views
+	    the shell always clamps to 'rocketride' (the classic column — today's
+	    behavior, untouched). 'cursor' is the tab-strip panel. The user's
+	    `rocketride.general.sidebar` setting overrides the app's request. */
 	sidebarMode?: ShellSidebarMode;
 	/** The app's sidebar view containers — the data behind the richer
 	    chromes. A container WITHOUT its own `content` shares the `sidebar`

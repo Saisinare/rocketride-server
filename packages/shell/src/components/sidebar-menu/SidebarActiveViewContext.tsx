@@ -31,10 +31,12 @@
 // through THIS context — the shared node reads `useSidebarActiveView()` and
 // presents the matching view, keeping one data owner behind N rail icons.
 //
-// Null outside a workbench: the classic 'rocketride' frame mounts no
-// provider, so content that also runs under the classic chrome (or in the
-// compact drawer, which is always classic) falls back to its own internal
-// switching — the exact behavior it had before modes existed.
+// Null only outside every view-driven frame: the classic 'rocketride'
+// column mounts no provider, so content running there falls back to its own
+// internal switching — the exact behavior it had before modes existed. The
+// compact DRAWER of an app with declared views DOES mount the provider
+// (its strip owns the selection exactly like the workbench rail), so shared
+// content must not assume the drawer always yields null.
 // =============================================================================
 
 import React, { createContext, useContext } from 'react';
@@ -87,11 +89,13 @@ export const SidebarActiveViewProvider: React.FC<ISidebarActiveViewProviderProps
 // =============================================================================
 
 /**
- * Reads the workbench's active-view selection, or null when no workbench
- * chrome encloses this content (classic sidebar, compact drawer, tests).
- * Shared sidebar content uses the null case to keep its own switcher.
+ * Reads the active-view selection, or null when no view-driven chrome
+ * encloses this content (the classic sidebar column, tests). The compact
+ * drawer of an app WITH declared views provides a selection too — only the
+ * classic column yields null. Shared sidebar content uses the null case to
+ * keep its own switcher.
  *
- * @returns The selection handle, or null outside a workbench.
+ * @returns The selection handle, or null under the classic chrome.
  */
 export function useSidebarActiveView(): SidebarActiveView | null {
 	return useContext(SidebarActiveViewContext);

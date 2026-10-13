@@ -53,9 +53,11 @@ import React, { useEffect, useMemo, useState, type CSSProperties } from 'react';
 const svgCache = new Map<string, string>();
 
 /**
- * Fetches and sanitizes one SVG. Strips script/foreignObject elements, every
- * on* handler, and javascript:/data: hrefs — the markup is inlined into the
- * page, so it must carry no active content.
+ * Fetches and sanitizes one SVG. Strips every element class that can carry
+ * active or externally-loading content (script, foreignObject, style,
+ * iframe/embed/object, SMIL animation, external <use>), every on* handler,
+ * and javascript:/data: hrefs — the markup is inlined into the page, so it
+ * must carry no active content.
  *
  * @param src - The SVG URL.
  * @returns Sanitized outer markup, or null when the payload is unusable.
@@ -70,11 +72,20 @@ async function loadSvg(src: string): Promise<string | null> {
 		const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
 		const root = doc.documentElement;
 		if (root.tagName.toLowerCase() !== 'svg' || doc.querySelector('parsererror')) return null;
-		for (const el of Array.from(doc.querySelectorAll('script, foreignObject'))) el.remove();
+		// step: whole element classes go, not just scripts — <style> can
+		// @import/url() external CSS, iframe/embed/object embed documents,
+		// and SMIL animation (<animate attributeName="href" values="js:…">)
+		// can WRITE the very attributes the pass below scrubs
+		for (const el of Array.from(doc.querySelectorAll('script, foreignObject, style, iframe, embed, object, animate, animateTransform, animateMotion, set'))) el.remove();
 		for (const el of Array.from(doc.querySelectorAll('*'))) {
 			for (const attr of Array.from(el.attributes)) {
 				if (/^on/i.test(attr.name)) el.removeAttribute(attr.name);
-				if (/href$/i.test(attr.name) && /^\s*(javascript|data):/i.test(attr.value)) el.removeAttribute(attr.name);
+				if (/href$/i.test(attr.name)) {
+					// step: <use> may only reference in-document fragments;
+					// everywhere else, no scriptable/data schemes
+					const external = el.tagName.toLowerCase() === 'use' && !attr.value.trim().startsWith('#');
+					if (external || /^\s*(javascript|data):/i.test(attr.value)) el.removeAttribute(attr.name);
+				}
 			}
 		}
 		// An SVG with no declared size would inline at 100% width — give it a
