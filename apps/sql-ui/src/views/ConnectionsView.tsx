@@ -23,47 +23,64 @@
 // =============================================================================
 // SQL-UI — CONNECTIONS VIEW (Archetype C landing: discovered database nodes)
 // =============================================================================
+//
+// The page is shared (shared/explorer/components/ConnectionsLanding); this
+// gives it SQL Explorer's wording, its endpoint store, and the probe its drawer
+// runs (the node's dialect plus a shallow schema summary).
+// =============================================================================
 
-import React, { useEffect, useState } from 'react';
-import { useShellConnection } from 'shell';
-import {
-	Banner,
-	Button,
-	ConnectionCard,
-	ConnectionCardAdd,
-	ContentHeader,
-	EmptyState,
-} from 'shell';
+import React from 'react';
+import type { RocketRideClient } from 'shell';
+import { ConnectionsLanding } from 'shared/explorer/components/ConnectionsLanding';
+import type { IConnectionsLandingCopy, LandingDrawerProps } from 'shared/explorer/components/ConnectionsLanding';
+import type { IDrawerProbeRow } from 'shared/explorer/components/EndpointDrawer';
 import type { ISqlEndpoint } from '../connect';
-import { refreshEndpoints, useSqlEndpoints } from '../connect';
+import { probeSqlEndpoint, sqlEndpoints } from '../connect';
 import { connectionUri, getDocs } from '../docs';
-import ConnectionDetailPanel from '../components/ConnectionDetailPanel';
 import { DatabaseIcon } from '../icons';
-import { styles } from '../styles';
 
 // =============================================================================
 // WORDING
 // =============================================================================
 
-/** The badge each endpoint state wears (the label is the whole message, never colour alone). */
-const STATE_BADGE: Record<ISqlEndpoint['state'], { variant: 'success' | 'muted' | 'error'; label: string }> = {
-	probing: { variant: 'muted', label: 'Checking' },
-	ready: { variant: 'success', label: 'Running' },
-	stopped: { variant: 'muted', label: 'Stopped' },
-	unreachable: { variant: 'error', label: 'Unreachable' },
-	inaccessible: { variant: 'error', label: 'No access' },
+/** The page's words. */
+const COPY: IConnectionsLandingCopy = {
+	title: 'Connections',
+	subtitle: 'SQL databases reachable through your running pipelines. A connection binds to a database tool node in a pipeline.',
+	loadingTitle: 'Discovering database nodes',
+	loadingDescription: 'Scanning your running pipelines for database tool nodes...',
+	emptyTitle: 'No database nodes found',
+	emptyDescription: 'Start a pipeline containing a database node (MySQL, PostgreSQL, Supabase, ClickHouse, or RocketRide SQL), then refresh.',
+	newLabel: 'New Connection',
+};
+
+/** The record drawer's words, probe and icon. */
+const DRAWER: LandingDrawerProps<ISqlEndpoint> = {
+	avatar: <DatabaseIcon />,
+	copy: {
+		newTitle: 'New Connection',
+		subtitle: 'Bind SQL Explorer to a database tool node in a running pipeline',
+		noEndpointsOption: 'No database nodes found',
+		pickHint: 'Only database nodes inside running pipelines are listed. The pipeline node owns the database credentials. Nothing is entered here.',
+	},
+	probe: async (client, endpoint) => {
+		const result = await probeSqlEndpoint(client as unknown as RocketRideClient, endpoint);
+		if (!result.ok) return { ok: false, rows: [], error: result.error };
+		const rows: IDrawerProbeRow[] = [{ label: 'Dialect', value: result.dialect }];
+		if (result.database !== undefined) rows.push({ label: 'Database', value: result.database });
+		if (result.tableCount !== undefined) rows.push({ label: 'Tables', value: String(result.tableCount) });
+		return { ok: true, rows };
+	},
 };
 
 /**
- * The card's second line. A deployment is named as one, because a developer's
- * run and a deployment of the same pipeline are different connections.
+ * Open (or focus) the workbench document for a connection. The endpoint rides
+ * as the static document's content payload.
  *
- * @param endpoint - The endpoint.
- * @returns e.g. `db_postgres - Orders` or `db_postgres - Orders (deployment)`.
+ * @param endpoint - The connection to open.
  */
-function cardAddress(endpoint: ISqlEndpoint): string {
-	const run = endpoint.runKind === 'deploy' ? ' (deployment)' : '';
-	return `${endpoint.provider} - ${endpoint.pipelineName}${run}`;
+function openConnection(endpoint: ISqlEndpoint): void {
+	getDocs()?.openStaticDocument(connectionUri(endpoint.key), endpoint.nodeName, endpoint);
 }
 
 // =============================================================================
@@ -72,129 +89,18 @@ function cardAddress(endpoint: ISqlEndpoint): string {
 
 /**
  * Landing view: every database tool node discovered in the caller's running
- * pipelines, as connection cards. Clicking a card (or the add tile) opens the
- * record drawer to inspect and probe the endpoint.
+ * pipelines, as connection cards. Clicking a card opens its workbench; the
+ * card's Edit action and the add tile open the record drawer to inspect and
+ * probe the endpoint first.
  */
-export const ConnectionsView: React.FC = () => {
-	const { client, isConnected } = useShellConnection();
-	const { status, endpoints, error } = useSqlEndpoints();
-
-	// Drawer state: open flag + the endpoint preselected by a card click
-	// (null = pick mode from the add tile / header action).
-	const [drawerOpen, setDrawerOpen] = useState(false);
-	const [drawerEndpoint, setDrawerEndpoint] = useState<ISqlEndpoint | null>(null);
-
-	// Kick off the first discovery as soon as the shell connection is live.
-	useEffect(() => {
-		if (client && isConnected && status === 'idle') {
-			void refreshEndpoints(client);
-		}
-	}, [client, isConnected, status]);
-
-	/**
-	 * Open the record drawer.
-	 *
-	 * @param endpoint - Preselected endpoint, or null for pick mode.
-	 */
-	const openDrawer = (endpoint: ISqlEndpoint | null): void => {
-		setDrawerEndpoint(endpoint);
-		setDrawerOpen(true);
-	};
-
-	/**
-	 * Open (or focus) the workbench document for a connection. The endpoint
-	 * rides as the static document's content payload.
-	 *
-	 * @param endpoint - The connection to open.
-	 */
-	const openConnection = (endpoint: ISqlEndpoint): void => {
-		getDocs()?.openStaticDocument(connectionUri(endpoint.key), endpoint.nodeName, endpoint);
-	};
-
-	// Discovery is still on its first pass (nothing cached to show yet).
-	const firstLoad = status === 'idle' || (status === 'loading' && endpoints.length === 0);
-
-	return (
-		<div style={styles.root}>
-			<ContentHeader
-				title="Connections"
-				subtitle="SQL databases reachable through your running pipelines. A connection binds to a database tool node in a pipeline."
-				actions={
-					<>
-						<Button
-							variant="ghost"
-							onClick={() => { if (client) void refreshEndpoints(client); }}
-							disabled={!client || status === 'loading'}
-						>
-							{status === 'loading' ? 'Refreshing...' : 'Refresh'}
-						</Button>
-						<Button variant="primary" onClick={() => openDrawer(null)}>+ New Connection</Button>
-					</>
-				}
-			/>
-
-			<div style={styles.content}>
-				{/* Discovery failure — keep any previously discovered cards visible. */}
-				{status === 'error' && (
-					<div style={{ marginBottom: 16 }}>
-						<Banner variant="error">Discovery failed: {error}</Banner>
-					</div>
-				)}
-
-				{firstLoad ? (
-					// First paint: framed progress state, never bare "Loading..." text.
-					<EmptyState
-						icon={<DatabaseIcon />}
-						title="Discovering database nodes"
-						description="Scanning your running pipelines for database tool nodes..."
-					/>
-				) : endpoints.length === 0 ? (
-					// Nothing reachable: explain what makes a connection appear.
-					<EmptyState
-						icon={<DatabaseIcon />}
-						title="No database nodes found"
-						description="Start a pipeline containing a database node (MySQL, PostgreSQL, Supabase, ClickHouse, or RocketRide SQL), then refresh."
-						action={
-							<Button variant="primary" onClick={() => { if (client) void refreshEndpoints(client); }} disabled={!client}>
-								Refresh
-							</Button>
-						}
-					/>
-				) : (
-					// The discovered endpoints as connection cards + the add tile.
-					<div style={styles.cardGrid}>
-						{endpoints.map((endpoint) => (
-							<ConnectionCard
-								key={endpoint.key}
-								icon={<DatabaseIcon />}
-								name={endpoint.nodeName}
-								address={cardAddress(endpoint)}
-								status={STATE_BADGE[endpoint.state].variant}
-								statusLabel={STATE_BADGE[endpoint.state].label}
-								connected={endpoint.state === 'ready'}
-								onClick={() => openConnection(endpoint)}
-								onEdit={() => openDrawer(endpoint)}
-							/>
-						))}
-						<ConnectionCardAdd label="New Connection" onClick={() => openDrawer(null)} />
-					</div>
-				)}
-			</div>
-
-			{/* Record drawer: inspect + probe the selected endpoint. */}
-			<ConnectionDetailPanel
-				open={drawerOpen}
-				client={client}
-				endpoints={endpoints}
-				endpoint={drawerEndpoint}
-				onClose={() => setDrawerOpen(false)}
-				onOpen={(endpoint) => {
-					setDrawerOpen(false);
-					openConnection(endpoint);
-				}}
-			/>
-		</div>
-	);
-};
+export const ConnectionsView: React.FC = () => (
+	<ConnectionsLanding<ISqlEndpoint>
+		store={sqlEndpoints}
+		icon={<DatabaseIcon />}
+		onOpen={openConnection}
+		copy={COPY}
+		drawer={DRAWER}
+	/>
+);
 
 export default ConnectionsView;
