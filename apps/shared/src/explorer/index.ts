@@ -69,3 +69,23 @@ export { createGeneration } from './generation';
 
 export type { IEndpointKeyParts } from './keys';
 export { KEY_VERSION, buildEndpointKey, encodeSegment, legacyKeyFromKey, parseEndpointKey, roleKeySource } from './keys';
+
+export type { IAnnouncement, IAnnouncer } from './a11y/announce';
+export { createAnnouncer } from './a11y/announce';
+export { createLiveRegion } from './a11y/LiveRegion';
+
+export type { HistoryBag, HistoryOutcome, IHistoryEntry, IHistoryEntryBase, IHistoryLimits, IPrefsAccessor } from './history/types';
+export { DEFAULT_HISTORY_LIMITS, MAX_HISTORY_BAG_CHARS } from './history/types';
+export type { IRunEvents, RunListener } from './history/runEvents';
+export { createRunEvents } from './history/runEvents';
+export type { IHistoryStore, IHistoryStoreOptions } from './history/store';
+export { createHistoryStore } from './history/store';
+export { bagSize, textOf, trimBag, trimHistory } from './history/trim';
+
+export type { ChannelRequest, IActiveKeyStore, IRequestChannel } from './nav/stores';
+export { createActiveKeyStore, createRequestChannel } from './nav/stores';
+export type { IDocSchemes } from './nav/addresses';
+export { createCounter, endpointKeyFromAnyUri, endpointKeyFromUri } from './nav/addresses';
+
+export type { IConnectionFlags, IConnectionFlagsOptions } from './history/flags';
+export { createConnectionFlags } from './history/flags';
