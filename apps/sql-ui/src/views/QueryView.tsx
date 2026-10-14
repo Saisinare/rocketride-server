@@ -67,6 +67,7 @@ import { announce } from '../a11y/announce';
 import { createConnectionFlags } from 'shared/explorer/history/flags';
 import { legacyKeyFromKey } from 'shared/explorer/keys';
 import { splitStatements, splitStatementsIn, statementAtOffset } from '../sql/split';
+import { liveBufferText, selectRunTargets } from '../sql/targets';
 import { classifyStatement, patternCheck } from '../sql/classify';
 import type { IFailureNotice } from '../sql/failure';
 import { applyRowLimit, formatBatchOutcome, formatElapsed, formatPriorStatements, leadingVerb } from '../sql/batch';
@@ -290,6 +291,12 @@ export const QueryView: React.FC<IQueryViewProps> = ({ endpoint, label, initialS
 	// The buffer text as of the last run or the last load: anything else in the
 	// editor is unsaved work that must not be replaced without asking.
 	const committedTextRef = useRef(initialSql ?? '');
+	// The editor text an editor run is cut from. runFromEditor offers it, onStart
+	// takes it (the runner calls onStart synchronously, and only when the batch
+	// really starts), and onFinished marks it as run. The `sql` state can lag the
+	// editor by a render after a fast Ctrl+Enter, so it is never that text.
+	const editorRunTextRef = useRef<string | null>(null);
+	const startedRunTextRef = useRef<string | null>(null);
 
 	useEffect(() => { patternChecksOnRef.current = patternChecksOn; }, [patternChecksOn]);
 
@@ -384,6 +391,7 @@ export const QueryView: React.FC<IQueryViewProps> = ({ endpoint, label, initialS
 		record: (run) => emitRun(endpoint.key, toHistoryEntry(run)),
 		onFailure: (notice) => { if (notice.allowExecuteOff) setAllowExecuteOff(true); },
 		onStart: () => {
+			startedRunTextRef.current = editorRunTextRef.current;
 			setUntouchedGenerated(false);
 			setInspected(null);
 		},
@@ -391,8 +399,9 @@ export const QueryView: React.FC<IQueryViewProps> = ({ endpoint, label, initialS
 			if (info.shown) setLastRun({ index: info.shown.index, at: Date.now(), start: info.shown.start, end: info.shown.end });
 			// Only an editor run makes the buffer "already run". A rerun from the
 			// history drawer must not mark untouched editor text as run, or the
-			// next Load-into-editor would silently discard it.
-			if (opts.fromEditor) committedTextRef.current = sql;
+			// next Load-into-editor would silently discard it. What is marked is the
+			// live text the run was cut from, not the (possibly lagging) `sql` state.
+			if (opts.fromEditor && startedRunTextRef.current !== null) committedTextRef.current = startedRunTextRef.current;
 			// A statement that actually ran is the only proof the node's execute
 			// gate is open again, so a successful run retires the warning.
 			if (info.resolved) setAllowExecuteOff(false);
@@ -431,26 +440,22 @@ export const QueryView: React.FC<IQueryViewProps> = ({ endpoint, label, initialS
 	 * The statements the Run button would send right now: the selection when
 	 * there is one, otherwise the statement holding the caret.
 	 *
-	 * Reads the live editor handle rather than the debounced preview state, so
-	 * a keypress that lands between a caret move and its settle still sends
-	 * what the user is looking at.
+	 * Reads the live editor handle for the TEXT as well as the caret and the
+	 * selection. The `sql` state can lag the editor by a render when the run
+	 * action fires right after the last keystrokes; pairing that stale copy with
+	 * the live caret selected a truncated statement. The state copy is only the
+	 * fallback when there is no editor to ask.
 	 *
 	 * @returns The statements to run (possibly empty).
 	 */
 	const currentTarget = useCallback((): IRunTarget[] => {
-		const selection = editorRef.current?.getSelection();
-		if (selection && selection.text.trim()) {
-			// A selection is NOT necessarily one statement — `SELECT …; DELETE …`
-			// can be dragged in one gesture. Sending it whole would classify it
-			// by its first keyword alone, so the pattern check would never see
-			// the DELETE, a trailing ROLLBACK would never be refused, and the
-			// whole thing would be marked read-only and become eligible for the
-			// session's retry. Split it exactly like the buffer.
-			return splitStatementsIn(sql, selection.start, selection.end, dialect);
-		}
-		const offset = editorRef.current?.getCursorOffset() ?? cursor.offset;
-		const statement = statementAtOffset(sql, offset, dialect);
-		return statement ? [statement] : [];
+		const editor = editorRef.current;
+		return selectRunTargets(
+			liveBufferText(editor, sql),
+			editor?.getSelection() ?? null,
+			editor?.getCursorOffset() ?? cursor.offset,
+			dialect,
+		);
 	}, [sql, dialect, cursor.offset]);
 
 	// The pre-run line and the editor decoration, always saying the same thing.
@@ -505,11 +510,30 @@ export const QueryView: React.FC<IQueryViewProps> = ({ endpoint, label, initialS
 		return runStatements(targets.map(({ sql: text, ...position }) => ({ text, ...position })), opts);
 	}, [runStatements]);
 
+	/**
+	 * Run statements cut from the editor's text, and offer that text to be marked
+	 * as run once the batch ends (see editorRunTextRef).
+	 *
+	 * @param text - The live editor text the targets were cut from.
+	 * @param targets - The statements to send.
+	 */
+	const runFromEditor = useCallback((text: string, targets: IRunTarget[]): void => {
+		editorRunTextRef.current = text;
+		void runTargets(targets, { fromEditor: true });
+		editorRunTextRef.current = null;
+	}, [runTargets]);
+
 	/** Run the selection, or the statement at the caret. */
-	const runOne = useCallback((): void => { void runTargets(currentTarget(), { fromEditor: true }); }, [runTargets, currentTarget]);
+	const runOne = useCallback((): void => {
+		const text = liveBufferText(editorRef.current, sql);
+		runFromEditor(text, currentTarget());
+	}, [runFromEditor, currentTarget, sql]);
 
 	/** Run every statement in the buffer, in order. */
-	const runAll = useCallback((): void => { void runTargets(splitStatements(sql, dialect), { fromEditor: true }); }, [runTargets, sql, dialect]);
+	const runAll = useCallback((): void => {
+		const text = liveBufferText(editorRef.current, sql);
+		runFromEditor(text, splitStatements(text, dialect));
+	}, [runFromEditor, sql, dialect]);
 
 	// ── Explain, history, and loading a statement back in ────────────────────
 

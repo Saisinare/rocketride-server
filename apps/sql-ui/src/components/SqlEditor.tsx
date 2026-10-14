@@ -90,6 +90,14 @@ export interface ISqlEditorHandle {
 	getSelection(): { text: string; start: number; end: number };
 	/** Character offset of the caret in the buffer. */
 	getCursorOffset(): number;
+	/**
+	 * The editor's CURRENT text, straight from its model, or null when it has no
+	 * model yet. Read this on the run path together with the caret and selection:
+	 * the `value` React holds can lag the editor by a render (Monaco's run action
+	 * may fire synchronously after the last keystrokes), and a live caret offset
+	 * against a lagging text selects the wrong — truncated — statement.
+	 */
+	getText(): string | null;
 	/** Replace the statement decorations (pass [] to clear). */
 	setDecorations(ranges: IDecorationRange[]): void;
 	/** Move focus into the editor. */
@@ -431,6 +439,7 @@ export const SqlEditor = forwardRef<ISqlEditorHandle, ISqlEditorProps>(function 
 			if (!editor || !position) return 0;
 			return editor.getModel()?.getOffsetAt(position) ?? 0;
 		},
+		getText: () => editorRef.current?.getModel()?.getValue() ?? null,
 		setDecorations: (ranges) => {
 			const monaco = monacoRef.current;
 			const model = editorRef.current?.getModel();
