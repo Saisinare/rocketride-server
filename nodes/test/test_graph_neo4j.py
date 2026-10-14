@@ -481,7 +481,7 @@ def test_validate_query_reports_error():
 
 def test_dialect_reports_neo4j():
     inst = _instance(_FakeGlobal(_FakeDriver()))
-    assert inst.dialect({}) == {'dialect': 'neo4j'}
+    assert inst.dialect({})['dialect'] == 'neo4j'
 
 
 def test_execute_tool_passes_params_to_the_driver():

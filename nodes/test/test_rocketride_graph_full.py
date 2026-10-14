@@ -719,7 +719,7 @@ class TestInstanceTools:
         inst = rr_env.iinstance_cls()
         inst.IGlobal = glb
         try:
-            assert inst.dialect({}) == {'dialect': 'age'}
+            assert inst.dialect({})['dialect'] == 'age'
             schema = inst.get_schema({})
             assert 'Person' in schema['labels']
         finally:

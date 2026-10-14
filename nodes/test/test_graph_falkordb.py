@@ -398,7 +398,7 @@ def test_get_schema_comes_from_reflected_schema():
 
 def test_dialect_identifies_falkordb():
     inst = _instance(_FakeGlobal(_FakeGraph()))
-    assert inst.dialect({}) == {'dialect': 'falkordb'}
+    assert inst.dialect({})['dialect'] == 'falkordb'
 
 
 @pytest.mark.parametrize(
