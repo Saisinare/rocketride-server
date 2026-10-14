@@ -147,7 +147,7 @@ from .types.billing import (
 # Import the primary client class and its exception, plus the specialised
 # authentication exception for callers that need to distinguish auth failures.
 from .client import RocketRideClient, RocketRideException
-from .core.exceptions import AuthenticationException
+from .core.exceptions import AuthenticationException, CommandException
 
 # Import identity types returned by connect()
 from .types.client import TeamInfo, OrgInfo, ConnectResult, ServerInfoResult
@@ -184,6 +184,7 @@ __all__ = [
     'RocketRideException',
     'LogEventStream',
     'AuthenticationException',
+    'CommandException',
     'CONST_DEFAULT_SERVICE',
     'CONST_DEFAULT_WEB_CLOUD',
     'CONST_DEFAULT_WEB_HOST',
