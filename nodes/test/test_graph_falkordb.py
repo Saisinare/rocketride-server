@@ -123,6 +123,9 @@ def _install_stubs() -> None:
 
     falkordb = types.ModuleType('falkordb')
     falkordb.FalkorDB = object
+    falkordb.Node = type('Node', (), {})
+    falkordb.Edge = type('Edge', (), {})
+    falkordb.Path = type('Path', (), {})
 
     redis_exceptions = types.ModuleType('redis.exceptions')
     redis_exceptions.RedisError = _StubRedisError
@@ -1022,3 +1025,218 @@ def test_reflect_schema_failure_does_not_break_begin(monkeypatch):
     graph_base.GraphGlobalBase.beginGlobal(glb)
 
     assert glb.graph_schema == {'nodes': {}, 'relationships': []}
+
+
+# ---------------------------------------------------------------------------
+# read_query / refresh_schema (stubbed client; live suite: test_graph_falkordb_full.py)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize('allow_writes', [False, True])
+@pytest.mark.parametrize('allow_execute', [False, True])
+def test_read_query_always_uses_ro_query(allow_writes, allow_execute):
+    graph = _FakeGraph(_FakeResult(result_set=[[1, 'a'], [2, 'b']], header=[[1, 'n'], [1, 's']]))
+    glb = _FakeGlobal(graph, allow_writes=allow_writes)
+    glb.allow_execute = allow_execute
+    out = _instance(glb).read_query({'cypher': 'MATCH (n) RETURN n.n AS n, n.s AS s', 'params': {'x': 1}})
+    assert [c[0] for c in graph.calls] == ['ro_query']
+    assert graph.calls[0][2] == {'x': 1} and graph.calls[0][3] == glb.statement_timeout_ms
+    assert out['columns'] == ['n', 's'] and out['rows'] == [[1, 'a'], [2, 'b']]
+
+
+def test_read_query_respects_server_limits():
+    graph = _FakeGraph(_FakeResult(result_set=[[i] for i in range(10)], header=[[1, 'i']]))
+    glb = _FakeGlobal(graph, max_rows=25000)
+    glb.server_result_cap, glb.server_timeout_max_ms, glb.query_timeout_ms = 5, 1000, 30000
+    assert glb.read_query_cap == 4 and glb.statement_timeout_ms == 1000
+    out = _instance(glb).read_query({'cypher': 'UNWIND range(1, 10) AS i RETURN i', 'limit': 25000})
+    assert out['row_limit'] == 4 and out['truncated'] is True and len(out['rows']) == 4
+    assert graph.calls[0][3] == 1000
+
+
+def test_execute_graph_shape_respects_server_result_cap():
+    """RESULTSET_SIZE cuts GRAPH.QUERY replies too: a cut write-console result must read as truncated."""
+    # The server silently returns at most RESULTSET_SIZE (5) rows of the 10 the statement produces.
+    graph = _FakeGraph(_FakeResult(result_set=[[i] for i in range(5)], header=[[1, 'i']]))
+    glb = _FakeGlobal(graph)
+    glb.allow_execute = True
+    glb.server_result_cap = 5
+    out = _instance(glb).execute({'query': 'UNWIND range(1, 10) AS i RETURN i', 'shape': 'graph'})
+    assert out['truncated'] is True and out['truncated_by'] == 'rows'
+    assert out['row_limit'] == 4 and len(out['rows']) == 4
+    assert glb.execute_graph_cap == 4
+    assert [c[0] for c in graph.calls] == ['query']
+
+
+def test_execute_graph_shape_without_a_server_cap_uses_max_execute_rows():
+    graph = _FakeGraph(_FakeResult(result_set=[[1]], header=[[1, 'i']]))
+    glb = _FakeGlobal(graph)
+    glb.allow_execute, glb.server_result_cap, glb.max_execute_rows = True, None, 300
+    out = _instance(glb).execute({'query': 'RETURN 1 AS i', 'shape': 'graph'})
+    assert out['row_limit'] == 300 and out['truncated'] is False
+
+
+# The server limits apply to every command the node sends, not only to
+# read_query and execute(shape='graph'): get_data, the questions lane, execute
+# in its default shape (and the EXECUTE lane) and the query tool too.
+
+
+def test_every_command_sends_the_timeout_clamped_to_timeout_max():
+    """FalkorDB refuses a per-query TIMEOUT above TIMEOUT_MAX, so no path may send the unclamped one."""
+    graph = _FakeGraph(_FakeResult(result_set=[[1]], header=[[1, 'n']]))
+    glb = _FakeGlobal(graph)
+    glb.allow_execute = True
+    glb.server_timeout_max_ms, glb.query_timeout_ms = 1000, 30000
+    inst = _instance(glb)
+    inst.get_query = lambda args: {'query': 'MATCH (n) RETURN n', 'valid': True}
+
+    inst.get_data({'question': 'every node'})
+    glb._run_query('MATCH (n) RETURN n')  # the questions lane
+    inst.execute({'query': 'MATCH (n) RETURN n'})
+    inst.query({'cypher': 'MATCH (n) RETURN n'})
+    glb.allow_writes = True
+    inst.query({'cypher': 'MATCH (n) RETURN n'})
+
+    assert [(c[0], c[3]) for c in graph.calls] == [
+        ('ro_query', 1000),
+        ('ro_query', 1000),
+        ('query', 1000),
+        ('ro_query', 1000),
+        ('query', 1000),
+    ]
+
+
+def _server_cut(produced=10, resultset_size=5):
+    """A server whose RESULTSET_SIZE silently cuts a ``produced``-row reply."""
+    return _FakeGraph(_FakeResult(result_set=[[i] for i in range(min(produced, resultset_size))], header=[[1, 'i']]))
+
+
+def test_get_data_reports_a_resultset_size_cut_as_truncated():
+    glb = _FakeGlobal(_server_cut(), max_rows=25000)
+    glb.server_result_cap = 5
+    inst = _instance(glb)
+    inst.get_query = lambda args: {'query': 'UNWIND range(1, 10) AS i RETURN i', 'valid': True}
+    out = inst.get_data({'question': 'every number', 'limit': 25000})
+    assert out['row_limit'] == 4 and len(out['rows']) == 4 and out['truncated'] is True
+
+
+def test_questions_lane_stays_below_the_server_cut():
+    glb = _FakeGlobal(_server_cut(), max_rows=25000)
+    glb.server_result_cap = 5
+    assert glb.read_row_cap == 4
+    assert len(glb._run_query('UNWIND range(1, 10) AS i RETURN i')) == 4
+
+
+def test_query_tool_reports_a_resultset_size_cut_as_truncated():
+    glb = _FakeGlobal(_server_cut(), max_rows=25000)
+    glb.server_result_cap = 5
+    out = _instance(glb).query({'cypher': 'UNWIND range(1, 10) AS i RETURN i'})
+    assert out['row_count'] == 4 and out['truncated'] is True
+
+
+def test_legacy_execute_fails_when_the_server_may_have_cut_the_reply():
+    glb = _FakeGlobal(_server_cut())
+    glb.allow_execute, glb.server_result_cap = True, 5
+    with pytest.raises(ValueError, match=r'^EXECUTE query exceeded max_execute_rows=4 \(.*RESULTSET_SIZE \(5\)'):
+        _instance(glb).execute({'query': 'UNWIND range(1, 10) AS i RETURN i'})
+
+
+def test_legacy_execute_below_the_server_cap_returns_its_rows():
+    glb = _FakeGlobal(_server_cut(produced=4))
+    glb.allow_execute, glb.server_result_cap = True, 5
+    out = _instance(glb).execute({'query': 'UNWIND range(1, 4) AS i RETURN i'})
+    assert out['rows'] == [{'i': i} for i in range(4)]
+
+
+def test_legacy_execute_without_a_server_cap_keeps_its_message():
+    glb = _FakeGlobal(_server_cut(produced=4, resultset_size=10))
+    glb.allow_execute, glb.max_execute_rows = True, 3
+    with pytest.raises(ValueError) as err:
+        _instance(glb).execute({'query': 'UNWIND range(1, 4) AS i RETURN i'})
+    assert str(err.value).splitlines()[0] == 'EXECUTE query exceeded max_execute_rows=3'
+
+
+@pytest.mark.parametrize('server_cap', [5, None])
+def test_legacy_execute_over_its_cap_says_the_statement_ran_and_its_writes_stand(server_cap):
+    # FalkorDB does not roll a statement back when its reply is too long to
+    # return: the failure must not read as if nothing happened.
+    glb = _FakeGlobal(_server_cut(produced=10, resultset_size=10))
+    glb.allow_execute, glb.server_result_cap, glb.max_execute_rows = True, server_cap, 3
+    with pytest.raises(ValueError) as err:
+        _instance(glb).execute({'query': 'UNWIND range(1, 10) AS i CREATE (:N {i: i}) RETURN i'})
+    detail = str(err.value).splitlines()[1]
+    assert detail.startswith('The statement ran, and any writes it made stand (FalkorDB does not roll them back)')
+    assert 'LIMIT' in detail and 'shape "graph"' in detail
+
+
+@pytest.mark.parametrize('allow_writes', [False, True])
+def test_read_query_refuses_load_csv_without_touching_the_server(allow_writes):
+    graph = _FakeGraph(_FakeResult(result_set=[[1]], header=[[1, 'r']]))
+    glb = _FakeGlobal(graph, allow_writes=allow_writes)
+    with pytest.raises(Exception, match='^Refused: LOAD CSV is not allowed on the read-only path'):
+        _instance(glb).read_query({'cypher': "LOAD CSV FROM 'https://example.invalid/a.csv' AS r RETURN r"})
+    assert graph.calls == []
+
+
+def test_read_query_error_headlines():
+    graph = _FakeGraph(raise_error=_StubRedisError('graph.RO_QUERY is to be executed only on read-only queries'))
+    with pytest.raises(Exception, match='^Refused: read_query is read-only'):
+        _instance(_FakeGlobal(graph)).read_query({'cypher': 'CREATE (n)'})
+    graph = _FakeGraph(raise_error=_StubRedisError('Query timed out'))
+    with pytest.raises(Exception, match='^Query timed out after 30000 ms'):
+        _instance(_FakeGlobal(graph)).read_query({'cypher': 'MATCH (n) RETURN n'})
+
+
+class _ScriptedGraph(_FakeGraph):
+    """Answers reflection queries by their text."""
+
+    def __init__(self, answers, fail_on=None):
+        super().__init__()
+        self.answers = answers
+        self.fail_on = fail_on
+
+    def ro_query(self, q, params=None, timeout=None):
+        self.calls.append(('ro_query', q, params, timeout))
+        if self.fail_on and self.fail_on in q:
+            raise _StubRedisError('Query timed out')
+        for prefix, rows in self.answers.items():
+            if q.startswith(prefix):
+                return _FakeResult(result_set=rows)
+        return _FakeResult(result_set=[])
+
+
+_ANSWERS = {
+    'CALL db.labels()': [['Person']],
+    'CALL db.relationshipTypes()': [['KNOWS']],
+    'MATCH (n:`Person`) RETURN count(n)': [[2]],
+    'MATCH (n:`Person`) WITH n': [[{'name': 'a', 'age': 1}], [{'name': 'b', 'age': 'x'}]],
+    'MATCH ()-[r:`KNOWS`]->() RETURN count(r)': [[1]],
+    'MATCH (a)-[r:`KNOWS`]->(b)': [[['Person'], ['Person'], {'since': 2019}]],
+}
+
+
+def test_refresh_schema_publishes_a_complete_snapshot():
+    glb = _FakeGlobal(_ScriptedGraph(_ANSWERS))
+    out = _instance(glb).refresh_schema({})
+    block = out['schema']
+    assert block['labels'] == [
+        {
+            'name': 'Person',
+            'properties': [{'name': 'age', 'types': ['string', 'integer']}, {'name': 'name', 'types': ['string']}],
+            'count': 2,
+            'count_estimated': False,
+        }
+    ]
+    assert block['relationship_types'][0]['endpoints'] == [{'start': 'Person', 'end': 'Person', 'observed': True}]
+    assert out['relationships'] == [{'type': 'KNOWS', 'start': 'Person', 'end': 'Person'}]
+
+
+def test_refresh_timeout_keeps_the_last_good_schema():
+    graph = _ScriptedGraph(_ANSWERS)
+    glb = _FakeGlobal(graph)
+    inst = _instance(glb)
+    inst.refresh_schema({})
+    graph.fail_on = 'MATCH (a)-[r'
+    out = inst.refresh_schema({})
+    assert out['schema']['stale'] is True and 'Query timed out' in out['schema']['error']
+    assert out['relationships'] == [{'type': 'KNOWS', 'start': 'Person', 'end': 'Person'}]
