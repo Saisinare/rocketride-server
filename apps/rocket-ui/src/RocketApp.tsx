@@ -37,7 +37,8 @@ import { commonStyles } from 'shell';
 import { useShellConnection, useAuthUser, useWorkspace, DocTabs, DocSplitLayout, AppLayout, ConfirmDialog } from 'shell';
 import { AgentIcon } from './components/AgentIcon';
 import type { SidebarViewContainer } from 'shell';
-import { CodiconFiles, CodiconSourceControl, CodiconExtensions, CodiconCircuitBoard, CodiconTypeHierarchy } from 'shared/components/icons/Codicon';
+import { CodiconFiles, CodiconSourceControl, CodiconCircuitBoard, CodiconTypeHierarchy } from 'shared/components/icons/Codicon';
+import { AppsIcon } from 'shared/components/icons/AppsIcon';
 import { createDocs, destroyDocs, getDocs } from './docs';
 import { createWorkspace, getWorkspace, resolveWorkspaceScope } from './workspace/workspace';
 import { ModeSwitchBlockedError } from 'shared/workspace/commitPolicy';
@@ -367,7 +368,7 @@ const RocketApp: React.FC<ShellAppProps> = (_props) => {
 		{ id: 'explorer', title: 'Explorer', icon: <CodiconFiles size={20} />, content: explorerNode },
 		{ id: 'scm', title: 'Source Control', icon: <CodiconSourceControl size={20} />, content: scmNode, ...(pendingCount > 0 ? { badge: pendingCount } : {}) },
 		{ id: 'agent', title: 'Agent', icon: <AgentIcon size={20} />, isDefault: true },
-		{ id: 'apps', title: 'Apps', icon: <CodiconExtensions size={20} /> },
+		{ id: 'apps', title: 'Apps', icon: <AppsIcon size={20} /> },
 		{ id: 'nodes', title: 'Nodes', icon: <CodiconCircuitBoard size={20} /> },
 		{ id: 'pipelines', title: 'Pipelines', icon: <CodiconTypeHierarchy size={20} /> },
 	], [explorerNode, scmNode, pendingCount]);

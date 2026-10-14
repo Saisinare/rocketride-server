@@ -36,6 +36,12 @@ export interface ITabControlProps {
 	onSelect: (id: string) => void;
 	/** Right-aligned slot (e.g. expand icon). Optional. */
 	trailing?: ReactNode;
+	/**
+	 * Render each entry's `icon` INSTEAD of its label (the label becomes the
+	 * tab's tooltip and accessible name). Entries without an icon keep their
+	 * text label, so a mixed menu stays legible. Optional; default false.
+	 */
+	iconsOnly?: boolean;
 }
 
 // =============================================================================
@@ -98,7 +104,7 @@ const styles = {
  * @param props - {@link ITabControlProps}.
  * @returns The strip element.
  */
-export function TabControl({ menu, activeId, onSelect, trailing }: ITabControlProps): React.ReactElement {
+export function TabControl({ menu, activeId, onSelect, trailing, iconsOnly }: ITabControlProps): React.ReactElement {
 	// Refs to the rendered tab elements, for roving-focus keyboard navigation.
 	const tabRefs = useRef<(HTMLDivElement | null)[]>([]);
 	// Index of the active entry; -1 when activeId matches nothing (then the
@@ -158,6 +164,9 @@ export function TabControl({ menu, activeId, onSelect, trailing }: ITabControlPr
 			{menu.entries.map((entry, index) => {
 				// The active tab carries the brand underline + primary text colour.
 				const isActive = entry.id === activeId;
+				// Icon-only mode swaps the text for the entry's icon; the label
+				// survives as the tooltip + accessible name. No icon → label.
+				const asIcon = Boolean(iconsOnly && entry.icon);
 				return (
 					<div
 						key={entry.id}
@@ -166,6 +175,8 @@ export function TabControl({ menu, activeId, onSelect, trailing }: ITabControlPr
 						}}
 						role="tab"
 						aria-selected={isActive}
+						aria-label={asIcon ? entry.label : undefined}
+						title={asIcon ? entry.label : undefined}
 						// Roving tabIndex: only the active tab sits in the page tab
 						// order; Arrow / Home / End move within the strip.
 						tabIndex={isActive || (activeIndex === -1 && index === 0) ? 0 : -1}
@@ -173,7 +184,7 @@ export function TabControl({ menu, activeId, onSelect, trailing }: ITabControlPr
 						onClick={() => onSelect(entry.id)}
 						onKeyDown={(e) => handleKeyDown(e, index, entry.id)}
 					>
-						{entry.label}
+						{asIcon ? entry.icon : entry.label}
 						{/* Count badge when the entry declares a count. */}
 						{entry.count != null && <ViewMenuBadge count={entry.count} severity={entry.severity} />}
 					</div>

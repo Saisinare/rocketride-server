@@ -25,6 +25,8 @@ import { commonStyles } from 'shell';
 import { BxPlus, BxDesktop, BxChevronRight, BxChevronDown, BxStop, BxGridAlt, BxTrash, BxNote } from 'shell';
 import { SidebarMenu, TabControl, TabPanel } from 'shell';
 import { Explorer, NOOP_VFS } from 'shell';
+import { CodiconCircuitBoard, CodiconTypeHierarchy } from '../../components/icons/Codicon';
+import { AppsIcon } from '../../components/icons/AppsIcon';
 import type { ISidebarViewProps } from './types';
 import type { ViewMenu } from 'shell';
 import type { ExplorerEntry, ExplorerStatus, ExplorerConfig } from 'shell';
@@ -217,12 +219,16 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 	// The mode tabs — the stock TabControl menu. The Agent and Apps entries
 	// only exist when the host wires their sidebar content; Nodes (the
 	// node-builder placeholder) rides along whenever the tabs render.
+	// Icons mirror the rocket-ui workbench rail (RocketApp.tsx) so the same
+	// mode wears the same glyph in both hosts; the strip renders icon-only
+	// (labels become tooltips). Agent has no shared glyph yet — its entry
+	// falls back to the text label (the rocket-ui host hides this strip).
 	const modeMenu: ViewMenu = {
 		entries: [
 			...(hasAgent ? [{ id: 'agent', label: 'Agent' }] : []),
-			...(hasAppBuilder ? [{ id: 'apps', label: 'Apps' }] : []),
-			{ id: 'nodes', label: 'Nodes' },
-			{ id: 'pipelines', label: 'Pipelines' },
+			...(hasAppBuilder ? [{ id: 'apps', label: 'Apps', icon: <AppsIcon size={16} /> }] : []),
+			{ id: 'nodes', label: 'Nodes', icon: <CodiconCircuitBoard size={16} /> },
+			{ id: 'pipelines', label: 'Pipelines', icon: <CodiconTypeHierarchy size={16} /> },
 		],
 	};
 
@@ -502,6 +508,7 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 			{tabsVisible && (
 				<TabControl
 					menu={modeMenu}
+					iconsOnly
 					activeId={mode}
 					onSelect={(id) => {
 						if (id === 'agent' || id === 'pipelines' || id === 'apps' || id === 'nodes') onSidebarModeChange?.(id);
