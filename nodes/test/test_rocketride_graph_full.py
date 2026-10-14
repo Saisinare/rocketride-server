@@ -297,7 +297,7 @@ class TestLifecycle:
 
     def test_node_configuration_cannot_choose_the_database(self, rr_env, age_graph):
         """The DSN comes from the task's tenant only; connection-shaped config keys are ignored."""
-        unreachable = 'postgresql://victim:victim@unreachable.invalid:5432/victim_db?sslmode=disable'
+        unreachable = 'postgresql://other:other@unreachable.invalid:5432/other_db?sslmode=disable'
         glb = _begin(
             rr_env,
             {
@@ -305,12 +305,12 @@ class TestLifecycle:
                 'url': unreachable,
                 'host': 'unreachable.invalid',
                 'port': 1,
-                'user': 'victim',
-                'password': 'victim',
-                'database': 'victim_db',
-                'tenant_id': 'victim-org',
-                'org_id': 'victim-org',
-                'client_id': 'victim-user',
+                'user': 'other',
+                'password': 'other',
+                'database': 'other_db',
+                'tenant_id': 'other-org',
+                'org_id': 'other-org',
+                'client_id': 'other-user',
             },
         )
         try:

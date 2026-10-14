@@ -332,8 +332,8 @@ class TestRecovery:
                 # The pooler owns server sessions; drop the node's own client
                 # connection instead (same failure as from the node's side).
                 with glb.pool.connection() as conn:
-                    victim = conn
-                victim.close()
+                    dropped = conn
+                dropped.close()
             else:
                 (pid,) = _on_pooled_session(glb, 'SELECT pg_backend_pid()')
                 with admin.cursor() as cur:
