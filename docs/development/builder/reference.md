@@ -58,6 +58,7 @@ Not all modules support all commands. Run `./builder --help` for the full list.
 | `dropper-ui` | File drop web interface | build, clean, dev |
 | `events-ui` | Event monitor application | build, clean, dev |
 | `explorer-ui` | File explorer application | build, clean |
+| `graph-ui` | Graph Explorer application | build, clean, dev, test |
 | `hello-ui` | RocketRide Hello — OSS landing application | build, clean, dev |
 | `java` | JDK, JRE, and Maven (auto-installed for Tika) | setup-jdk, setup-jre, setup-maven |
 | `mcp-widgets` | MCP Apps widgets (embedded UI served by the ai MCP module) | build, clean, test |
