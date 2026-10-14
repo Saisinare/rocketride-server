@@ -45,6 +45,12 @@ const APP_ROOT = path.join(__dirname, '..');
 const SCRIPTS_DIR = path.join(APP_ROOT, 'scripts');
 const SRC_DIR = path.join(APP_ROOT, 'src');
 
+// Test directories that must hold at least one suite. The Explorer library is
+// compiled into every Explorer app, so its behaviour is guarded HERE; a
+// refactor that moved its tests away (or a glob that stopped matching them)
+// must fail the build rather than leave the library untested.
+const REQUIRED_TEST_DIRS = [path.join('src', 'explorer')];
+
 function makeTestAction() {
 	return {
 		description: 'Testing shared',
@@ -69,6 +75,16 @@ function makeTestAction() {
 					`No shared test files found under ${SCRIPTS_DIR} or ${SRC_DIR} — ` +
 						'the suites are tracked source and must be present'
 				);
+			}
+
+			for (const dir of REQUIRED_TEST_DIRS) {
+				const prefix = dir + path.sep;
+				if (!testFiles.some((f) => f.startsWith(prefix))) {
+					throw new Error(
+						`No test files found under ${path.join(APP_ROOT, dir)} — ` +
+							'its suites are tracked source and must be present'
+					);
+				}
 			}
 
 			// tsx erases types rather than checking them, so without this step
