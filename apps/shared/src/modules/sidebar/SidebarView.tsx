@@ -9,7 +9,7 @@
  * Composes the generic Explorer component (file tree) with pipeline-specific
  * UI: navigation buttons, unknown tasks section, and a footer slot.
  *
- * Column order: shared nav (host slot + Monitor), then the stock TabControl
+ * Column order: shared nav (host slot), then the stock TabControl
  * mode tabs (Agent | Apps | Nodes | Pipelines — Agent when the host wires
  * the agent sidebar, Apps when it wires the app builder, Nodes as the
  * node-builder placeholder), then a stock TabPanel holding the mode bodies,
@@ -22,7 +22,7 @@
 
 import React, { useState, useCallback, CSSProperties } from 'react';
 import { commonStyles } from 'shell';
-import { BxPlus, BxDesktop, BxChevronRight, BxChevronDown, BxStop, BxGridAlt, BxTrash, BxNote } from 'shell';
+import { BxPlus, BxChevronRight, BxChevronDown, BxStop, BxGridAlt, BxTrash, BxNote } from 'shell';
 import { SidebarMenu, TabControl, TabPanel } from 'shell';
 import { Explorer, NOOP_VFS } from 'shell';
 import { CodiconCircuitBoard, CodiconTypeHierarchy } from '../../components/icons/Codicon';
@@ -202,13 +202,6 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 	const tabsVisible = !hideModeStrip && (hasAppBuilder || hasAgent || showModeStrip);
 	const mode = (sidebarMode === 'agent' && hasAgent) || (sidebarMode === 'apps' && hasAppBuilder) || (sidebarMode === 'nodes' && modesWired) ? sidebarMode : 'pipelines';
 	// --- Static nav menus ----------------------------------------------------
-
-	// Monitor sits ABOVE the mode tabs — it is mode-independent chrome shared
-	// by both tabs. Disabled while disconnected; there is no persistent
-	// selection, so activeId is empty. Icons match the shell nav sizing (16px).
-	const monitorMenu: ViewMenu = {
-		entries: [{ id: 'monitor', label: 'Monitor', icon: <BxDesktop size={16} />, disabled: !isConnected }],
-	};
 
 	// "+ New pipeline" belongs to the Pipelines tab body only; the embedded
 	// Introduction row sits right above it when the host wires onShowIntro.
@@ -488,19 +481,10 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 
 	return (
 		<div style={S.container}>
-			{/* ── Shared nav above the mode tabs: host slot + Monitor ─── */}
-			<div style={S.navSection}>
-				{/* Host-injected nav (e.g. rocket-ui's Home button). Bare render so an
-				    omitted slot adds zero DOM/spacing — VS Code passes nothing. */}
-				{headerSlot}
-				<SidebarMenu
-					menu={monitorMenu}
-					activeId=""
-					onSelect={(id) => {
-						if (id === 'monitor') onNavigate(id);
-					}}
-				/>
-			</div>
+			{/* ── Host-injected nav above the mode tabs (e.g. rocket-ui's
+			    Home button). Rendered only when the host passes a slot, so
+			    VS Code (no slot) gets zero DOM/spacing. ─────────────────── */}
+			{headerSlot != null && <div style={S.navSection}>{headerSlot}</div>}
 
 			{/* ── Mode tabs — the stock TabControl strip: Apps tab when
 			    wired, Nodes placeholder always; strip alone forced by the

@@ -198,7 +198,7 @@ export interface ISidebarViewProps {
 	headerSlot?: ReactNode;
 
 	// ── Actions ─────────────────────────────────────────────────────────────
-	onNavigate: (target: 'new' | 'monitor' | 'deploy' | 'templates') => void;
+	onNavigate: (target: 'new' | 'deploy' | 'templates') => void;
 	/** Open a file in the editor. */
 	onOpenFile: (path: string) => void;
 	/**

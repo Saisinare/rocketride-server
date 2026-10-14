@@ -313,8 +313,6 @@ const SidebarProvider: React.FC = () => {
 		if (!docs) return;
 		if (target === 'new') {
 			docs.createDocument(undefined, { project_id: crypto.randomUUID(), components: [] });
-		} else if (target === 'monitor') {
-			docs.openStaticDocument('monitor', 'Monitor');
 		}
 	}, []);
 
