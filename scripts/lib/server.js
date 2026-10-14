@@ -159,16 +159,25 @@ function testServerLogFile(suite) {
  * only the last lines, so this file is the only complete record of the server's
  * side of a test run.
  *
+ * A log that cannot be written must not take the test run down with it, so
+ * every failure is reported and the run goes on without the file.
+ *
  * @param {string} logFile - Absolute path; parent directories are created and
  *   an existing file is replaced
- * @returns {fs.WriteStream} Stream to write the server's output to
+ * @returns {fs.WriteStream|null} Stream to write the server's output to, or
+ *   null when the file cannot be set up
  */
 function openServerLog(logFile) {
-	fs.mkdirSync(path.dirname(logFile), { recursive: true });
-	const stream = fs.createWriteStream(logFile, { flags: 'w' });
-	// A log that cannot be written must not take the test run down with it.
-	stream.on('error', (err) => console.error(`[server] cannot write ${logFile}: ${err.message}`));
-	return stream;
+	const report = (err) => console.error(`[server] cannot write ${logFile}: ${err.message}`);
+	try {
+		fs.mkdirSync(path.dirname(logFile), { recursive: true });
+		const stream = fs.createWriteStream(logFile, { flags: 'w' });
+		stream.on('error', report);
+		return stream;
+	} catch (err) {
+		report(err);
+		return null;
+	}
 }
 
 /**
@@ -256,7 +265,7 @@ async function startServer(options) {
 			stopRequested: false,
 			outputTail: [],
 			port: null,
-			logFile: logFile ?? null,
+			logFile: logStream ? logFile : null,
 		};
 		serverProcess.rocketrideDiagnostics = diagnostics;
 
@@ -398,7 +407,7 @@ async function startServer(options) {
 				detail.push('  Server produced no output before dying.');
 			}
 
-			if (logFile) detail.push(`  Full server output: ${logFile}`);
+			if (diagnostics.logFile) detail.push(`  Full server output: ${diagnostics.logFile}`);
 
 			detail.push('='.repeat(78), '');
 			console.error(detail.join('\n'));

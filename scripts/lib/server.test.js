@@ -44,6 +44,18 @@ test('openServerLog: creates missing directories and keeps every chunk in order'
 	assert.strictEqual(fs.readFileSync(logFile, 'utf8'), 'stdout line\nstderr line\n');
 });
 
+test('openServerLog: reports a log it cannot set up and returns null instead of throwing', (t) => {
+	const blocker = path.join(tmpDir(), 'not-a-directory');
+	fs.writeFileSync(blocker, '');
+	const errors = t.mock.method(console, 'error', () => {});
+
+	const stream = openServerLog(path.join(blocker, 'logs', 'server.log'));
+
+	assert.strictEqual(stream, null);
+	assert.strictEqual(errors.mock.callCount(), 1);
+	assert.match(errors.mock.calls[0].arguments[0], /cannot write/);
+});
+
 test('openServerLog: replaces the log of an earlier run', async () => {
 	const logFile = path.join(tmpDir(), 'server.log');
 	fs.writeFileSync(logFile, 'earlier run, longer than the new one\n');
