@@ -83,10 +83,10 @@ test('empty states: loading, error, none running (cause unknown) and unreachable
 	assert.equal(emptyState('loading', [endpoint()], null), null, 'cached endpoints stay visible while refreshing');
 });
 
-// GX-FE-12, AGE-T11, GX-CT-12: the page had a "graph does not exist yet" state keyed on a probe's wording. The probe
-// (`dialect`) never touches the database, and a graph that does not exist stops the node at pipeline start, so the
-// node never appears here at all. Nothing a listed node answers can say a graph is missing, so the page never says it
-// (and no longer reads probe text to decide what to claim).
+// The page has no "graph does not exist yet" state keyed on a probe's wording. The probe (`dialect`) never touches
+// the database, and a graph that does not exist stops the node at pipeline start, so the node never appears here at
+// all. Nothing a listed node answers can say a graph is missing, so the page never says it (and does not read probe
+// text to decide what to claim).
 test('the page never claims a graph does not exist: a node that cannot be used is unreachable, and a missing graph is named among the start-up failures it cannot see', () => {
 	const e = endpoint({ state: 'unreachable', stateDetail: 'Graph "rocketride" does not exist' });
 	const said = emptyState('ready', [e], null);
@@ -103,13 +103,13 @@ test('failed discovery keeps already discovered endpoints visible instead of an 
 });
 
 // -----------------------------------------------------------------------------
-// GX-FE-02: the landing hid every card whenever no endpoint was ready
+// The landing keeps its cards when no endpoint is ready
 // -----------------------------------------------------------------------------
 //
-// "Graph nodes found, but none can be used" replaced the card grid whenever no endpoint was 'ready', and 'probing'
-// counted as not ready: every first load and every re-probe said a node was unusable while it was still being
-// checked. And in the genuine stopped / unreachable / No access cases there was no card left to click, so the reason
-// and Test connection that the message points to ("Each card says why") could not be reached.
+// "Graph nodes found, but none can be used" never replaces the card grid, and 'probing' does not count as unusable:
+// a first load or a re-probe must not say a node is unusable while it is still being checked. In the genuine
+// stopped / unreachable / No access cases the cards stay, so the reason and Test connection that the message points
+// to ("Each card says why") can be reached.
 
 test('while a node is still being checked, the landing claims nothing about it: its card says Checking', () => {
 	assert.equal(emptyState('ready', [endpoint({ state: 'probing' })], null), null);
@@ -158,7 +158,7 @@ test('a node that advertises read_query is not badged as needing an upgrade, and
 });
 
 // -----------------------------------------------------------------------------
-// GX-FE-01: a re-probe must not take an open workbench away
+// A re-probe must not take an open workbench away
 // -----------------------------------------------------------------------------
 
 test('an open workbench stays on screen while its connection is checked again (a restart elsewhere, a reconnect, Test connection), and running pauses until it answers', async () => {
@@ -214,7 +214,7 @@ test('a stopped or blocked connection keeps an open surface but pauses it with t
 });
 
 // -----------------------------------------------------------------------------
-// GX-FE-08: what Test connection says, and for which card
+// What Test connection says, and for which card
 // -----------------------------------------------------------------------------
 
 test('Test connection says "not tested" when nothing was sent, never that the node did not answer', () => {

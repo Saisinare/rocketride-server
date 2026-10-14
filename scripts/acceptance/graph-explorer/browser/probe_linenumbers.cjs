@@ -5,7 +5,7 @@
 
 /*
  * Editor line-number colours in both RocketRide themes, SQL Explorer and Graph Explorer, served shell.
- * Monaco reads a non-hex theme colour as red: any rgb(255, 0, 0) line number is the F9 bug.
+ * Monaco reads a non-hex theme colour as red: any rgb(255, 0, 0) line number means a theme colour was not hex.
  * Fixtures: start_fixtures.py. THEMES (light,dark) and APPS (sql,graph) narrow the runs.
  * Usage: node probe_linenumbers.cjs [base-url] [out-dir] [chrome|firefox|webkit|all]
  * (base-url and out-dir default to ENGINE_URL and OUT_DIR).

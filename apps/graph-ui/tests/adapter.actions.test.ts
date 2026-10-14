@@ -85,8 +85,8 @@ describe('schema actions', () => {
 	});
 });
 
-// GX-FE-11: Refresh sent get_schema (and stored it as fresh) whenever the probe was missing, and a Refresh pressed during
-// the first get_schema was answered by that load and never reached refresh_schema.
+// Refresh never falls back to get_schema (stored as if it were fresh) while the probe is missing, and a Refresh pressed
+// during the first get_schema is not answered by that load: it reaches refresh_schema once the load ends.
 describe('schema Refresh when the connection is busy', () => {
 	const CAPABLE = { ...CURRENT, capabilities: { ...(CURRENT.capabilities as object), refresh_schema: true } };
 	const settle = async (): Promise<void> => {
@@ -159,8 +159,8 @@ describe('Ask over get_query', () => {
 		assert.deepEqual(await askConnection(world.client, endpoint, 'who?', stores), { kind: 'unavailable', text: ASK_UNAVAILABLE });
 	});
 
-	// GX-T1-04: NO_MODEL matched a bare "llm" or "not connected", so the node's own "LLM failed to return a Cypher query."
-	// (a connected model that answered nothing) and the SDK's "Server is not connected" were reported as "no model".
+	// NO_MODEL does not match a bare "llm" or "not connected": the node's own "LLM failed to return a Cypher query." (a
+	// connected model that answered nothing) and the SDK's "Server is not connected" are failures, not "no model".
 	it('the engine\'s no-listener text is "unavailable"; a model that answered nothing and a dropped connection are failures', async () => {
 		const none = await rig(CURRENT, { [TOOL.getQuery]: () => { throw codedError('InvalidParam: No control listeners registered for llm at (filter.callbacks.target.cpp:96)'); } });
 		assert.deepEqual(await askConnection(none.world.client, none.endpoint, 'who?', none.stores), { kind: 'unavailable', text: ASK_UNAVAILABLE });

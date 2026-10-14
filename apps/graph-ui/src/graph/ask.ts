@@ -35,7 +35,7 @@
 //
 // A pipeline without a language model cannot answer at all. Browsing with Cypher
 // still works, so Ask shows an "unavailable" state instead of an error banner,
-// and says why. That is told from the text of the raised error (ADR O8): the
+// and says why. That is told from the text of the raised error: the
 // engine's "No control listeners registered for llm" and explicit "no model"
 // wording only, never a bare mention of an LLM or a connection, because the
 // node's "LLM failed to return a Cypher query." (a connected model that answered

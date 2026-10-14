@@ -54,7 +54,7 @@ test('expansion wording separates the per-expansion cap, the canvas budgets and 
 	assert.equal(expandText(10, 0, true, null), 'Added 10 neighbours. This node has more relationships than were fetched; expand again for more.');
 	assert.match(expandText(4, 46, false, 'nodes'), /maximum of 1,000 nodes/);
 	assert.match(expandText(4, 0, false, 'relationships'), /maximum relationships/);
-	// GX-T1-02: a cut answer that held nothing new never says "expand again": the same request returns the same rows.
+	// A cut answer that held nothing new never says "expand again": the same request returns the same rows.
 	const stuck = expandText(0, 0, true, null, 250);
 	assert.equal(stuck, 'No new neighbours: the node stops at 250 rows and every row it returned is already drawn, so expanding again returns the same rows. Write a query by hand to see its other relationships.');
 	assert.equal(expandText(0, 0, false, null, null), 'No new neighbours.');

@@ -60,10 +60,9 @@ test('data versions count per connection and tell subscribers', () => {
 	assert.equal(heard, 3);
 });
 
-// GX-FE-05 (graph half) and GX-CT-03: the write used to be counted in the console's `record`, which the shared runner
-// skips once the console is closed, and a failed statement was assumed rolled back. But the node can fail AFTER the
-// database ran the statement (the answer could not be built or was rejected), and a write can land after its document
-// closed. The count now lives where the write is sent.
+// A write is counted where it is sent, not in the console's `record`, which the shared runner skips once the console
+// is closed, and a failed statement is not assumed rolled back: the node can fail AFTER the database ran the statement
+// (the answer could not be built or was rejected), and a write can land after its document closed.
 const toolError = (kind: ConstructorParameters<typeof ExplorerToolError>[0]['kind'], message: string): ExplorerToolError => new ExplorerToolError({ kind, tool: 'execute', message });
 
 test('a write is counted where it is sent, whatever happens to its document: a success, and any failure that can come after the database ran it', async () => {

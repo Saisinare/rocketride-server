@@ -16,9 +16,9 @@ import type { GraphValue, ReadQueryResult } from '../src/graph/types';
 import { resultMeta } from '../src/graph/wording';
 import { node } from './support/builders';
 
-// GX-FE-03: the request was kept in the host's state and the surface de-duplicated it with a ref that starts at 0 on
-// every mount, so any remount replayed it: the editor text and its saved draft were overwritten, and a preview
-// (or a History "Run again") ran again by itself.
+// A request left for the editor is taken from the host's slot once. De-duplicating it with a ref that starts at 0 on
+// every mount would replay it on any remount: the editor text and its saved draft overwritten, and a preview (or a
+// History "Run again") run again by itself.
 test('a request left for the editor is taken exactly once: a remount finds nothing to replay', () => {
 	const slot = createLoadSlot();
 	assert.equal(slot.take(), null, 'nothing before anything is put');
@@ -40,7 +40,7 @@ test('a newer request replaces one not yet taken, and every put has a new sequen
 });
 
 // -----------------------------------------------------------------------------
-// GX-FE-06: the write console reports what execute said, and no row limit it never sent
+// The write console reports what execute said, and no row limit it never sent
 // -----------------------------------------------------------------------------
 
 const answer = (rows: GraphValue[][], extra: Partial<ReadQueryResult> = {}): ReadQueryResult => ({ columns: rows[0]?.map((_, i) => `c${i}`) ?? [], rows, row_limit: 25000, truncated: false, truncated_by: null, element_limit: 10000, elements: 0, value_limit: 500000, values: 0, ...extra });
@@ -77,7 +77,7 @@ test('the result line of a write leads with the affected count', () => {
 });
 
 // -----------------------------------------------------------------------------
-// GX-FE-09: a run that cannot start says so
+// A run that cannot start says so
 // -----------------------------------------------------------------------------
 
 test('a run asked for while a statement is still running, or while the surface is paused, is refused with a sentence', () => {
@@ -88,7 +88,7 @@ test('a run asked for while a statement is still running, or while the surface i
 });
 
 // -----------------------------------------------------------------------------
-// GX-FE-16 (2): an empty History list says why
+// An empty History list says why
 // -----------------------------------------------------------------------------
 
 test('History says "No entries match" when a search or Pinned only hides entries, not "No history yet"', () => {

@@ -76,8 +76,8 @@ test('every core action has a key', () => {
 	for (const word of ['Arrow', 'Home', 'Enter', 'Space', 'E', 'C', 'Delete', 'P', 'Escape', '?', 'Tab']) assert.ok(documented.includes(word), `${word} is documented`);
 });
 
-// GX-FE-14: a Mac laptop's "delete" key sends Backspace (Fn+delete sends Delete), so Delete alone left Dismiss without
-// a key for most Mac keyboards. React Flow's own delete binding stays off (flowProps.ts); this is the canvas's action.
+// A Mac laptop's "delete" key sends Backspace (Fn+delete sends Delete), so Delete alone would leave Dismiss without a
+// key on most Mac keyboards. React Flow's own delete binding stays off (flowProps.ts); this is the canvas's action.
 test('Backspace dismisses the focused node as Delete does, and the key list says so', () => {
 	const c = cross();
 	assert.deepEqual(press(c, 'Backspace'), { type: 'dismiss', id: 'c' });

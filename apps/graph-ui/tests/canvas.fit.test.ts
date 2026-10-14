@@ -4,12 +4,12 @@
 // =============================================================================
 
 // =============================================================================
-// FIT BOUNDS: the fit shows everything that is drawn (finding F8)
+// FIT BOUNDS: the fit shows everything that is drawn
 // =============================================================================
 //
-// React Flow's own fit used node boxes only, so a self-loop on the topmost node (which reaches
-// 36 units and more beyond its circle) was clipped at the canvas edge on first fit. The bounds
-// come from the same geometry the edge layer draws from.
+// React Flow's own fit uses node boxes only, so a self-loop on the topmost node (which reaches
+// 36 units and more beyond its circle) would be clipped at the canvas edge on first fit. The
+// bounds come from the same geometry the edge layer draws from.
 // =============================================================================
 
 import assert from 'node:assert/strict';
@@ -31,7 +31,7 @@ function edgesOf(specs: Array<{ id: string; source: string; target: string; type
 
 const within = (rect: IRect, p: Point, slack = 1e-6): boolean => p.x >= rect.x - slack && p.x <= rect.x + rect.width + slack && p.y >= rect.y - slack && p.y <= rect.y + rect.height + slack;
 
-test('F8: a self-loop on the topmost node is inside the bounds; the node-box bounds the old fit used cut it off', () => {
+test('a self-loop on the topmost node is inside the bounds; node-box bounds alone cut it off', () => {
 	const c = centers({ top: [200, 100], below: [200, 300] });
 	const edges = edgesOf([{ id: 'loop', source: 'top', target: 'top', type: 'SELF' }, { id: 'e', source: 'top', target: 'below' }]);
 	const old = nodeBoxBounds(c)!;

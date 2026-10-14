@@ -8,12 +8,12 @@
 // =============================================================================
 //
 // No React harness runs under node:test, so the rules that decide whether the UI stays in
-// step with its state are pinned by reading the source. Each one exists because a real
-// failure was found in a browser:
+// step with its state are pinned by reading the source. Each one guards a failure that
+// only shows in a browser:
 //
-//   F7  the inspector did not close on Escape: the graph session was disposed when a new
-//       result arrived, which dropped the surface's subscription, so closing the
-//       inspector changed the state and nothing re-rendered.
+//   --  Escape must close the inspector: disposing the graph session when a new result
+//       arrives would drop the surface's subscription, so closing the inspector would
+//       change the state and nothing would re-render.
 //   --  a refreshed discovery list hands back a NEW endpoint object for the same connection;
 //       rebuilding the graph session from it would silently drop the user's selection,
 //       inspector and expansions.
@@ -69,9 +69,9 @@ test('the inspector closes through the session, and its panel is rendered from t
 	assert.match(surface, /useSyncExternalStore\(graphSession\.subscribe, graphSession\.getState, graphSession\.getState\)/);
 });
 
-// GX-FE-01: a re-probe (a restart of ANY pipeline, a shell reconnect, Test connection) took the probe away for a
-// moment, the view stopped being openable, and the run surface unmounted: results, graph, expansions, inspector and
-// the row limit were lost. Both connection documents now keep a surface that has opened, and pause it instead.
+// A re-probe (a restart of ANY pipeline, a shell reconnect, Test connection) takes the probe away for a moment. Both
+// connection documents keep a run surface that has opened and pause it, rather than unmount it and lose the results,
+// graph, expansions, inspector and row limit.
 test('the workbench and the write console keep an opened run surface through a re-probe, and pass the pause reason down', () => {
 	for (const file of ['WorkbenchView.tsx', 'WriteConsoleView.tsx']) {
 		const view = code(read('views', file));
@@ -85,7 +85,7 @@ test('the workbench and the write console keep an opened run surface through a r
 	assert.match(surface, /canRun: \(\) => [^\n]*paused == null/, 'a paused surface sends nothing');
 });
 
-// GX-FE-03: a request is consumed by the surface through the host's slot, never de-duplicated by a ref the surface
+// A request is consumed by the surface through the host's slot, never de-duplicated by a ref the surface
 // re-creates on every mount; a request the surface cannot run now is never queued to run later.
 test('the run surface takes its editor request from the host\'s slot, and the hosts never queue a run for a surface that is not on screen', () => {
 	const surface = code(read('components', 'RunSurface.tsx'));
@@ -101,8 +101,8 @@ test('the run surface takes its editor request from the host\'s slot, and the ho
 	assert.ok(/const runNow = run && now\.mounted && now\.paused === null;/.test(workbench) && /slot\.put\(\{ text, run: runNow \}\)/.test(workbench), 'a run is asked for only while the surface can run it');
 });
 
-// GX-FE-05 (graph half) and GX-CT-03: the write was counted in `record`, which the shared runner skips once the
-// document is closed, so a write that landed after the console closed never marked other graphs out of date.
+// A write is not counted in `record`, which the shared runner skips once the document is closed: a write that lands
+// after the console closed still marks other graphs out of date.
 test('the write console counts a write where it is sent, not in the record step a closed document skips', () => {
 	const surface = code(read('components', 'RunSurface.tsx'));
 	const execute = surface.slice(surface.indexOf('execute: async'), surface.indexOf('settle:'));
@@ -113,7 +113,7 @@ test('the write console counts a write where it is sent, not in the record step 
 	assert.ok(/describeWriteFailure\(message, error\)/.test(surface), 'the write console words its failures as possibly applied');
 });
 
-// GX-FE-06: every run settled as 'rows' with the read toggle's limit, in both modes.
+// A run is settled by its mode: the write console's runs are not settled as 'rows' with the read toggle's limit.
 test('the run surface settles, records and describes a run through the mode-aware helpers', () => {
 	const surface = code(read('components', 'RunSurface.tsx'));
 	assert.ok(/settle: \(_run, result\) => settleRun\(mode, result\)/.test(surface), 'settle follows the mode');
@@ -122,7 +122,7 @@ test('the run surface settles, records and describes a run through the mode-awar
 	assert.ok(/resultMeta\(displayed/.test(surface), 'the result line shows the affected count');
 });
 
-// GX-FE-10: the busy sentence says "stop waiting for it", but only a path search offered the control.
+// The busy sentence says "stop waiting for it", so the control is offered for every request, not only a path search.
 test('the graph offers Stop waiting for whatever it is waiting on, in the toolbar and in the inspector', () => {
 	const view = code(read('components', 'GraphView.tsx'));
 	assert.ok(/\{busy && <Button[^>]*onClick=\{\(\) => session\.stopWaiting\(\)\}>Stop waiting<\/Button>\}/.test(view), 'the toolbar offers it whenever a request runs');
@@ -131,7 +131,7 @@ test('the graph offers Stop waiting for whatever it is waiting on, in the toolba
 	assert.ok(/state\.busy !== null && <Button[^>]*onClick=\{\(\) => session\.stopWaiting\(\)\}>Stop waiting<\/Button>/.test(inspector), 'the inspector offers it beside Refresh');
 });
 
-// GX-FE-09: Run was re-enabled once Stop waiting appeared, and a press then did nothing at all.
+// Run stays disabled for as long as a statement runs, Stop waiting shown or not: a press then would do nothing.
 test('Run is disabled for as long as a statement runs, and a run that cannot start says why', () => {
 	const surface = code(read('components', 'RunSurface.tsx'));
 	const buttons = surface.match(/<Button variant="(primary|ghost)" disabled=\{[^}]*\} onClick=\{\(\) => run\((false|true)\)\}/g) ?? [];
@@ -143,13 +143,13 @@ test('Run is disabled for as long as a statement runs, and a run that cannot sta
 	assert.ok(/runRefusal\(/.test(confirm), 'so does confirming a write');
 });
 
-// GX-FE-04: the write confirmation is the shell's ConfirmDialog, which focuses its confirm button when it mounts, so an
-// Enter right after Ctrl/Cmd+Enter (or a double Enter) executed the write. WriteConfirmDialog renders that dialog and
+// The write confirmation is the shell's ConfirmDialog, which focuses its confirm button when it mounts, so an Enter
+// right after Ctrl/Cmd+Enter (or a double Enter) would execute the write. WriteConfirmDialog renders that dialog and
 // moves focus to Cancel from its OWN mount effect, which React runs after the dialog's (a parent's effects run after
 // its children's in the same commit).
-// W3-FE04: an effect in RunSurface keyed on the dialog being open was not enough. Under <React.StrictMode> (the shell
-// renders in it) a development build re-runs the mount effects of what was just mounted (the dialog, so Execute takes
-// the focus again) but not RunSurface's update effect, so focus ended on Execute. A mount effect of the component that
+// An effect in RunSurface keyed on the dialog being open is not enough. Under <React.StrictMode> (the shell renders in
+// it) a development build re-runs the mount effects of what was just mounted (the dialog, so Execute takes the focus
+// again) but not RunSurface's update effect, so focus would end on Execute. A mount effect of the component that
 // renders the dialog is re-run with it, after it. No React harness runs here, so the shape is pinned by the source.
 test('the write confirmation opens with focus on Cancel, never on Execute, under StrictMode too', () => {
 	const confirmation = code(read('components', 'WriteConfirmDialog.tsx'));
@@ -169,8 +169,8 @@ test('the write confirmation opens with focus on Cancel, never on Execute, under
 	assert.doesNotMatch(surface, /focusCancelIn|confirmOpen|confirmAnchor/, 'no RunSurface effect moves the focus: StrictMode does not re-run it');
 });
 
-// GX-FE-02: the empty state REPLACED the card grid whenever no endpoint was ready, so a stopped, unreachable or No
-// access node had no card to open, and the reason and Test connection the message points to could not be reached.
+// The empty state never replaces the card grid when there are cards: a stopped, unreachable or No access node keeps
+// its card, so the reason and Test connection the message points to can be reached.
 test('the landing renders its cards whenever there are any, under its message, and the empty state alone only when there is no card', () => {
 	const view = code(read('views', 'ConnectionsView.tsx'));
 	assert.ok(/const landing = landingView\(status, endpoints, error\);/.test(view), 'the layout comes from landingView');
@@ -180,15 +180,15 @@ test('the landing renders its cards whenever there are any, under its message, a
 	assert.ok(/\{landing\.cards && \(\s*<div style=\{styles\.cardGrid\}>/.test(view), 'the grid renders whenever there are cards');
 });
 
-// GX-FE-17 (graph half): on a change of user, organization or team (or a sign-out) the shared store forgot every
-// connection, but the open workbench and write-console documents kept the previous identity's results on screen.
+// On a change of user, organization or team (or a sign-out) the shared store forgets every connection, so the open
+// workbench and write-console documents must not keep the previous identity's results on screen.
 test('a change of identity closes every connection document and clears the per-connection caches', () => {
 	const app = code(read('GraphApp.tsx'));
 	assert.ok(/const fingerprint = identityFingerprint\(identityFromConnectResult\(identity\)\);/.test(app), 'the app tracks the fingerprint the shared store tracks');
 	assert.ok(/useEffect\(\(\) => \{\s*forgetConnections\(getDocs\(\), \{ schemas \}\);\s*\}, \[fingerprint\]\);/.test(app), 'every change of it forgets the connections');
 });
 
-// GX-FE-08: one unkeyed drawer instance served every card, so the last Test result showed on the next card opened.
+// The drawer starts fresh for every card: one shared instance would show the last Test result on the next card opened.
 test('the connection drawer starts fresh for every card, and words its Test result through testResultText', () => {
 	const view = code(read('views', 'ConnectionsView.tsx'));
 	assert.ok(/<ConnectionDrawer\s+key=\{drawerKey \?\? ''\}/.test(view), 'the drawer is keyed on the card it shows');

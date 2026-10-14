@@ -5,7 +5,7 @@
 
 // =============================================================================
 // A11Y CONTRAST: every colour the canvas, the inspector and the editor draw with,
-// measured against every shipped theme (findings A11Y-1 to A11Y-4)
+// measured against every shipped theme
 // =============================================================================
 //
 // WCAG 2.x ratios, computed against the EFFECTIVE background:
@@ -59,12 +59,12 @@ test('there are six shipped themes and each defines every token measured here', 
 	for (const { name, tokens } of themes) for (const t of [ACCENT_TOKEN, EDGE_TOKEN, CANVAS_TEXT_TOKEN, CHIP_TEXT_TOKEN, ...CANVAS_SURFACES, '--rr-palette-mode']) assert.ok(tokens[t], `${name} lacks ${t}`);
 });
 
-test('A11Y-1: the highlight stroke, the selection ring and the focus ring (the accent) are at least 3:1 on both canvas surfaces in every theme', () => {
+test('the highlight stroke, the selection ring and the focus ring (the accent) are at least 3:1 on both canvas surfaces in every theme', () => {
 	const table = clears(ACCENT_TOKEN, MIN_GRAPHIC_CONTRAST, 'accent');
 	console.log(`accent ${ACCENT_TOKEN} (bg-default/bg-paper):`, table.join(' | '));
 });
 
-test('A11Y-1: the old accent, the brand colour, is measured here and fails 3:1 in RocketRide Light (the reason it was replaced)', () => {
+test('the old accent, the brand colour, is measured here and fails 3:1 in RocketRide Light (the reason it was replaced)', () => {
 	const light = themes.find((t) => t.name === 'rocketride-light')!;
 	const r = CANVAS_SURFACES.map((s) => ratio(light.tokens, '--rr-brand', s));
 	console.log('brand on rocketride-light (bg-default/bg-paper):', r.map((x) => x.toFixed(2)).join('/'));
@@ -83,7 +83,7 @@ test('an ordinary relationship line is at least 3:1 on both canvas surfaces in e
 	clears(EDGE_TOKEN, MIN_GRAPHIC_CONTRAST, 'relationship line');
 });
 
-test('A11Y-4: relationship type labels (10 px text) are at least 4.5:1 on both canvas surfaces in every theme', () => {
+test('relationship type labels (10 px text) are at least 4.5:1 on both canvas surfaces in every theme', () => {
 	const table = clears(CANVAS_TEXT_TOKEN, MIN_TEXT_CONTRAST, 'edge label');
 	console.log(`edge label ${CANVAS_TEXT_TOKEN} (bg-default/bg-paper):`, table.join(' | '));
 	const dark = themes.find((t) => t.name === 'rocketride')!;
@@ -91,7 +91,7 @@ test('A11Y-4: relationship type labels (10 px text) are at least 4.5:1 on both c
 	assert.ok(Math.min(...CANVAS_SURFACES.map((s) => ratio(dark.tokens, '--rr-text-secondary', s))) < MIN_TEXT_CONTRAST, 'the secondary colour fails in RocketRide Dark: that is why labels do not use it');
 });
 
-test('A11Y-2: the inspector\'s label pill text is at least 4.5:1 on both surfaces in every theme (the shell chip\'s info colour was 3.46:1 in RocketRide Light)', () => {
+test('the inspector\'s label pill text is at least 4.5:1 on both surfaces in every theme (the shell chip\'s info colour was 3.46:1 in RocketRide Light)', () => {
 	clears(CHIP_TEXT_TOKEN, MIN_TEXT_CONTRAST, 'label pill');
 	const light = themes.find((t) => t.name === 'rocketride-light')!;
 	const info = ratio(light.tokens, '--rr-color-info', '--rr-bg-default');
@@ -115,7 +115,7 @@ test('the stylesheet draws the ring, the focus outline and the labels with the m
 });
 
 // -----------------------------------------------------------------------------
-// A11Y-3: the editor's token colours
+// The editor's token colours
 // -----------------------------------------------------------------------------
 
 /** The colour the editor ends up drawing a token in, for a theme: the rule when there is one, else Monaco's own. */
@@ -127,7 +127,7 @@ function editorColour(theme: { tokens: Record<string, string> }, token: string):
 	return parseColor(`#${rule ? rule.foreground : dark ? base.dark : base.light}`) as Rgb;
 }
 
-test('A11Y-3: every Cypher token the editor colours is at least 4.5:1 on the editor background (the paper) in every theme', () => {
+test('every Cypher token the editor colours is at least 4.5:1 on the editor background (the paper) in every theme', () => {
 	const worstBefore: string[] = [];
 	for (const theme of themes) {
 		const paper = parseColor(theme.tokens['--rr-bg-paper']) as Rgb;
@@ -143,7 +143,7 @@ test('A11Y-3: every Cypher token the editor colours is at least 4.5:1 on the edi
 	assert.ok(worstBefore.length > 0, 'the measurement found failures to fix: the label token on RocketRide Light is one');
 });
 
-test('A11Y-3: the label token (type, ":Person") on RocketRide Light was 3.85:1 and is now at least 4.5:1, and keeps its teal hue', () => {
+test('the label token (type, ":Person") on RocketRide Light was 3.85:1 and is now at least 4.5:1, and keeps its teal hue', () => {
 	const light = themes.find((t) => t.name === 'rocketride-light')!;
 	const paper = parseColor(light.tokens['--rr-bg-paper']) as Rgb;
 	assert.ok(Math.abs(contrastRatio(parseColor('#008080') as Rgb, paper) - 3.85) < 0.05);
@@ -189,7 +189,7 @@ function colorsOf(theme: { tokens: Record<string, string> }): Record<string, str
 	return editorColors({ dark: theme.tokens['--rr-palette-mode'] === 'dark', background: theme.tokens['--rr-bg-paper'], foreground: theme.tokens['--rr-text-primary'], secondary: theme.tokens['--rr-text-secondary'] });
 }
 
-test('F9: every value of the editor theme is #RRGGBB in every shipped theme (Monaco reads rgba() as red), and the text colours are at least 4.5:1 on the editor background', () => {
+test('every value of the editor theme is #RRGGBB in every shipped theme (Monaco reads rgba() as red), and the text colours are at least 4.5:1 on the editor background', () => {
 	for (const theme of themes) {
 		const colors = colorsOf(theme);
 		const paper = parseColor(colors['editor.background']) as Rgb;
@@ -204,7 +204,7 @@ test('F9: every value of the editor theme is #RRGGBB in every shipped theme (Mon
 	}
 });
 
-test('F9: RocketRide Light\'s secondary text is rgba(10,10,10,0.62): the line numbers get the colour it LOOKS like over the paper, as hex, not the rgba string', () => {
+test('RocketRide Light\'s secondary text is rgba(10,10,10,0.62): the line numbers get the colour it LOOKS like over the paper, as hex, not the rgba string', () => {
 	const light = themes.find((t) => t.name === 'rocketride-light')!;
 	assert.match(light.tokens['--rr-text-secondary'], /^rgba\(/, 'the premise: this theme\'s token is an rgba()');
 	const out = readableOnEditor(light.tokens['--rr-text-secondary'], light.tokens['--rr-bg-paper']);

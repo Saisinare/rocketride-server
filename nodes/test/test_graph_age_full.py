@@ -1024,7 +1024,7 @@ def _setting_ms(text):
 
 
 class TestRetryDeadline:
-    """A call retried after a lost connection gets only what is left of its budget (GX-CT-09).
+    """A call retried after a lost connection gets only what is left of its budget.
 
     The budget is what the first attempt may take: the wait for a connection
     (the query timeout plus POOL_ACQUIRE_GRACE_S) plus the query timeout. With

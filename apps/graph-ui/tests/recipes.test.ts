@@ -114,9 +114,9 @@ test('an injected label can never break out of its quoting', () => {
 	for (const engine of ENGINES.slice(1)) assert.ok(isRefusal(labelPreview(engine, evil)), engine.dialect);
 });
 
-// GX-T1-02: expand asked for `shown + wanted + 1` rows with nothing left out, so once a node's row cap was below that
-// (250 on a default FalkorDB node), every repeat returned the same, already drawn, rows. The relationships already drawn
-// are now left out of the request itself, so a repeat asks for the next ones.
+// Asking for `shown + wanted + 1` rows with nothing left out would return the same, already drawn, rows on every repeat
+// once a node's row cap is below that (250 on a default FalkorDB node). The relationships already drawn are left out of
+// the request itself, so a repeat asks for the next ones.
 test('expand leaves out the relationships already drawn and asks for the wanted NEW neighbours plus one', () => {
 	const neo = recipe(expandNeighbors(ENGINES[0], 'a', 100, ['r1', 'r2', 'r1']));
 	assert.equal(neo.cypher, 'MATCH (n) WHERE elementId(n) = $id OPTIONAL MATCH (n)-[r]-(m) WHERE NOT (elementId(r) IN $drawn) RETURN n, r, m LIMIT 101');

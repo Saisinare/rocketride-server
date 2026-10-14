@@ -4,13 +4,14 @@
 // =============================================================================
 
 // =============================================================================
-// A CHANGE OF IDENTITY CLOSES WHAT BELONGED TO THE PREVIOUS ONE (GX-FE-17)
+// A CHANGE OF IDENTITY CLOSES WHAT BELONGED TO THE PREVIOUS ONE
 // =============================================================================
 //
-// On a change of user, organization or development team (or a sign-out) the shared endpoint store forgot every
-// endpoint, token, probe and session, but the open workbench and write-console documents stayed: their results,
-// graph and editor stayed on screen, and a document still bound to the previous team's endpoint showed it as ready
-// until a discovery ran. The app now closes every connection-scoped document and clears its per-connection caches.
+// On a change of user, organization or development team (or a sign-out) the shared endpoint store forgets every
+// endpoint, token, probe and session. The open workbench and write-console documents go too: otherwise their
+// results, graph and editor would stay on screen, and a document still bound to the previous team's endpoint would
+// show it as ready until a discovery ran. The app closes every connection-scoped document and clears its
+// per-connection caches.
 // =============================================================================
 
 import assert from 'node:assert/strict';

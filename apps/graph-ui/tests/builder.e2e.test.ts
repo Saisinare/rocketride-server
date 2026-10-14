@@ -4,7 +4,7 @@
 // =============================================================================
 
 // =============================================================================
-// THE OPT-IN BROWSER LANES: graph-ui:e2e-live (CI-03, partial)
+// THE OPT-IN BROWSER LANES: graph-ui:e2e-live
 // =============================================================================
 //
 // The Playwright lanes in scripts/acceptance/graph-explorer/browser are the only checks that render the app in a real
@@ -52,7 +52,7 @@ const tasks = require('../scripts/tasks.js') as { actions: IAction[]; e2e: IE2e 
 const REPO = path.resolve(__dirname, '..', '..', '..');
 // apps/shared's global.d.ts types `process` as the browser bundles' env seam only, so Node's own is required by name.
 const { execPath } = require('node:process') as { execPath: string };
-/** The action's name. Its verb (after the colon) is no global builder command: see W3-CI03b below. */
+/** The action's name. Its verb (after the colon) is no global builder command: see the bare-command test below. */
 const E2E_ACTION = 'graph-ui:e2e-live';
 
 const ENV = { ENGINE_URL: 'http://127.0.0.1:5650/' };
@@ -124,10 +124,10 @@ function builderDryRun(commands: string[]): { actions: string[]; status: number 
 	return { actions, status: run.status, output: `${run.stdout ?? ''}${run.stderr ?? ''}` };
 }
 
-// W3-CI03b: the builder expands a bare command to every module's public '<module>:<command>' action
-// (scripts/build.js expandGlobalCommands), so a CI step running a bare `builder e2e` would have pulled the browser
-// lanes in, and the check above, which looks for the action's full name, would not have noticed. The action's verb is
-// no command the builder runs globally, and this asks the real builder what those commands expand to.
+// The builder expands a bare command to every module's public '<module>:<command>' action
+// (scripts/build.js expandGlobalCommands), so a CI step running a bare `builder e2e` would pull the browser lanes in,
+// and the check above, which looks for the action's full name, would not notice. The action's verb is no command the
+// builder runs globally, and this asks the real builder what those commands expand to.
 test('no bare builder command reaches the opt-in action: not `builder e2e`, and none a CI workflow runs', () => {
 	const optIn = tasks.actions.filter((a) => /opt-in/i.test(a.action().description ?? ''));
 	assert.equal(optIn.length, 1, 'one graph-ui action says it is opt-in');
@@ -159,8 +159,8 @@ test('without an engine URL it fails at once and says which variable to set and 
 	assert.throws(() => tasks.e2e.planE2e({ ENGINE_URL: 'ftp://127.0.0.1:5650' }), /ENGINE_URL must be an http\(s\) URL/);
 });
 
-// W3-CI03a: lane_a11y also measures the shell's own text, and some shell theme pairs are below 4.5:1 today (O12), so a
-// default run that included it always exited 1. It runs when named (or with "all") until those tokens are fixed.
+// lane_a11y also measures the shell's own text, and some shell theme pairs are below 4.5:1 today, so a default run
+// that included it would always exit 1. It runs when named (or with "all") until those tokens are fixed.
 test('the plan: Chrome and every lane but a11y by default, a choice of browsers, lanes and graph engines, and results outside the tree', () => {
 	const plan = tasks.e2e.planE2e(ENV);
 	assert.equal(plan.url, 'http://127.0.0.1:5650', 'no trailing slash: the lanes append paths');
@@ -223,9 +223,9 @@ function rows(count: number, extra: Record<string, string>, status = 'FAIL') {
 	return Array.from({ length: count }, (_, i) => ({ browser: 'chrome', ...extra, name: `check ${i + 1}`, status, detail: status === 'FAIL' ? 'returned false' : undefined }));
 }
 
-// W3-CI03a: a failed lane was reported as "lane_graph.cjs (chrome): Command failed (exit 1):", so finding out what
-// failed meant opening the JSON. The summary now names the failed rows from the lane's own result file, and a result
-// file the run did not write (a previous run's, left behind by a lane that died early) is not read.
+// A failed lane is summarised by the rows that failed, read from the lane's own result file, not by a bare
+// "lane_graph.cjs (chrome): Command failed (exit 1):" that leaves the reader to open the JSON. A result file the run
+// did not write (a previous run's, left behind by a lane that died early) is not read.
 test('a failed lane run is summarised by the rows that failed in its own result file, or by its error when it wrote none', async () => {
 	const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'graph-ui-e2e-'));
 	try {

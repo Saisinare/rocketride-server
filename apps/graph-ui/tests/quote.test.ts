@@ -23,9 +23,9 @@ test('Neo4j and FalkorDB wrap every name in backticks; Neo4j doubles a literal b
 	assert.equal(quoteIdentifier('``', 'neo4j'), '````````'.slice(0, 6));
 });
 
-// GX-T1-06: FalkorDB's parser rejects a doubled backtick inside a quoted name (live: `MATCH (n:\`a\`\`b\`)` fails with
+// FalkorDB's parser rejects a doubled backtick inside a quoted name (live: `MATCH (n:\`a\`\`b\`)` fails with
 // "Invalid input '`b`': expected ')'"; FalkorDB issue #154), and the FalkorDB node lists such labels without sampling
-// them for that reason. The app doubled it anyway, so clicking the label failed with a parse error.
+// them for that reason. Doubling it would make clicking the label fail with a parse error, so no quoted form is made.
 test('FalkorDB refuses a name holding a backtick, as the node says the server cannot quote one', () => {
 	for (const name of ['a`b', '``', '`', 'x`;`y', '`) DETACH DELETE n //']) assert.equal(quoteIdentifier(name, 'falkordb'), null, name);
 });

@@ -36,9 +36,9 @@
 //     with the real script URL and then `importScripts` it. The shadowing is
 //     needed because Rspack's automatic public path reads `self.location`, which
 //     inside a blob worker is a `blob:` URL, so every later chunk would be
-//     fetched from the wrong place (proved against the real build, see
-//     research/workbench.md R5). This path exists only when the build is not a
-//     production build; it is never taken silently in production.
+//     fetched from the wrong place (checked against the real build). This
+//     path exists only when the build is not a production build; it is never
+//     taken silently in production.
 //
 // Nothing here touches the DOM, so the decision and the wrapper source are
 // tested in Node.

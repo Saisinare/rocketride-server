@@ -206,9 +206,9 @@ describe('history and flags', () => {
 		detach();
 	});
 
-	// GX-T1-07: a `graph.patternChecks` flag store was exported, tested and documented, but nothing read or wrote it.
 	// The write console always confirms what the text check flags and the README promises no "do not ask again", so
-	// Graph Explorer keeps no such switch: a later change cannot wire one to turn the confirmation off by accident.
+	// Graph Explorer keeps no pattern-check switch (`graph.patternChecks`): a later change cannot wire one to turn the
+	// confirmation off by accident.
 	it('keeps no pattern-check switch: nothing in the app stores or reads graph.patternChecks', () => {
 		assert.ok(!('patternChecks' in explorerAdapter), 'the adapter exports no pattern-check flag store');
 		const src = path.resolve(__dirname, '..', 'src');

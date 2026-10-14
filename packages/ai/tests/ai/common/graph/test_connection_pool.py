@@ -329,7 +329,7 @@ def test_close_stops_the_reaper():
 
 
 def test_a_caller_can_wait_less_than_the_acquire_timeout():
-    """A caller with its own deadline (schema refresh) stops waiting at it (GX-CT-09)."""
+    """A caller with its own deadline (schema refresh) stops waiting at it."""
     pool, _ = make_pool(max_size=1, timeout=30.0)
     with pool.connection():
         started = time.monotonic()

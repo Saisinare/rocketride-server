@@ -36,9 +36,9 @@ test('a refusal leads with the node\'s headline, the database text under it, and
 	assert.equal(read.ignore, false);
 });
 
-// GX-T1-03: on the node "Refused:" means a safety rule or the database refused the statement (graph_errors.py), not
-// only "this writes". Every Refused headline got the write-console hint, so a read refused for its size, an AGE resource
-// rule or a missing privilege was shown as a write problem. Only the write refusals point at the write console now.
+// On the node "Refused:" means a safety rule or the database refused the statement (graph_errors.py), not only "this
+// writes". A read refused for its size, an AGE resource rule or a missing privilege is not a write problem, so only the
+// write refusals point at the write console.
 const WRITE_REFUSALS = [
 	'Refused: read_query is read-only; this statement writes (CREATE)', // cypher_safety.py, AGE firewall write_clause
 	'Refused: read_query is read-only; this statement writes', // graph_falkordb RO_QUERY
@@ -238,9 +238,9 @@ test('when the shared runner passes the thrown ExplorerToolError, its kind decid
 	assert.equal(describeFailureOf('boom', undefined, false).headline, 'boom');
 });
 
-// GX-CT-03: execute(shape 'graph') can fail after the statement committed (the node could not build the envelope, or
-// this app rejected the answer). The write console used to say "Refused: ..." with the hint to use the write console
-// the user was already in.
+// execute(shape 'graph') can fail after the statement committed (the node could not build the envelope, or this app
+// rejected the answer). The write console then says the write may have been applied, not "Refused: ..." with a hint
+// to use the write console the user is already in.
 test('in the write console a failure that can come after the statement ran says the write may have been applied', () => {
 	const message = 'Refused: the first row holds more than 10,000 graph elements';
 	const refused = describeWriteFailure(message, new ExplorerToolError({ kind: 'raised', tool: 'execute', message }));

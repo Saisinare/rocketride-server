@@ -27,8 +27,8 @@
 // `new Worker(new URL('./layout.worker.ts', import.meta.url))` must appear
 // LITERALLY: Rspack only bundles a worker when the constructor call carries the
 // URL expression inline. A separate `const url = new URL(...)` is not analysed
-// and the .ts source is emitted as an unbuilt asset (found against the real
-// build, see research/workbench.md R5).
+// and the .ts source is emitted as an unbuilt asset (checked against the real
+// build).
 //
 // The literal call is made once with `Worker` temporarily replaced by a recorder,
 // to learn the URL the bundler rewrote it to without starting anything; the real

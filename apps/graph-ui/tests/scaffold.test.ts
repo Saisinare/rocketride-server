@@ -106,7 +106,7 @@ test('the .rrapp marker is the contentless trigger file', () => {
 	assert.equal(fs.readFileSync(path.join(APP_ROOT, 'graph.rrapp'), 'utf8').trim(), '{}');
 });
 
-// GX-CMP-02: the app imports the shared Explorer library (`shared/*`, resolved through tsconfig paths). The App Builder
+// The app imports the shared Explorer library (`shared/*`, resolved through tsconfig paths). The App Builder
 // and `rocketride app deploy` pack only the app folder plus the manifest's include roots, so without
 // "include": ["apps/shared"] a server build cannot resolve 'shared/explorer'.
 test('an app that imports shared/* declares apps/shared in appManifest.include, as explorer-ui does', () => {
@@ -126,7 +126,7 @@ test('an app that imports shared/* declares apps/shared in appManifest.include, 
 	assert.deepEqual(explorer.appManifest.include, ['apps/shared'], 'the format other apps use');
 });
 
-// GX-FE-13, DOC-16: README.md is the app's readme (appManifest.readme): registerApp serves it on its own, without
+// README.md is the app's readme (appManifest.readme): registerApp serves it on its own, without
 // the repository around it, so a repo-relative link (../../docs, ../../nodes, templates/, docs/contrast.md) is
 // broken on the app's page, and the templates it described as shipping "with the app" are not served at all.
 test('the README served with the app links only to absolute URLs or its own headings, and says how to get a template', () => {

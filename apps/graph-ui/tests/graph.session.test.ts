@@ -125,8 +125,8 @@ function cappedHub(size: number, cap: number) {
 	};
 }
 
-// GX-T1-02: the request asked for `shown + wanted + 1` rows with nothing left out. Once that passed the node's row cap
-// (250 on a default FalkorDB node), every repeat got the same first 250 rows, all drawn, and was told "expand again".
+// A request for `shown + wanted + 1` rows with nothing left out stops working once that passes the node's row cap (250
+// on a default FalkorDB node): every repeat would get the same first 250 rows, all drawn, and be told "expand again".
 test('repeating Expand on a hub behind a row cap keeps adding the next neighbours until there are none', async () => {
 	const { session, log } = rig(NEO, cappedHub(450, 250));
 	session.load(envelope([[node('a')]]));
@@ -384,7 +384,7 @@ test('subscribers hear changes and can unsubscribe', () => {
 });
 
 // -----------------------------------------------------------------------------
-// Reused ids (finding F2): an id is a live handle, not an identity
+// Reused ids: an id is a live handle, not an identity
 // -----------------------------------------------------------------------------
 
 test('refresh: the same id returned with different labels is a different element: not merged, marked out of date, and the next action on it is declined', async () => {
@@ -550,8 +550,8 @@ test('markStale on an empty canvas does nothing', () => {
 });
 
 // -----------------------------------------------------------------------------
-// Finding F7: Escape did not close the inspector. The inspector's state WAS cleared, but
-// `dispose()` (run when a new result replaced the old) had dropped the component's subscription.
+// Escape closes the inspector after a new result: `dispose()` (run when a new result replaces
+// the old) must not drop the component's subscription, or the cleared state is never re-rendered.
 // -----------------------------------------------------------------------------
 
 test('a subscriber keeps hearing after dispose and a later load: closing the inspector re-renders it', () => {
@@ -590,7 +590,7 @@ test('dispose ends what is in flight but leaves subscriptions alone, and the ses
 });
 
 // -----------------------------------------------------------------------------
-// GX-FE-01: while the connection is checked again, the drawing stays and nothing is sent
+// While the connection is checked again, the drawing stays and nothing is sent
 // -----------------------------------------------------------------------------
 
 test('a paused session keeps its drawing and sends nothing for Expand, Connect, Find path or Refresh, and says why', async () => {
@@ -624,7 +624,7 @@ test('a paused session keeps its drawing and sends nothing for Expand, Connect, 
 });
 
 // -----------------------------------------------------------------------------
-// GX-CT-02: Connect honours `truncated`
+// Connect honours `truncated`
 // -----------------------------------------------------------------------------
 
 test('connect never says "no further relationships" when the node cut its answer, and says that more may exist', async () => {
@@ -645,7 +645,7 @@ test('connect never says "no further relationships" when the node cut its answer
 });
 
 // -----------------------------------------------------------------------------
-// GX-CT-07: node and relationship ids are separate namespaces (FalkorDB numbers both from 0)
+// Node and relationship ids are separate namespaces (FalkorDB numbers both from 0)
 // -----------------------------------------------------------------------------
 
 test('a relationship marked out of date does not mark the node that has the same id (FalkorDB numbers both from 0), and Connect says which kind is out of date', async () => {
@@ -676,7 +676,7 @@ test('a relationship marked out of date does not mark the node that has the same
 });
 
 // -----------------------------------------------------------------------------
-// GX-FE-10: "stop waiting" exists for every request the graph sends
+// "Stop waiting" exists for every request the graph sends
 // -----------------------------------------------------------------------------
 
 test('Stop waiting lets go of Expand, Connect and Refresh as well as a path search: the late answer is dropped and the next action may start', async () => {

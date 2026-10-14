@@ -34,8 +34,8 @@ test('a batch of reads needs no confirmation', () => {
 	assert.equal(describeWrites([]).needed, false);
 });
 
-// GX-T1-01: a mid-statement GQL INSERT (Neo4j 5's synonym of CREATE) was taken for a read, so the write console sent it
-// with no dialog although the node's own read path counts INSERT as a write.
+// A mid-statement GQL INSERT (Neo4j 5's synonym of CREATE) is a write, as the node's own read path counts it, so the
+// write console confirms it before it is sent.
 test('a mid-statement INSERT is confirmed before it is sent', () => {
 	const c = describeWrites(all("MATCH (a:Person {name: 'Ada'}) INSERT (a)-[:KNOWS]->(:Person {name: 'Eve'})"));
 	assert.equal(c.needed, true);
@@ -65,16 +65,16 @@ test('long statements are excerpted to three lines in the list', () => {
 	assert.equal(c.mutating[0].excerpt.split('\n').length, 3);
 });
 
-// GX-FE-16 (4): the banner said "You are asked to confirm before anything is sent", but a batch the text check does not
-// flag is sent through execute with no dialog.
+// A batch the text check does not flag is sent through execute with no dialog, so the banner never says "You are
+// asked to confirm before anything is sent".
 test('the write console banner says which statements are confirmed, not that every one is', () => {
 	assert.doesNotMatch(WRITE_CONSOLE_BANNER, /You are asked to confirm before anything is sent/);
 	assert.match(WRITE_CONSOLE_BANNER, /Statements that look like they change data are listed for you to confirm before anything is sent; anything else is sent when you press Execute\./);
 	assert.ok(WRITE_CONSOLE_BANNER.endsWith(TEXT_CHECK_SENTENCE));
 });
 
-// GX-FE-04: the shell's ConfirmDialog focuses its confirm button when it opens, so an Enter right after Ctrl/Cmd+Enter
-// (or a double Enter) executed the write. WriteConfirmDialog moves focus to the dialog's Cancel button, which the focus
+// The shell's ConfirmDialog focuses its confirm button when it opens, so an Enter right after Ctrl/Cmd+Enter (or a
+// double Enter) would execute the write. WriteConfirmDialog moves focus to the dialog's Cancel button, which the focus
 // step finds by its label. There is no DOM here: the dialog is a stand-in with the shell's footer order.
 test('the write confirmation\'s focus step lands on Cancel, never on Execute', () => {
 	assert.equal(WRITE_CANCEL_LABEL, 'Cancel');
@@ -88,9 +88,9 @@ test('the write confirmation\'s focus step lands on Cancel, never on Execute', (
 	}
 });
 
-// GX-T1-05: History's "Run again" in the write console always announced "you will be asked to confirm", but a statement
-// the text check does not flag is sent by Execute with no dialog. A screen-reader user relying on that promise would run
-// it on the live database at once. The announcement now says which will happen, and the view uses it.
+// History's "Run again" in the write console says whether Execute will ask first: a statement the text check does not
+// flag is sent by Execute with no dialog, and a screen-reader user relying on a blanket "you will be asked to confirm"
+// would run it on the live database at once. The view uses this announcement.
 test('the write console\'s Run again announcement says whether Execute will ask first', () => {
 	const write = rerunAnnouncement("MATCH (a:Person {name: 'Ada'}) SET a.x = 1");
 	assert.equal(write, 'The statement is in the editor. Press Execute to run it; you will be asked to confirm first.');

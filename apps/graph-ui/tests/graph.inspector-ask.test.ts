@@ -30,7 +30,7 @@ test('the inspector shows labels, exact property values and the user\'s own key 
 	assert.equal(by.big, '9007199254740993', 'a number tag shows its exact text');
 	assert.equal(model.id, alice.id);
 	assert.ok(model.notes.includes(ID_NOTE));
-	// GX-CT-10: a nested user map shows its keys as the user wrote them (one leading @ removed at every level), not the
+	// A nested user map shows its keys as the user wrote them (one leading @ removed at every level), not the
 	// escaped wire form; Copy JSON keeps the wire form.
 	assert.equal(by.meta, '{"@kind":"node","@@kind":"already","_labels":["not","metadata"],"_type":"user value","":"empty key"}');
 	assert.match(model.json, /"@@kind": "node"/, 'Copy JSON is the wire form');
@@ -101,7 +101,7 @@ test('a failure that looks like a missing model is unavailable; a safety refusal
 	assert.equal(explainAskFailure({ kind: 'invalid', headline: 'Generated query contains write or admin clauses' }).unavailable, false);
 	assert.equal(explainAskFailure({ kind: 'raised', headline: 'Query timed out after 30000 ms', detail: 'Database said: canceling statement' }).unavailable, false);
 	assert.equal(explainAskFailure({ kind: 'invalid', headline: 'no llm' }).unavailable, false, 'only a raised error can mean the pipeline has no model');
-	// GX-T1-04: what the engine raises when the pipeline has no LLM node (filter.callbacks.target.cpp), as captured live.
+	// What the engine raises when the pipeline has no LLM node (filter.callbacks.target.cpp), as captured live.
 	assert.equal(explainAskFailure({ kind: 'raised', headline: 'InvalidParam: No control listeners registered for llm at (filter.callbacks.target.cpp:96)' }).unavailable, true);
 	// ...and texts that only mention a model or a connection: the node's own empty-answer error, the SDK's lost connection.
 	for (const headline of ['LLM failed to return a Cypher query.', 'Server is not connected', 'WebSocket not connected: call connect() first', 'The LLM returned an empty answer']) {
