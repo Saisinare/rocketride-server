@@ -146,7 +146,9 @@ description with it so generated Cypher targets the right model.
 
 The node retries failed Cypher validation up to five times by default. Raise
 Max validation attempts (at most 10) for a complex schema where the returned validation error
-is likely to let the LLM repair its query, or lower it to fail faster. Max read
+is likely to let the LLM repair its query, or lower it to fail faster. The
+runtime applies 1–10: a value above 10 saved by an earlier version of the form,
+or set in a pipeline file, still runs as 10. Max read
 rows defaults to 1,000 and is an owner-controlled cap for the questions lane,
 get_data and read_query (and so for Graph Explorer, whose "All" asks for this
 cap); increase it only when agents truly need larger result sets, since

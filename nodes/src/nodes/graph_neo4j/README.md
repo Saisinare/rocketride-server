@@ -158,7 +158,9 @@ actual schema.
 
 **Max validation attempts** controls how many times a rejected generated query
 is repaired after Neo4j rejects it under `EXPLAIN`. The setting defaults to 5
-and accepts 1–10. Increase it only if valid requests routinely
+and accepts 1–10, the range the runtime applies: a value above 10 saved by an
+earlier version of this form, or set in a pipeline file, still runs as 10.
+Increase it only if valid requests routinely
 need additional repair attempts, since each retry calls the LLM and delays the
 answer. When all attempts fail, the node returns the database error rather than
 running the last rejected query.
