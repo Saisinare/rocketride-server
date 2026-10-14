@@ -446,6 +446,26 @@ function maskNonCode(sql: string, traits: IScanTraits): string {
 }
 
 /**
+ * Like {@link codeOnly}, but a string literal or a quoted identifier becomes a
+ * run of `0`s of the same length instead of blanks, so text that ends in one
+ * still reads as ending in an operand. Comments are blanked as in `codeOnly`,
+ * and offsets are preserved.
+ *
+ * @param sql - The statement.
+ * @param dialect - The engine dialect.
+ * @returns The masked text.
+ */
+export function codeWithOperands(sql: string, dialect: SqlDialect = 'unknown'): string {
+	let out = '';
+	for (const region of scanRegions(sql, traitsFor(dialect))) {
+		const length = region.end - region.start;
+		if (region.kind === 'code') out += sql.slice(region.start, region.end);
+		else out += (region.kind === 'string' ? '0' : ' ').repeat(length);
+	}
+	return out;
+}
+
+/**
  * Replace every comment with a single space, leaving code and string literals
  * untouched. The space matters: `SELECT/**\/1` must not become `SELECT1`.
  *

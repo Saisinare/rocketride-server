@@ -62,7 +62,8 @@ import type { IKeywordSite } from './split';
  * What a statement does, by text pattern.
  *
  * - `read` — returns rows and changes nothing (SELECT, SHOW, EXPLAIN, DESCRIBE).
- * - `write` — changes rows (INSERT, UPDATE, DELETE, REPLACE, MERGE, TRUNCATE).
+ * - `write` — changes rows (INSERT, UPDATE, DELETE, REPLACE, MERGE, TRUNCATE),
+ *   or sends a SELECT's rows into a table, a file or variables (`SELECT ... INTO`).
  * - `ddl` — changes the schema (CREATE, ALTER, DROP, RENAME).
  * - `tx` — transaction control, which has no effect through this app's
  *   per-call autocommit execution path.
@@ -112,6 +113,35 @@ const EXPLAIN_PREFIX = /^explain\s*(?:\([^)]*\)\s*)?(?:(?:analyz[se]|verbose|ext
  * unbounded under a meta line that says otherwise.
  */
 export const CTE_WRITE_WORDS = ['insert', 'update', 'delete', 'merge', 'replace'];
+
+/**
+ * Whether a statement that leads like a read sends its rows somewhere else
+ * instead of back to the caller: an `INTO` in its CODE.
+ *
+ * PostgreSQL's `SELECT ... INTO [TEMP | UNLOGGED] [TABLE] name` creates and
+ * fills a table; MySQL's `INTO OUTFILE` and `INTO DUMPFILE` write a file on
+ * the server and `INTO @var` sets variables, before `FROM` or at the end;
+ * ClickHouse's `INTO OUTFILE` writes a file. None of them returns rows, so
+ * none is a read, and a row limit appended to one would silently truncate
+ * what it writes (or, after MySQL's trailing INTO, be a syntax error naming
+ * a clause the user never typed).
+ *
+ * Read on MASKED text, so `into` in a literal, a comment or a quoted
+ * identifier is not one, and at ANY depth: no read-only SELECT carries an
+ * INTO anywhere, and the one way a data-modifying CTE does (`INSERT INTO`) is
+ * a write already. Only ever asked about a statement led by SELECT, a
+ * parenthesised set expression or a WITH chain.
+ *
+ * Exported for the same reason as {@link CTE_WRITE_WORDS}: the row-limit rule
+ * in `batch.ts` must give the same answer as the classification.
+ *
+ * @param sql - The statement.
+ * @param dialect - The engine dialect.
+ * @returns True when the statement carries an INTO in code.
+ */
+export function selectsInto(sql: string, dialect: SqlDialect = 'unknown'): boolean {
+	return keywordSites(sql, ['into'], dialect).length > 0;
+}
 
 /**
  * Keywords that can lead a statement, whether it is the one a `WITH` chain
@@ -240,10 +270,11 @@ export function classifyStatement(sql: string, dialect: SqlDialect = 'unknown'):
 
 	if (TX_SET.test(head)) return 'tx';
 	if (TX_LEADERS.test(head)) return 'tx';
-	if (READ_LEADERS.test(head)) return 'read';
+	// A SELECT ... INTO fills a table, a file or variables: a write.
+	if (READ_LEADERS.test(head)) return /^select\b/i.test(head) && selectsInto(head, dialect) ? 'write' : 'read';
 	if (WRITE_LEADERS.test(head)) return 'write';
 	if (DDL_LEADERS.test(head)) return 'ddl';
-	if (/^with\b/i.test(head)) return keywordSites(head, CTE_WRITE_WORDS, dialect).length > 0 ? 'write' : 'read';
+	if (/^with\b/i.test(head)) return keywordSites(head, CTE_WRITE_WORDS, dialect).length > 0 || selectsInto(head, dialect) ? 'write' : 'read';
 	return 'other';
 }
 

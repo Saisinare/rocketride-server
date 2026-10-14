@@ -96,6 +96,20 @@ const KIND_CASES: IKindCase[] = [
 	// though FOR UPDATE only locks. Over-classifying costs a retry, not data.
 	{ sql: 'WITH a AS (SELECT 1) SELECT * FROM a FOR UPDATE', kind: 'write' },
 
+	// A SELECT that sends its rows elsewhere writes: a table, a file, variables.
+	{ sql: 'SELECT * INTO orders_backup FROM orders', kind: 'write', dialect: 'postgres' },
+	{ sql: '(SELECT * INTO t FROM a)', kind: 'write', dialect: 'postgres' },
+	{ sql: 'WITH r AS (SELECT 1) SELECT * INTO t FROM r', kind: 'write', dialect: 'postgres' },
+	{ sql: "SELECT * FROM orders INTO OUTFILE '/tmp/o.csv'", kind: 'write', dialect: 'mysql' },
+	{ sql: 'SELECT id INTO @last FROM orders', kind: 'write', dialect: 'mysql' },
+	{ sql: "SELECT * FROM events INTO OUTFILE 'e.csv'", kind: 'write', dialect: 'clickhouse' },
+	{ sql: 'EXPLAIN ANALYZE SELECT * INTO t FROM a', kind: 'write', dialect: 'postgres' },
+	// Plain EXPLAIN only plans it; INTO in a literal, quoted name or longer word is no INTO.
+	{ sql: 'EXPLAIN SELECT * INTO t FROM a', kind: 'read', dialect: 'postgres' },
+	{ sql: "SELECT 'into' AS w", kind: 'read' },
+	{ sql: 'SELECT * FROM "into"', kind: 'read', dialect: 'postgres' },
+	{ sql: 'SELECT into_count FROM t', kind: 'read' },
+
 	// DDL.
 	{ sql: 'CREATE TABLE t (id INT)', kind: 'ddl' },
 	{ sql: 'ALTER TABLE t ADD COLUMN c INT', kind: 'ddl' },

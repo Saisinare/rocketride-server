@@ -38,8 +38,8 @@
 
 import type { SqlDialect } from '../connect';
 import type { StatementKind } from './classify';
-import { CTE_WRITE_WORDS } from './classify';
-import { codeOnly, keywordSites, stripSqlComments } from './split';
+import { CTE_WRITE_WORDS, selectsInto } from './classify';
+import { codeOnly, codeWithOperands, keywordSites, stripSqlComments } from './split';
 import {
 	formatBatchOutcome,
 	formatElapsed,
@@ -218,6 +218,79 @@ function hashCommentPrecedesClause(sql: string, lockingAt: number, dialect: SqlD
 const FETCH_LIMIT_HEAD = /^fetch\s+(?:first|next)(?![\w$])/i;
 
 /**
+ * ClickHouse's `LIMIT n BY expr`, also spelled `LIMIT m, n BY` and `LIMIT n
+ * OFFSET m BY`: it caps the rows PER GROUP of `expr`, not the result, so it
+ * is not the statement's row limit. ClickHouse accepts an ordinary `LIMIT`
+ * after it, which is where the header's goes. `n` and `m` are constants or
+ * query parameters (`{n:UInt32}`), so each is one token here; matched on
+ * masked text sliced at a `limit` site, like {@link FETCH_LIMIT_HEAD}.
+ */
+const LIMIT_BY_HEAD = /^limit\s+[^\s,()]+(?:\s*,\s*[^\s,()]+)?(?:\s+offset\s+[^\s,()]+)?\s+by(?![\w$])/i;
+
+/**
+ * Whether the dialect may be one that has `LIMIT n BY`: ClickHouse, or a
+ * connection whose dialect could not be probed. On PostgreSQL and MySQL the
+ * clause does not parse at all, and the statement is left as it was.
+ *
+ * @param dialect - The engine dialect.
+ * @returns True when a `LIMIT ... BY` may be a per-group limit.
+ */
+function mayLimitByGroup(dialect: SqlDialect): boolean {
+	return dialect === 'clickhouse' || dialect === 'unknown';
+}
+
+/**
+ * ClickHouse's trailing `SETTINGS name = value, ...` and `FORMAT Name`
+ * clauses, matched on masked text sliced at a depth-0 `settings`/`format`
+ * site. ClickHouse orders them after every LIMIT (`... LIMIT n SETTINGS ...
+ * FORMAT ...`, or FORMAT first) and rejects a LIMIT that follows either.
+ * `FORMAT` must also be the statement's last clause apart from a trailing
+ * SETTINGS, so a column or alias named `format` or `settings` (`SELECT format
+ * FROM t`, `WHERE settings = 1`) never matches.
+ * Only a `;` and comments may follow the format name: `--` and block comments
+ * are masked, but ClickHouse can read `#` as a line comment, which the
+ * scanner masks on MySQL alone, so an unmasked `# ...` is allowed there too.
+ */
+const SETTINGS_CLAUSE_HEAD = /^settings\s+[a-z_][\w]*\s*=/i;
+const FORMAT_CLAUSE = /^format\s+[a-z_][\w]*(?:\s+settings\s+[a-z_][\w]*\s*=[\s\S]*?)?\s*;?\s*(?:#[^\n]*\s*)*$/i;
+
+/**
+ * Masked text before a `settings`/`format` site that still expects an
+ * operand: a comma, an opening parenthesis, a dot, an operator, or a keyword
+ * such as BY, FROM or JOIN. There the word is a column, table or alias name
+ * (`ORDER BY format DESC`, `ORDER BY a, format ASC`, `FROM format f`), never
+ * the trailing clause, which only follows a complete query. `*` is left out
+ * because `SELECT * FORMAT CSV` is a complete ClickHouse query. The word
+ * boundary is the identifier class written out, not `\b`, for the reason
+ * `keywordSites` gives, and without a lookbehind (Safari 13).
+ */
+const EXPECTS_OPERAND = /(?:[,(.=<>+\-/%|&^~!]|(?:^|[^A-Za-z0-9_$\u0080-\uffff])(?:by|from|join|select|distinct|where|prewhere|having|on|using|and|or|not|in|is|like|ilike|between|as|case|when|then|else))\s*$/i;
+
+/**
+ * Where a trailing ClickHouse `SETTINGS` or `FORMAT` clause starts (the first
+ * of them when both are present), or -1. Only on a dialect that may be
+ * ClickHouse (see {@link mayLimitByGroup}); neither clause parses on
+ * PostgreSQL or MySQL.
+ *
+ * @param sql - The statement.
+ * @param dialect - The engine dialect.
+ * @returns The clause's start index, or -1.
+ */
+function trailingClickHouseClauseAt(sql: string, dialect: SqlDialect): number {
+	if (!mayLimitByGroup(dialect)) return -1;
+	const masked = codeOnly(sql, dialect);
+	// A literal or a quoted name right before the site is a complete operand,
+	// which the plain mask would blank away (`kind = 'click' SETTINGS ...`).
+	const operands = codeWithOperands(sql, dialect);
+	for (const site of keywordSites(sql, ['settings', 'format'], dialect)) {
+		if (site.depth !== 0 || EXPECTS_OPERAND.test(operands.slice(0, site.index))) continue;
+		const rest = masked.slice(site.index);
+		if (site.keyword === 'settings' ? SETTINGS_CLAUSE_HEAD.test(rest) : FORMAT_CLAUSE.test(rest)) return site.index;
+	}
+	return -1;
+}
+
+/**
  * Where the statement's own outermost row-limit clause starts — `LIMIT` or
  * the SQL standard's `FETCH { FIRST | NEXT } ... ONLY` — or -1 when it has
  * none. Either spelling shares `LIMIT`'s grammar slot, so a statement bounded
@@ -267,7 +340,13 @@ function inStatementLimitAt(sql: string, dialect: SqlDialect): number {
 	const masked = codeOnly(sql, dialect);
 	for (const site of keywordSites(sql, ['limit', 'fetch'], dialect)) {
 		if (site.depth !== 0) continue;
-		if (site.keyword === 'limit' || FETCH_LIMIT_HEAD.test(masked.slice(site.index))) return site.index;
+		if (site.keyword === 'limit') {
+			// A per-group `LIMIT n BY` bounds each group, not the result: look on
+			// for a real one (ClickHouse allows one after it).
+			if (mayLimitByGroup(dialect) && LIMIT_BY_HEAD.test(masked.slice(site.index))) continue;
+			return site.index;
+		}
+		if (FETCH_LIMIT_HEAD.test(masked.slice(site.index))) return site.index;
 	}
 	return -1;
 }
@@ -276,7 +355,8 @@ function inStatementLimitAt(sql: string, dialect: SqlDialect): number {
  * How a result's row limit came about.
  *
  * - `applied` — the app added the header's limit: appended at the end, or
- *   inserted before a trailing locking clause.
+ *   inserted before a trailing locking clause or, on ClickHouse and an
+ *   unprobed dialect, before a trailing `SETTINGS` or `FORMAT` clause.
  * - `in-statement` — the statement carried its own LIMIT, so the app added
  *   none and the row count is the STATEMENT's bound, not the table's size.
  * - `none` — no limit is in play at all.
@@ -288,12 +368,16 @@ export type LimitState = 'applied' | 'in-statement' | 'none';
  *
  * The limit is APPENDED at the end, except on a statement whose last clause is
  * a lock, where it is INSERTED before that clause — the one placement both
- * MySQL and PostgreSQL accept.
+ * MySQL and PostgreSQL accept — and, on ClickHouse or a dialect that could not
+ * be probed, on a statement that ends in `SETTINGS` or `FORMAT`, where it is
+ * inserted before the first of them.
  *
  * A statement that already carries its own LIMIT is left alone: the user's
  * limit governs, and the meta line reports that none was applied by the app.
  * Nothing is added to writes, DDL, SHOW, EXPLAIN or DESCRIBE, where the clause
- * is either invalid or silently changes what the statement does.
+ * is either invalid or silently changes what the statement does — nor to a
+ * `SELECT ... INTO` on any dialect ({@link selectsInto}), which writes its rows
+ * into a table, a file or variables, so a limit would truncate what it writes.
  *
  * @param sql - The statement.
  * @param limit - The header selection ('200', '1000' or 'All').
@@ -311,6 +395,14 @@ export function applyRowLimit(sql: string, limit: string, dialect: SqlDialect = 
 	const returnsRows = RETURNS_ROWS.test(bare)
 		|| stripped.startsWith('(')
 		|| (/^with\b/i.test(bare) && keywordSites(bare, CTE_WRITE_WORDS, dialect).length === 0);
+	// A SELECT ... INTO returns no rows: it fills a new table (PostgreSQL), a
+	// file or variables (MySQL), or a file (ClickHouse). An appended LIMIT would
+	// silently truncate the copy, or follow MySQL's trailing INTO where it does
+	// not parse. It goes out as typed, its own LIMIT included, and since no
+	// rows come back no limit is reported either. Checked before the statement's
+	// own limit for that reason, with the classification's own test, so the run
+	// is a `write` there too.
+	if (returnsRows && selectsInto(sql, dialect)) return { sql, limit: null, state: 'none' };
 	// Checked BEFORE the header selection, so `All` on a statement that limits
 	// itself still reports the statement's limit instead of claiming none. Two
 	// spellings count: `LIMIT n` and the SQL standard's `FETCH { FIRST | NEXT }
@@ -365,6 +457,14 @@ export function applyRowLimit(sql: string, limit: string, dialect: SqlDialect = 
 		// the line would revive it. Such a statement goes out untouched.
 		if (hashCommentPrecedesClause(sql, lockingAt, dialect)) return { sql, limit: null, state: 'none' };
 		return { sql: `${sql.slice(0, lockingAt).trimEnd()}\nLIMIT ${value}\n${sql.slice(lockingAt)}`, limit: value, state: 'applied' };
+	}
+	// ClickHouse's SETTINGS and FORMAT clauses come after every LIMIT, so the
+	// header's limit goes in front of the first of them, the same way it goes in
+	// front of a locking clause. A LIMIT appended after either does not parse.
+	const trailingAt = trailingClickHouseClauseAt(sql, dialect);
+	if (trailingAt >= 0) {
+		if (hashCommentPrecedesClause(sql, trailingAt, dialect)) return { sql, limit: null, state: 'none' };
+		return { sql: `${sql.slice(0, trailingAt).trimEnd()}\nLIMIT ${value}\n${sql.slice(trailingAt)}`, limit: value, state: 'applied' };
 	}
 	// The clause is joined with a NEWLINE, not a space: the checks above run on
 	// comment-stripped text but the statement is sent RAW, so appending after a
