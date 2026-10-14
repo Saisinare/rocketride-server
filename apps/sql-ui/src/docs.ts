@@ -32,6 +32,7 @@
 
 import { Documents } from 'shell';
 import { NOOP_VFS } from 'shell';
+import { createCounter, endpointKeyFromAnyUri as keyFromAnyUri, endpointKeyFromUri as keyFromUri } from 'shared/explorer/nav/addresses';
 import type { ISqlEndpoint } from './connect';
 
 /** The app's Documents instance. Set by SqlApp on mount. */
@@ -94,6 +95,12 @@ export interface IQueryDocPayload {
 // DOCUMENT URIS
 // =============================================================================
 
+/** SQL Explorer's document schemes, for the shared key-extraction rule. */
+const SCHEMES = {
+	bare: ['connection', 'diagram'],
+	suffixed: ['query', 'table', 'design'],
+} as const;
+
 /** URI of the Connections landing document. */
 export const CONNECTIONS_URI = 'connections';
 
@@ -114,7 +121,7 @@ export function connectionUri(endpointKey: string): string {
  * @returns The endpoint key, or null when the URI is not a connection doc.
  */
 export function endpointKeyFromUri(uri: string): string | null {
-	return uri.startsWith('connection:') ? uri.slice('connection:'.length) : null;
+	return keyFromUri(uri, 'connection');
 }
 
 /**
@@ -132,17 +139,13 @@ export function endpointKeyFromUri(uri: string): string | null {
  * @returns The endpoint key, or null for non-endpoint documents (landing doc).
  */
 export function endpointKeyFromAnyUri(uri: string): string | null {
-	const m = /^(connection|diagram|query|table|design):(.+)$/.exec(uri);
-	if (!m || !m[1] || !m[2]) return null;
-	// connection:/diagram: carry the key verbatim.
-	if (m[1] === 'connection' || m[1] === 'diagram') return m[2];
-	// query:/table:/design: append one `:segment` (seq, table, or draft name).
-	const cut = m[2].lastIndexOf(':');
-	return cut > 0 ? m[2].slice(0, cut) : null;
+	// connection:/diagram: carry the key verbatim; query:/table:/design: append
+	// one `:segment` (seq, table, or draft name) that the shared rule strips.
+	return keyFromAnyUri(uri, SCHEMES);
 }
 
 // Monotonic query-document counter — labels new query tabs Query 1, 2, ...
-let querySeq = 0;
+const nextQuerySeq = createCounter();
 
 /**
  * Build the URI + label for a fresh query document on one connection.
@@ -151,8 +154,8 @@ let querySeq = 0;
  * @returns The new document's uri and tab label.
  */
 export function nextQueryDoc(endpointKey: string): { uri: string; label: string } {
-	querySeq += 1;
-	return { uri: `query:${endpointKey}:${querySeq}`, label: `Query ${querySeq}` };
+	const seq = nextQuerySeq();
+	return { uri: `query:${endpointKey}:${seq}`, label: `Query ${seq}` };
 }
 
 /**
@@ -189,7 +192,7 @@ export function isTableDataUri(uri: string): boolean {
 }
 
 // Monotonic create-table counter — each "+ Create Table" opens a fresh draft.
-let designSeq = 0;
+const nextDesignSeq = createCounter();
 
 /**
  * Build the URI for a table-designer document. An existing table's name is
@@ -202,8 +205,7 @@ let designSeq = 0;
  */
 export function designUri(endpointKey: string, table: string | null): string {
 	if (table === null) {
-		designSeq += 1;
-		return `design:${endpointKey}:*new*${designSeq}`;
+		return `design:${endpointKey}:*new*${nextDesignSeq()}`;
 	}
 	return `design:${endpointKey}:${encodeURIComponent(table)}`;
 }
