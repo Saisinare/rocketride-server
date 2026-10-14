@@ -26,11 +26,11 @@
 
 import React, { useEffect, useState } from 'react';
 import { useShellConnection } from 'shell';
-// App-private connection tiles (owned by this app, not the platform surface).
-import { ConnectionCard, ConnectionCardAdd } from '../components/ConnectionCard';
 import {
 	Banner,
 	Button,
+	ConnectionCard,
+	ConnectionCardAdd,
 	ContentHeader,
 	EmptyState,
 } from 'shell';
