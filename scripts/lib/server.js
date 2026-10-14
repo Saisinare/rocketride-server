@@ -181,6 +181,25 @@ function openServerLog(logFile) {
 }
 
 /**
+ * Open a server's log file and keep diagnostics.logFile true to it.
+ *
+ * The path is recorded only while the file can be written: a setup failure
+ * leaves it null, and a failed open, which is reported asynchronously, clears it.
+ *
+ * @param {string} logFile - Absolute path of the log file
+ * @param {{logFile: string|null}} diagnostics - The server's diagnostics object
+ * @returns {fs.WriteStream|null} Stream to write the server's output to, or null
+ */
+function attachServerLog(logFile, diagnostics) {
+	const stream = openServerLog(logFile);
+	diagnostics.logFile = stream ? logFile : null;
+	stream?.on('error', () => {
+		diagnostics.logFile = null;
+	});
+	return stream;
+}
+
+/**
  * Start a Python server using the engine executable
  *
  * Waits indefinitely for the server to emit "Application startup complete."
@@ -243,8 +262,6 @@ async function startServer(options) {
 	}
 
 	return new Promise((resolve, reject) => {
-		const logStream = logFile ? openServerLog(logFile) : null;
-
 		const serverProcess = spawn(serverExe, serverArgs, {
 			cwd: SERVER_DIR,
 			stdio: ['pipe', 'pipe', 'pipe'],
@@ -265,9 +282,11 @@ async function startServer(options) {
 			stopRequested: false,
 			outputTail: [],
 			port: null,
-			logFile: logStream ? logFile : null,
+			logFile: null,
 		};
 		serverProcess.rocketrideDiagnostics = diagnostics;
+
+		const logStream = logFile ? attachServerLog(logFile, diagnostics) : null;
 
 		const recordOutput = (text) => {
 			for (const line of text.split('\n')) {
@@ -532,4 +551,5 @@ module.exports = {
 	parseServerAddress,
 	testServerLogFile,
 	openServerLog,
+	attachServerLog,
 };
