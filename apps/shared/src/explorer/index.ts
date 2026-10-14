@@ -105,3 +105,10 @@ export { createEndpointStore, probeInfo } from './connect/store';
 
 export type { IConnectionFlags, IConnectionFlagsOptions } from './history/flags';
 export { createConnectionFlags } from './history/flags';
+
+export type { IFailureNotice, IFailureState, IPatternFinding, IRunTarget, IStatementRunBase, PatternAnswer, RunOutcome } from './runner/types';
+export { AUTOCOMMIT_WORDS, clock, formatAbandonNotice, formatBatchOutcome, formatElapsed, formatPriorStatements, formatRunLabel, hasStatementInFlight, lineRange } from './runner/format';
+export type { BatchStatus, IBatchHooks, IBatchView } from './runner/batch';
+export { abandonRuns, runStatementBatch } from './runner/batch';
+export type { IPatternPrompt, IStatementRunner, IStatementRunnerConfig } from './runner/useStatementRunner';
+export { STOP_WAITING_AFTER_MS, useStatementRunner } from './runner/useStatementRunner';
