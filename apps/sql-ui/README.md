@@ -14,22 +14,78 @@ than from the app.
 
 - **A running pipeline with a database node.** Connections are discovered
   from running tasks, so a stopped pipeline has none. The supported nodes
-  are [`db_mysql`](../../nodes/src/nodes/db_mysql/README.md), [`db_postgres`](../../nodes/src/nodes/db_postgres/README.md) and
-  [`db_clickhouse`](../../nodes/src/nodes/db_clickhouse/README.md).
+  are [`db_mysql`](../../nodes/src/nodes/db_mysql/README.md), [`db_postgres`](../../nodes/src/nodes/db_postgres/README.md),
+  [`db_clickhouse`](../../nodes/src/nodes/db_clickhouse/README.md), and two
+  that share the PostgreSQL implementation and report the `postgres` dialect:
+  `db_supabase`, the Supabase preset of the `db_postgres` node (see its
+  [Supabase section](../../nodes/src/nodes/db_postgres/README.md#supabase-preset)), and
+  [`rocketride_sql`](../../nodes/src/nodes/rocketride_sql/README.md), the tenant
+  database node of RocketRide cloud deployments. `rocketride_sql` only produces
+  a connection where the deployment provides the tenant database; this app
+  makes no claim about which environments do.
 - **Direct execution, if you want to run statements.** Each of those nodes
   has an **Allow direct query execution** setting (`allow_execute`), off by
   default and worth leaving off until a caller truly needs it. With it off,
-  schema browsing, the diagram and the Insights page still work; statements
-  do not. The first refused statement raises a banner: `This node does not
-  allow execute (allow_execute is off). Schema browsing works; statements
-  cannot run.`
+  what is read from the schema snapshot still works: the Overview, the
+  Insights page, the diagram and the sidebar's table tree. Everything that
+  reads rows does not, because every statement goes through the node's
+  `execute` tool, a plain `SELECT` included: the query editor, the table data
+  browser, **Select top 100** and **Count rows**, **Explain** and the
+  designer's foreign-key lookup. The first refused statement in the editor
+  raises a banner: `This node does not allow execute (allow_execute is off).
+  Schema browsing works; statements cannot run.`
 
 ## Connections
 
-The Connections page lists every database tool node in every pipeline task
-you can see. Each card shows the pipeline, the dialect and a summary of the
-schema; selecting one opens a drawer where you can probe the endpoint before
-binding to it. An empty list means no running task has a database node.
+The Connections page lists every database tool node in the running pipeline
+tasks you can see in the organization you are signed in to, in one call,
+however many there are. A run is listed when its team is any of the teams
+that organization lists for you, so after you sign in to another
+organization the previous one's runs do not appear.
+The filter lets two kinds through: a run that names no team (an older
+server sends none) is always listed, and when your sign-in carries no list
+of the organization's teams, every run is. Your own
+development run and a team's deployment of the same pipeline are separate
+connections (a deployment's card says so), and two owners' runs never merge.
+Each card shows the pipeline, the engine and a state. Selecting a card opens
+its workbench straight away. To look before you open, use the card's
+**Edit** action (it appears on hover or keyboard focus) or the **New
+Connection** tile: both open a drawer that shows the endpoint, with a **Test
+Connection** button that probes it on demand and **Open** to open it. An
+empty list means no running task you can see in that organization has a
+database node.
+
+A connection is **Checking** while the app asks the node which engine it is,
+**Running** once it answered, **Stopped** when its pipeline is no longer
+running (the card stays in the list), **Unreachable** when the node could not
+be reached (for example it is not wired to a tools source), and **No access**
+when you can see a team deployment but your role cannot call it (calling a
+tool needs `task.data`, seeing it only `task.monitor`). The workbench does
+not show a connection's state. A statement run on a **Stopped** connection is
+still sent: a pipeline that is restarting runs it once it is back. A pipeline
+stopped in the last few minutes answers that it was stopped; a statement the
+app classifies as a read first waits up to 15 seconds for it to come back,
+then shows that answer. One stopped longer ago answers at once that it is not
+running. The list is read again when a pipeline starts, stops or restarts,
+and when you return to the window; **Refresh** does it on demand. Only
+running pipelines are listed, so a pipeline that was still starting when the
+list was read appears the next time it is read. An **Unreachable** or **No
+access** connection is checked again on **Refresh** or when its pipeline
+restarts, not each time the list is read. Signing out, or switching
+organization or team, clears the list, and it is read again for the new
+sign-in. Only pipelines running under one of the teams your current
+organization lists for you are shown, so your own pipelines still running in
+an organization you switched away from do not come back here (the server
+still lets you reach them from other clients). Your own runs under another
+team of the same organization are still listed: they are yours, in that
+organization. The switch also closes every tab that belongs to a connection
+(workbench, query, data browser, designer and diagram) and forgets the schema
+the sidebar showed, so the previous account's results are not left on screen.
+Text typed into those query tabs is not kept; a statement you ran is in the
+connection's history, unless recording is off for that connection.
+
+The app never holds a connection string or a task token in anything it saves
+or shows. Task tokens are kept in memory only, per session.
 
 Opening a connection gives it a workbench document and fills the sidebar
 with that database's tables. Everything else hangs off a connection: query
@@ -109,11 +165,17 @@ surface (`begin` / `commit` / `rollback` with a session id), but SQL
 Explorer does not use it, and transaction control that quietly does nothing
 would be worse than a refusal.
 
-One statement can also arrive twice. If the pipeline task restarts while a
-statement is in flight, a statement the app classifies as a read may be
-sent once more; a write never is. The classification is by text, so a read
-that changes something — `SELECT … INTO`, a `nextval` or another
-volatile function — counts as a read here and can be re-sent.
+A statement is sent a second time in one case only. When the pipeline task
+is stopping or restarting, the engine refuses a statement with
+`TASK_STOPPED` before the statement reaches the database, so nothing has run.
+A statement the app classifies as a read is then sent once more, after the
+same connection is running again; a write never is. The classification is by
+text: a `SELECT … INTO`, which fills a new table, a file or variables (see
+the row limit below), counts as a write and is never re-sent, but a read
+that changes something through a function (`nextval` or another volatile
+function) counts as a read here. It is still never run twice,
+because the refusal comes before the database sees it. A statement
+that reached the database is never re-sent, whatever happens to its answer.
 
 ### The row limit
 
@@ -124,6 +186,32 @@ returned (limit in statement)` when the statement's OUTERMOST query carries
 its own `LIMIT` — one inside a subquery bounds that subquery, not the result,
 so on **200** or **1000** the app still appends its own — or `N rows returned
 (no limit applied)` when nothing bounds the result.
+
+A `SELECT … INTO` returns no rows: PostgreSQL's `SELECT … INTO new_table`
+creates and fills a table, MySQL's `INTO OUTFILE`, `INTO DUMPFILE` and `INTO
+@variable` write a file or variables, and ClickHouse's `INTO OUTFILE` writes a
+file. Nothing is appended to one, whatever the header says, because a limit
+would silently cut the copy short. It goes out exactly as typed and counts as
+a statement that changes data: the app never retries it after a restart,
+History lists it with the writes, and re-running it from History asks first.
+
+ClickHouse's `LIMIT n BY expr` caps the rows of each group, not the result,
+so it is not read as the statement's own limit (on ClickHouse, and on a
+connection whose dialect could not be probed). On **200** or **1000** the
+header's `LIMIT` is appended after it, which ClickHouse accepts, and the line
+reads `limit 200`; with **All** it reads `no limit applied`. A plain `LIMIT`
+after the `BY` list is the statement's own limit, as anywhere else.
+
+ClickHouse puts its `SETTINGS` and `FORMAT` clauses after every `LIMIT` and
+rejects a `LIMIT` that follows either, so on ClickHouse, and on a connection
+whose dialect could not be probed, a statement that ends in one or both (in
+either order) gets
+the header's `LIMIT` inserted in front of the first of them, after any `LIMIT
+n BY`. A column, sort key or table named `format` or `settings` (`ORDER BY
+format DESC`, `FROM format f`) is not taken for either clause. As with a
+locking clause (below), one that sits behind a `#` on the same line is left
+alone and the line reads `no limit applied`: ClickHouse can read `#` as the
+start of a comment too.
 
 Read `no limit applied` literally, because **All** together with a `LIMIT`
 that is not on the outermost query produces exactly that line. Only a
@@ -269,7 +357,9 @@ message is in the pipeline node's log either way.
 Nothing in the tool protocol cancels a running statement. A second after a
 statement reaches the database a **Stop waiting** button appears, and it
 does exactly what it says: the app stops listening and discards the late
-answer.
+answer. A read that was waiting for its stopped pipeline to come back (see
+[Connections](#connections)) is not sent again when it does, and the same
+holds for a plan or a table page you navigate away from.
 
 It is not offered while a confirmation is still open, because nothing has
 been sent yet. In a run of several statements the second is counted from the
@@ -280,6 +370,12 @@ next statement is sent.
 The banner is explicit — `Stopped waiting after N.N s. The statement may
 still be running on the database; this tool cannot cancel it.` To stop it,
 stop it on the database.
+
+Closing the query tab, moving it to another split group or switching to
+another app during a run also ends the run: nothing after the statement
+already sent goes out. That statement still finishes on the database, but its
+result is not shown or added to History, and nothing afterwards says which
+statements were not sent.
 
 ### Autocomplete
 
@@ -326,12 +422,32 @@ reached the app — the node's own wrapper included, not just the sentence
 the banner quotes — and such a message can carry a value from the
 statement. Both stay in the preferences file until the entry is deleted,
 the list is cleared, or the bounds below trim it. It is not a server audit
-log, and not a place for secrets.
+log, and not a place for secrets. History belongs to the account that ran
+it: when you sign out, or another account signs in on the same page, the app
+forgets the history it was holding before it shows or saves anything for
+the next account, so one account's statements never reach another's file.
 
 The list is bounded, because the preferences file is read and written on
 every app switch: 100 entries per connection including pinned ones, 8 KB per
 statement, 256 KB across all connections. Recording can be turned off per
 connection, and **Clear** empties one connection's list, pins included.
+
+History is kept per connection. Connections are identified by their run kind,
+owner, team, project, source and node, so a deployment never shows your
+development history. History you saved before that identity existed is still
+read for your own development run of the same pipeline. Running, pinning and
+annotating never move or change the older entries: a new run is saved under
+the new identity, and pinning or annotating an older entry, or re-running its
+statement, saves a copy under the new identity. The 100-entry bound applies to
+the list you see, so an older entry it leaves out is still saved; only the
+256 KB budget across all connections can drop the oldest entries, older ones
+included. Deleting does remove older entries: deleting an older entry removes
+both its copy and the original, and **Clear** empties the connection's own list
+and the shared older list, so that text leaves the preferences file. Your
+development run of the same pipeline under another team reads the same older
+list, so it no longer sees them either; a copy it saved by pinning or
+annotating is its own and stays until deleted there. The recording switch and
+the pattern-check switch you chose then still apply.
 
 Re-running an entry that changed data asks first and quotes what it did last
 time; the rerun is a fresh run with its own entry.
@@ -437,6 +553,10 @@ statements ran either way; only the app's picture of the schema is behind.
 ## Limits
 
 - **No cancel.** **Stop waiting** stops the app waiting, not the database.
+- **No client timeout on a statement.** SQL nodes set no statement deadline,
+  so the app does not impose one either: a long query is allowed to run until
+  you stop waiting. Schema reflection is bounded (five minutes) and the
+  engine check at connection time waits 15 seconds.
 - **No transactions.** Every statement commits on its own, and transaction
   control is refused.
 - **No `EXPLAIN ANALYZE`.** Plan numbers are estimates, never measurements.
@@ -456,6 +576,11 @@ statements ran either way; only the app's picture of the schema is behind.
   keeps the old appended placement: a locking clause trailed by the
   statement's own `OFFSET`, where the `LIMIT` is appended after `OFFSET`
   rather than inserted before the clause.
+- **The limit moves in front of ClickHouse's `SETTINGS` and `FORMAT`.** On
+  ClickHouse, and on a connection whose dialect could not be probed,
+  `SELECT … SETTINGS max_threads = 4` is sent as `SELECT …` / `LIMIT 200` /
+  `SETTINGS max_threads = 4`. Such a clause behind a `#` on the same line
+  keeps no limit (sent untouched).
 - **Duplicate column names collapse.** A projection that returns two columns
   with the same name shows one: the node hands back each row as an object
   keyed by column name, and the grid takes its headers from the first row.
@@ -465,8 +590,10 @@ statements ran either way; only the app's picture of the schema is behind.
 
 ## Next steps
 
-- [`db_mysql`](../../nodes/src/nodes/db_mysql/README.md), [`db_postgres`](../../nodes/src/nodes/db_postgres/README.md) and
-  [`db_clickhouse`](../../nodes/src/nodes/db_clickhouse/README.md): the nodes behind every
+- [`db_mysql`](../../nodes/src/nodes/db_mysql/README.md), [`db_postgres`](../../nodes/src/nodes/db_postgres/README.md)
+  (including its [Supabase preset](../../nodes/src/nodes/db_postgres/README.md#supabase-preset), provider `db_supabase`),
+  [`db_clickhouse`](../../nodes/src/nodes/db_clickhouse/README.md) and
+  [`rocketride_sql`](../../nodes/src/nodes/rocketride_sql/README.md): the nodes behind every
   connection, including the tool surface and the direct-execution setting.
 - [Apps](../../docs/public/product/concepts/apps.md): what an app is and how it reaches your engine.
 - [Shell API](../../docs/public/product/guides/apps/index.md): the framework SQL Explorer is built on, when
