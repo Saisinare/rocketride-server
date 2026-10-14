@@ -1009,14 +1009,18 @@ class Task(DAPBase):
             Response from pipeline's data processing system
 
         Raises:
-            RuntimeError: If task is terminating or connection fails
+            TaskError: TASK_STOPPED if the task is terminating (also during a
+                restart); the request was not sent.
+            RuntimeError: If the connection fails
         """
         # Reset idle timer - task is actively processing data
         self.reset_idle_timer()
 
-        # Prevent operations during termination
+        # Prevent operations during termination. The request never reaches the
+        # pipeline, and a restart passes through this state before the task is
+        # running again, so callers get the same code a stopped task gives.
         if self._is_terminating:
-            raise RuntimeError('Task is terminating, cannot process data requests')
+            raise TaskError(TaskError.STOPPED, 'Task is terminating, cannot process data requests')
 
         # Thread-safe data channel access
         async with self._data_lock:
