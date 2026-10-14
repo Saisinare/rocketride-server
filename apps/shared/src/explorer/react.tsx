@@ -1,0 +1,123 @@
+// =============================================================================
+// MIT License
+// Copyright (c) 2026 Aparavi Software AG
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+// =============================================================================
+// EXPLORER — REACT / SHELL BINDINGS (the components that need the platform)
+// =============================================================================
+//
+// The only place besides shellBinding.ts where the library imports a VALUE from
+// 'shell'. Everything it binds (the history store, the announcer) is pure and
+// tested without the platform; these wrappers are the thin seams onto it.
+// =============================================================================
+
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useAuthUser, usePrefs } from 'shell';
+import { identityFingerprint, identityFromConnectResult } from './connect/identity';
+import type { IEndpointState, IEndpointStore } from './connect/store';
+import type { IPrefsAccessor } from './history/types';
+import { createShellWatch } from './shellBinding';
+import type { IExplorerClient } from './types';
+
+/** The part of a history store the bridge needs. */
+export interface IPrefsAttachable {
+	/** Attach the preference accessor under its owner (the identity fingerprint); returns the detach function. */
+	attachPrefs(api: IPrefsAccessor, owner?: string | null): () => void;
+}
+
+/**
+ * Create the component that mounts a history store's access to workspace
+ * preferences.
+ *
+ * It renders nothing. Mount it wherever the app is on screen and history
+ * should be kept — the app root does, and a History drawer may mount its own so
+ * the drawer works even from a query document whose connection tab was closed.
+ * Multiple mounts are safe: attachment is reference-counted.
+ *
+ * It attaches under the signed-in identity's fingerprint, and attaches again
+ * when that changes, so the store drops a previous account's history before
+ * the next account sees, merges or saves any of it (history/store.ts, "WHOSE
+ * HISTORY IS IN MEMORY"). A layout effect, so a render that carries the new
+ * identity is never painted with the old history.
+ *
+ * @param store - The app's history store.
+ * @returns A null-rendering component.
+ */
+export function createHistoryPrefsBridge(store: IPrefsAttachable): React.FC {
+	const HistoryPrefsBridge: React.FC = () => {
+		const api = usePrefs();
+		const owner = identityFingerprint(identityFromConnectResult(useAuthUser()));
+
+		// The shell hands out a NEW accessor object whenever any preference
+		// changes; the store needs one stable identity for the mount's lifetime,
+		// so calls are forwarded through a ref instead.
+		const latest = useRef(api);
+		latest.current = api;
+
+		const stable = useMemo<IPrefsAccessor>(() => ({
+			getPref: (key: string) => latest.current.getPref(key),
+			setPref: (key: string, value: unknown) => latest.current.setPref(key, value),
+		}), []);
+
+		useLayoutEffect(() => store.attachPrefs(stable, owner), [stable, owner]);
+
+		return null;
+	};
+	return HistoryPrefsBridge;
+}
+
+/**
+ * Subscribe to an endpoint store's snapshot.
+ *
+ * @param store - The app's endpoint store.
+ * @returns The current snapshot (stable until the store changes).
+ */
+export function useEndpointState(store: IEndpointStore): IEndpointState {
+	return useSyncExternalStore(store.subscribe, store.getState, store.getState);
+}
+
+/**
+ * Keep an endpoint store wired to the platform for as long as the calling
+ * component is mounted: task events, window focus, reconnects and — the part
+ * that keeps one organization's connections out of the next session — identity
+ * changes and sign-out.
+ *
+ * Mount it once at the app root with the shell's own props. The store is
+ * re-attached only when the CLIENT or the identity FINGERPRINT changes (user,
+ * organization, development team — never a token, never a permission list).
+ *
+ * @param store - The app's endpoint store.
+ * @param client - The shell's client (null while disconnected).
+ * @param identity - The shell's `identity` prop (a ConnectResult, or null when signed out).
+ */
+export function useEndpointStoreLifecycle(store: IEndpointStore, client: IExplorerClient | null, identity: unknown): void {
+	const latest = identityFromConnectResult(identity);
+	const fingerprint = identityFingerprint(latest);
+	const latestRef = useRef(latest);
+	latestRef.current = latest;
+
+	useEffect(() => {
+		if (client === null) return undefined;
+		return store.attach(client, latestRef.current, createShellWatch(client));
+		// `fingerprint` stands in for the identity: a new object with the same
+		// user, organization and team must not re-attach.
+	}, [store, client, fingerprint]);
+}

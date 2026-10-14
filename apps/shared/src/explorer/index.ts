@@ -87,5 +87,21 @@ export { createActiveKeyStore, createRequestChannel } from './nav/stores';
 export type { IDocSchemes } from './nav/addresses';
 export { createCounter, endpointKeyFromAnyUri, endpointKeyFromUri } from './nav/addresses';
 
+export type { IDiscoveredEndpoint, IDiscoveryOptions } from './connect/discovery';
+export { discoverToolEndpoints, mapWithConcurrency, readTaskRow } from './connect/discovery';
+export { TOOL_CALL_PERMISSION, identityCanCallTools, identityFingerprint, identityFromConnectResult } from './connect/identity';
+export type { IInvokeOptions, ISessionDeps, IToolSession, IToolSessionOptions, IToolSpec } from './connect/session';
+export {
+	DEFAULT_RETRY_POLL_MS,
+	DEFAULT_RETRY_WINDOW_MS,
+	DEFAULT_TIMEOUT_MS,
+	DEFAULT_TIMEOUT_PAD_MS,
+	DEFAULT_TOOL_TIMEOUTS,
+	TRANSIENT_TASK_CODE,
+	createToolSession,
+} from './connect/session';
+export type { EndpointStatus, EndpointWatch, IEndpointState, IEndpointStore, IEndpointStoreOptions, IStoreClock, IWatchHandlers } from './connect/store';
+export { createEndpointStore, probeInfo } from './connect/store';
+
 export type { IConnectionFlags, IConnectionFlagsOptions } from './history/flags';
 export { createConnectionFlags } from './history/flags';
