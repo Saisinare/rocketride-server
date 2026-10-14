@@ -28,6 +28,8 @@
 // Sidebar as siblings, so snapshots live here for both to subscribe to.
 // Sessions are cached per endpoint; all database traffic goes through the
 // connect/ layer's ISqlSession — never through client.tool directly.
+// A change of signed-in account clears it all (clearSchemas, called through
+// identityScope.ts), reads in flight included.
 // =============================================================================
 
 import { useSyncExternalStore } from 'react';
@@ -96,6 +98,10 @@ const listeners = new Set<() => void>();
 // Session cache per endpoint key, tied to the client that created it so a
 // reconnect (new client instance) transparently rebuilds sessions.
 const sessions = new Map<string, { client: RocketRideClient; session: ISqlSession }>();
+
+// Bumped by clearSchemas(): a refresh started under an older generation
+// belongs to a forgotten account, and its late answer is dropped.
+let generation = 0;
 
 /**
  * Replace one connection's snapshot and notify subscribers.
@@ -166,7 +172,10 @@ export function refreshSchema(client: RocketRideClient, endpoint: ISqlEndpoint, 
 	// Joining is only honest when the active refresh answers this caller too.
 	if (active && (!fresh || active.fresh)) return active.promise;
 
-	const run = (): Promise<void> => runRefresh(client, endpoint, fresh);
+	// The generation this request was made in: a refresh queued behind the
+	// active one may only start after clearSchemas(), and must not then run.
+	const startedIn = generation;
+	const run = (): Promise<void> => runRefresh(client, endpoint, fresh, startedIn);
 	const promise: Promise<void> = (active ? active.promise.then(run, run) : run()).finally(() => {
 		// Only the entry this call installed may be cleared: a later refresh
 		// that queued behind it owns the slot by then.
@@ -180,13 +189,21 @@ export function refreshSchema(client: RocketRideClient, endpoint: ISqlEndpoint, 
  * Perform one refresh. Never rejects: a failure lands in the snapshot's
  * error field, which is what every view reads.
  *
+ * Nothing is written once {@link clearSchemas} has run since the refresh
+ * was asked for: the answer belongs to the account that was signed in then.
+ *
  * @param client - The shell's RocketRide client.
  * @param endpoint - The connection's endpoint.
  * @param fresh - Whether to ask the node to re-reflect the database.
+ * @param startedIn - The store generation the refresh was asked for in.
  */
-async function runRefresh(client: RocketRideClient, endpoint: ISqlEndpoint, fresh: boolean): Promise<void> {
+async function runRefresh(client: RocketRideClient, endpoint: ISqlEndpoint, fresh: boolean, startedIn: number): Promise<void> {
+	if (startedIn !== generation) return;
+	const land = (next: ISchemaState): void => {
+		if (startedIn === generation) setSnapshot(endpoint.key, next);
+	};
 	const current = snapshots[endpoint.key] ?? IDLE_SCHEMA;
-	setSnapshot(endpoint.key, { ...current, status: 'loading', error: null });
+	land({ ...current, status: 'loading', error: null });
 
 	try {
 		const session = getSession(client, endpoint);
@@ -202,7 +219,7 @@ async function runRefresh(client: RocketRideClient, endpoint: ISqlEndpoint, fres
 		const attemptFresh = fresh && current.refreshTool !== 'unavailable';
 		const schema = attemptFresh ? await session.refreshSchema() : await session.getSchema();
 		if (schema.error) {
-			setSnapshot(endpoint.key, { ...current, status: 'error', dialect, error: schema.error });
+			land({ ...current, status: 'error', dialect, error: schema.error });
 			return;
 		}
 
@@ -216,7 +233,7 @@ async function runRefresh(client: RocketRideClient, endpoint: ISqlEndpoint, fres
 
 		// A plain read serves the task-start snapshot by construction; a fresh
 		// one is current only when the refresh tool actually answered.
-		setSnapshot(endpoint.key, {
+		land({
 			status: 'ready',
 			schema,
 			dialect,
@@ -226,7 +243,7 @@ async function runRefresh(client: RocketRideClient, endpoint: ISqlEndpoint, fres
 			refreshTool,
 		});
 	} catch (err) {
-		setSnapshot(endpoint.key, { ...current, status: 'error', error: err instanceof Error ? err.message : String(err) });
+		land({ ...current, status: 'error', error: err instanceof Error ? err.message : String(err) });
 	}
 }
 
@@ -248,14 +265,39 @@ function subscribe(cb: () => void): () => void {
 }
 
 /**
+ * Read one connection's schema snapshot outside React.
+ *
+ * @param key - The endpoint key (null returns the idle placeholder).
+ * @returns The snapshot for that connection.
+ */
+export function schemaSnapshot(key: string | null): ISchemaState {
+	return key ? snapshots[key] ?? IDLE_SCHEMA : IDLE_SCHEMA;
+}
+
+/**
  * Subscribe to one connection's schema snapshot.
  *
  * @param key - The endpoint key (null returns the idle placeholder).
  * @returns The snapshot for that connection.
  */
 export function useSchema(key: string | null): ISchemaState {
-	return useSyncExternalStore(
-		subscribe,
-		() => (key ? snapshots[key] ?? IDLE_SCHEMA : IDLE_SCHEMA),
-	);
+	return useSyncExternalStore(subscribe, () => schemaSnapshot(key));
+}
+
+// =============================================================================
+// CLEAR
+// =============================================================================
+
+/**
+ * Forget every connection's schema snapshot, cached session and refresh in
+ * flight. Called when the signed-in account changes: the snapshots describe
+ * the previous account's databases, and a refresh still running for it lands
+ * nowhere (see {@link runRefresh}).
+ */
+export function clearSchemas(): void {
+	generation += 1;
+	snapshots = {};
+	sessions.clear();
+	inFlight.clear();
+	listeners.forEach((fn) => fn());
 }

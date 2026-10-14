@@ -24,10 +24,10 @@
 // DOCS — unit tests for the document URI schemes
 // =============================================================================
 //
-// The endpoint key itself contains colons (`projectId:source:nodeId`), so the
-// suffixed schemes split on the LAST colon. That only holds if the suffix
-// carries no colon of its own — hence the percent-encoded table segment, and
-// hence the colon-in-table-name cases below.
+// A pre-v1 endpoint key contained colons (`projectId:source:nodeId`; a v1 key
+// contains none), so the suffixed schemes split on the LAST colon. That only
+// holds if the suffix carries no colon of its own — hence the percent-encoded
+// table segment, and hence the colon-in-table-name cases below.
 // =============================================================================
 
 import { describe, it } from 'node:test';

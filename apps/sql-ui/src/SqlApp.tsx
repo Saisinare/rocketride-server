@@ -30,16 +30,18 @@
 // doc per open connection (query/designer/diagram docs join in later phases).
 // =============================================================================
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { ShellAppProps } from 'shell';
 import { DocTabs, DocSplitLayout, AppLayout, useShellConnection } from 'shell';
+import { identityFingerprint, identityFromConnectResult } from 'shared/explorer/connect/identity';
 import { useEndpointStoreLifecycle } from 'shared/explorer/react';
 import type { Documents } from 'shell';
 import { Button, EmptyState } from 'shell';
 import { commonStyles } from 'shell';
 import { CONNECTIONS_URI, createDocs, destroyDocs, endpointKeyFromAnyUri, endpointKeyFromUri, getDocs, isDesignUri, isDiagramUri, isQueryUri, isTableDataUri } from './docs';
 import type { IQueryDocPayload } from './docs';
+import { sqlIdentityScope } from './identityScope';
 import { setActiveConnection } from './navigation';
 import type { ISqlEndpoint } from './connect';
 import { sqlEndpoints } from './connect';
@@ -118,7 +120,9 @@ const styles = {
  * It also keeps the endpoint store wired to the platform: task events and
  * window focus refresh the connection list, and a sign-out or a change of
  * user, organization or team forgets every connection (and its task token) so
- * the previous session's pipelines never bleed into the next.
+ * the previous session's pipelines never bleed into the next. The same change
+ * closes every connection-scoped tab and forgets the schema snapshots
+ * (identityScope.ts), so the previous account's query results are not shown.
  *
  * @param props - Shell-injected props: connection state and the signed-in identity.
  */
@@ -126,6 +130,14 @@ const SqlApp: React.FC<ShellAppProps> = ({ identity }) => {
 	const [ready, setReady] = useState(false);
 	const { client } = useShellConnection();
 	useEndpointStoreLifecycle(sqlEndpoints, client, identity);
+
+	// A different user, organization or team, or a sign-out, closes the
+	// previous account's tabs and schema. A layout effect, so the render that
+	// carries the new identity is never painted with the old results.
+	const fingerprint = identityFingerprint(identityFromConnectResult(identity));
+	useLayoutEffect(() => {
+		sqlIdentityScope.apply(fingerprint);
+	}, [fingerprint]);
 
 	// Create the Documents instance once; the landing doc opens with it.
 	useEffect(() => {

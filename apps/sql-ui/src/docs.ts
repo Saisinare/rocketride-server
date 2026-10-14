@@ -127,8 +127,10 @@ export function endpointKeyFromUri(uri: string): string | null {
 /**
  * Extract the endpoint key from ANY SQL Explorer document URI, so the sidebar
  * schema tree stays bound while a query/table/design/diagram tab is active.
- * The key itself contains colons (`projectId:source:nodeId`), so the suffixed
- * schemes strip exactly ONE trailing `:segment` instead of splitting on ':'.
+ * A pre-v1 key contained colons (`projectId:source:nodeId`); a v1 key contains
+ * none (every field is percent-encoded, see shared/explorer/keys). Either way
+ * the suffixed schemes strip exactly ONE trailing `:segment` instead of
+ * splitting on ':'.
  *
  * That split is only sound because every suffix is colon-free: query and
  * design-draft suffixes are generated counters, and table names are
@@ -142,6 +144,37 @@ export function endpointKeyFromAnyUri(uri: string): string | null {
 	// connection:/diagram: carry the key verbatim; query:/table:/design: append
 	// one `:segment` (seq, table, or draft name) that the shared rule strips.
 	return keyFromAnyUri(uri, SCHEMES);
+}
+
+/** The part of a Documents instance {@link closeConnectionDocuments} needs. */
+export interface IConnectionDocsHost {
+	/** The current state: every open editor and the document it shows. */
+	getState(): { editors: Readonly<Record<string, { documentUri: string }>> };
+	/** Close one editor (the document is released with its last editor). */
+	closeEditor(editorId: string): void;
+}
+
+/**
+ * Close every connection-scoped tab — workbench, query, table, designer and
+ * diagram, in every editor group — and keep the Connections landing.
+ *
+ * Used when the signed-in account changes: those tabs hold the previous
+ * account's query results and schema, and its connections are gone. Every
+ * SQL Explorer document is static, so none is ever dirty and closing its last
+ * editor releases it.
+ *
+ * @param docs - The app's Documents instance.
+ * @returns How many editors were closed.
+ */
+export function closeConnectionDocuments(docs: IConnectionDocsHost): number {
+	const editors = Object.entries(docs.getState().editors);
+	let closed = 0;
+	for (const [editorId, editor] of editors) {
+		if (endpointKeyFromAnyUri(editor.documentUri) === null) continue;
+		docs.closeEditor(editorId);
+		closed += 1;
+	}
+	return closed;
 }
 
 // Monotonic query-document counter — labels new query tabs Query 1, 2, ...
