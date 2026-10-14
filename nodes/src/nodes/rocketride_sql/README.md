@@ -99,9 +99,8 @@ There is one built-in profile and no connection panel. RocketRide provisions one
 database per organization for its managed database nodes (per user only where
 there is no organization), and the RocketRide server resolves the connection to
 it from the pipeline's organization instead of a host, user, password, or
-database name you enter; nothing in the node configuration or the pipeline can
-point it at another database. Configure the table and the context supplied to
-the LLM; leave direct execution disabled unless a trusted caller needs it.
+database name you enter. Configure the table and the context supplied to the
+LLM; leave direct execution disabled unless a trusted caller needs it.
 
 ### Table name and database description
 
