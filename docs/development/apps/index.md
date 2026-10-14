@@ -20,6 +20,7 @@ and that difference is what this page covers.
   deploying apps.
 - [Webview protocol](webview-protocol.md): the messages the VS Code extension's
   webviews exchange.
+- `scripts/acceptance/graph-explorer/README.md`: manual live-engine and browser acceptance lanes for Graph Explorer and SQL Explorer (not run by CI).
 
 ## Standalone vs monorepo
 
