@@ -33,7 +33,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { ShellAppProps } from 'shell';
-import { DocTabs, DocSplitLayout, AppLayout } from 'shell';
+import { DocTabs, DocSplitLayout, AppLayout, useShellConnection } from 'shell';
+import { useEndpointStoreLifecycle } from 'shared/explorer/react';
 import type { Documents } from 'shell';
 import { Button, EmptyState } from 'shell';
 import { commonStyles } from 'shell';
@@ -41,6 +42,7 @@ import { CONNECTIONS_URI, createDocs, destroyDocs, endpointKeyFromAnyUri, endpoi
 import type { IQueryDocPayload } from './docs';
 import { setActiveConnection } from './navigation';
 import type { ISqlEndpoint } from './connect';
+import { sqlEndpoints } from './connect';
 import ConnectionsView from './views/ConnectionsView';
 import ConnectionView from './views/ConnectionView';
 import QueryView from './views/QueryView';
@@ -113,10 +115,17 @@ const styles = {
  * (all documents are static), auto-opens the Connections landing document,
  * and renders the DocTabs + editor-group layout.
  *
- * @param _props - Shell-injected props (unused; connection comes from hooks).
+ * It also keeps the endpoint store wired to the platform: task events and
+ * window focus refresh the connection list, and a sign-out or a change of
+ * user, organization or team forgets every connection (and its task token) so
+ * the previous session's pipelines never bleed into the next.
+ *
+ * @param props - Shell-injected props: connection state and the signed-in identity.
  */
-const SqlApp: React.FC<ShellAppProps> = (_props) => {
+const SqlApp: React.FC<ShellAppProps> = ({ identity }) => {
 	const [ready, setReady] = useState(false);
+	const { client } = useShellConnection();
+	useEndpointStoreLifecycle(sqlEndpoints, client, identity);
 
 	// Create the Documents instance once; the landing doc opens with it.
 	useEffect(() => {

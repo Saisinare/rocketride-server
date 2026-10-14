@@ -31,6 +31,8 @@
 // changes, never the views, panels, or canvas.
 // =============================================================================
 
+import type { IExplorerEndpoint } from 'shared/explorer/types';
+
 // =============================================================================
 // DIALECT
 // =============================================================================
@@ -48,26 +50,18 @@ export type SqlDialect = 'mysql' | 'postgres' | 'clickhouse' | 'neo4j' | 'unknow
 
 /**
  * One reachable database tool node inside a running pipeline task — the unit
- * a "connection" binds to. Purely descriptive: holds no token or client state.
+ * a "connection" binds to. Purely descriptive and JSON-safe: it holds NO task
+ * token (tokens live only in the endpoint store's transient vault).
+ *
+ * It is the shared Explorer endpoint (shared/explorer/types): an owner-aware
+ * `key` (run kind, owner, team, project, source, node — so a developer's run
+ * and the team's deployment of one pipeline are different connections), the
+ * pre-v1 `legacyKey` that saved history is still read under, and the
+ * endpoint's `state` (probing, ready, stopped, unreachable, inaccessible).
+ * `source`, `nodeId`, `nodeName`, `provider`, `pipelineName`, `projectId` and
+ * `running` keep the meaning they had.
  */
-export interface ISqlEndpoint {
-	/** Stable identity for lists/maps: `${projectId}:${source}:${nodeId}`. */
-	key: string;
-	/** Project (pipeline) identifier the task was started from. */
-	projectId: string;
-	/** Task display name (pipeline filename or config name). */
-	pipelineName: string;
-	/** Source component id of the task — needed to resolve the task token. */
-	source: string;
-	/** The database component id inside the pipeline (tool call target). */
-	nodeId: string;
-	/** Display name of the database component (falls back to nodeId). */
-	nodeName: string;
-	/** Component provider, e.g. 'db_mysql', 'db_postgres', 'db_clickhouse'. */
-	provider: string;
-	/** Whether the owning task was running at discovery time. */
-	running: boolean;
-}
+export type ISqlEndpoint = IExplorerEndpoint;
 
 // =============================================================================
 // TOOL RESULTS

@@ -24,78 +24,38 @@
 // CONNECT — ENDPOINT STORE (shared discovery state for App + Sidebar)
 // =============================================================================
 //
-// The shell mounts the App and Sidebar components as SIBLINGS, so they cannot
-// share React context; this module-level store (the admin-ui navigation
-// pattern) is the shared state both sides subscribe to.
+// SQL Explorer's instance of the shared endpoint store
+// (shared/explorer/connect/store). The shell mounts the App and Sidebar as
+// SIBLINGS, so they cannot share React context; this module-level instance is
+// the shared state both sides subscribe to. Task tokens live only inside it.
 // =============================================================================
 
-import { useSyncExternalStore } from 'react';
 import type { RocketRideClient } from 'shell';
-import { discoverSqlEndpoints } from './discovery';
-import type { ISqlEndpoint } from './types';
+import { createEndpointStore } from 'shared/explorer/connect/store';
+import type { IEndpointState } from 'shared/explorer/connect/store';
+import { useEndpointState } from 'shared/explorer/react';
+import { SINGLE_TOOLS_ROLE } from 'shared/explorer/types';
+import { DATABASE_PROVIDERS } from './discovery';
+import { SQL_TOOLS } from './tools';
 
-// =============================================================================
-// STATE
-// =============================================================================
+export type { EndpointStatus, IEndpointState } from 'shared/explorer/connect/store';
 
-/** Discovery lifecycle of the endpoint list. */
-export type EndpointStatus = 'idle' | 'loading' | 'ready' | 'error';
-
-/** The store's snapshot shape consumed by React. */
-export interface IEndpointState {
-	/** Discovery lifecycle state. */
-	status: EndpointStatus;
-	/** The discovered endpoints (empty until the first refresh completes). */
-	endpoints: ISqlEndpoint[];
-	/** Failure detail when status is 'error'. */
-	error: string | null;
-}
-
-// ── Module-level state ───────────────────────────────────────────────────────
-
-let state: IEndpointState = { status: 'idle', endpoints: [], error: null };
-const listeners = new Set<() => void>();
-
-// Monotonic refresh counter so an outdated in-flight discovery never
-// overwrites the result of a newer one.
-let refreshSeq = 0;
+/** SQL Explorer's endpoint store: one `tools` role, the relational node providers. */
+export const sqlEndpoints = createEndpointStore({
+	providers: DATABASE_PROVIDERS,
+	roles: SINGLE_TOOLS_ROLE,
+	tools: SQL_TOOLS,
+});
 
 /**
- * Replace the snapshot and notify all subscribed React components.
- *
- * @param next - The new snapshot.
- */
-function setState(next: IEndpointState): void {
-	state = next;
-	listeners.forEach((fn) => fn());
-}
-
-// =============================================================================
-// ACTIONS
-// =============================================================================
-
-/**
- * Run (or re-run) endpoint discovery. Concurrent calls are safe: only the
- * most recent call's result is applied.
+ * Run (or re-run) endpoint discovery. Concurrent calls coalesce: one runs, and
+ * calls made while it runs cause exactly one follow-up.
  *
  * @param client - The shell's RocketRide client.
  */
 export async function refreshEndpoints(client: RocketRideClient): Promise<void> {
-	const seq = ++refreshSeq;
-	setState({ ...state, status: 'loading', error: null });
-	try {
-		const endpoints = await discoverSqlEndpoints(client);
-		if (seq !== refreshSeq) return;
-		setState({ status: 'ready', endpoints, error: null });
-	} catch (err) {
-		if (seq !== refreshSeq) return;
-		setState({ status: 'error', endpoints: state.endpoints, error: err instanceof Error ? err.message : String(err) });
-	}
+	await sqlEndpoints.refresh(client);
 }
-
-// =============================================================================
-// HOOK
-// =============================================================================
 
 /**
  * Subscribe to the endpoint discovery state.
@@ -105,8 +65,5 @@ export async function refreshEndpoints(client: RocketRideClient): Promise<void> 
  * @returns The current endpoint state snapshot.
  */
 export function useSqlEndpoints(): IEndpointState {
-	return useSyncExternalStore(
-		(cb) => { listeners.add(cb); return () => listeners.delete(cb); },
-		() => state,
-	);
+	return useEndpointState(sqlEndpoints);
 }

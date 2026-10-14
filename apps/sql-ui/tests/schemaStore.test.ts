@@ -38,6 +38,7 @@ import assert from 'node:assert/strict';
 import type { RocketRideClient } from 'shell';
 import type { ISqlEndpoint } from '../src/connect';
 import { refreshSchema } from '../src/schema/schemaStore';
+import { registerEndpoint } from './support';
 
 // =============================================================================
 // FAKE CLIENT
@@ -52,23 +53,14 @@ interface IFakeClient {
 }
 
 /**
- * Build an endpoint with its own key, so one test's snapshot cannot reach
- * another's.
+ * Register an endpoint with its own key (the project id), so one test's
+ * snapshot cannot reach another's.
  *
- * @param key - The endpoint key.
- * @returns The endpoint.
+ * @param key - A name distinct per test; it becomes the project id.
+ * @returns The endpoint, discovered through the app's real store.
  */
-function endpointFor(key: string): ISqlEndpoint {
-	return {
-		key,
-		projectId: 'p1',
-		pipelineName: 'Pipeline A',
-		source: 's1',
-		nodeId: key,
-		nodeName: 'Orders DB',
-		provider: 'db_postgres',
-		running: true,
-	};
+function endpointFor(key: string): Promise<ISqlEndpoint> {
+	return registerEndpoint(key);
 }
 
 /**
@@ -105,7 +97,7 @@ describe('refreshSchema — fresh reflection after a fallback', () => {
 		// fresh refresh used to latch `unavailable`, and every later Refresh
 		// Schema, Reverse Engineer and post-DDL read served the task-start
 		// snapshot for the rest of the app session.
-		const endpoint = endpointFor('latch:one');
+		const endpoint = await endpointFor('latch:one');
 		const { client, tools } = fakeClient((tool) => {
 			if (tool === 'dialect') return { dialect: 'postgres' };
 			if (tool === 'refresh_schema' && countOf(tools, 'refresh_schema') === 1) throw new Error('task restarted');
@@ -126,7 +118,7 @@ describe('refreshSchema — fresh reflection after a fallback', () => {
 	it('stops attempting only after a SECOND consecutive fallback', async () => {
 		// A node that genuinely has no `refresh_schema` tool must still stop
 		// costing two round trips per refresh.
-		const endpoint = endpointFor('latch:two');
+		const endpoint = await endpointFor('latch:two');
 		const { client, tools } = fakeClient((tool) => {
 			if (tool === 'dialect') return { dialect: 'postgres' };
 			if (tool === 'refresh_schema') throw new Error('no such tool');
@@ -142,7 +134,7 @@ describe('refreshSchema — fresh reflection after a fallback', () => {
 	});
 
 	it('clears the suspicion when a fresh read answers', async () => {
-		const endpoint = endpointFor('latch:recovers');
+		const endpoint = await endpointFor('latch:recovers');
 		const { client, tools } = fakeClient((tool) => {
 			if (tool === 'dialect') return { dialect: 'postgres' };
 			// Fails once, answers once, fails once: never twice in a row, so
@@ -169,7 +161,7 @@ describe('refreshSchema — concurrency', () => {
 		// refresh was loading, so the post-DDL call in TableDesignView neither
 		// started nor awaited a reflection and the outcome banner described
 		// the change against the pre-DDL snapshot.
-		const endpoint = endpointFor('concurrent:fresh');
+		const endpoint = await endpointFor('concurrent:fresh');
 		let release = (): void => {};
 		const blocked = new Promise<void>((resolve) => { release = resolve; });
 		const { client, tools } = fakeClient(async (tool) => {
@@ -192,7 +184,7 @@ describe('refreshSchema — concurrency', () => {
 	});
 
 	it('collapses an ordinary refresh onto the one already running', async () => {
-		const endpoint = endpointFor('concurrent:ordinary');
+		const endpoint = await endpointFor('concurrent:ordinary');
 		let release = (): void => {};
 		const blocked = new Promise<void>((resolve) => { release = resolve; });
 		const { client, tools } = fakeClient(async (tool) => {

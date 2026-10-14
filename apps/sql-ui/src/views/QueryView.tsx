@@ -60,6 +60,8 @@ import CellInspector from '../components/CellInspector';
 import HistoryPanel from '../components/HistoryPanel';
 import ExplainPanel from '../components/ExplainPanel';
 import { announce } from '../a11y/announce';
+import { createConnectionFlags } from 'shared/explorer/history/flags';
+import { legacyKeyFromKey } from 'shared/explorer/keys';
 import { splitStatements, splitStatementsIn, statementAtOffset } from '../sql/split';
 import { classifyStatement, patternCheck } from '../sql/classify';
 import type { IPatternFinding } from '../sql/classify';
@@ -140,8 +142,11 @@ interface IFailureState {
 /** Row-limit options offered by the header toggle. */
 const LIMIT_OPTIONS = ['200', '1000', 'All'] as const;
 
-/** Prefs key holding the per-connection pattern-check switch. */
-const PATTERN_CHECK_PREF = 'sql.patternChecks';
+/**
+ * The per-connection pattern-check switch, stored under `sql.patternChecks`.
+ * A switch saved under the connection's pre-owner-aware key still counts.
+ */
+const patternFlags = createConnectionFlags({ prefKey: 'sql.patternChecks', defaultValue: true, legacyKeyOf: legacyKeyFromKey });
 
 /** How long a run must last before "Stop waiting" is offered. */
 const STOP_WAITING_AFTER_MS = 1000;
@@ -357,10 +362,7 @@ export const QueryView: React.FC<IQueryViewProps> = ({ endpoint, label, initialS
 	const [pendingLoad, setPendingLoad] = useState<string | null>(null);
 	const [inspected, setInspected] = useState<{ row: Record<string, unknown>; number: number } | null>(null);
 	const [patternPrompt, setPatternPrompt] = useState<IPatternPrompt | null>(null);
-	const [patternChecksOn, setPatternChecksOn] = useState<boolean>(() => {
-		const bag = prefs.getPref(PATTERN_CHECK_PREF) as Record<string, boolean> | undefined;
-		return bag?.[endpoint.key] !== false;
-	});
+	const [patternChecksOn, setPatternChecksOn] = useState<boolean>(() => patternFlags.read(prefs, endpoint.key));
 
 	// ── Refs ─────────────────────────────────────────────────────────────────
 	const editorRef = useRef<ISqlEditorHandle>(null);
@@ -412,8 +414,7 @@ export const QueryView: React.FC<IQueryViewProps> = ({ endpoint, label, initialS
 	 * @param on - Whether the check should run.
 	 */
 	const setPatternChecks = useCallback((on: boolean): void => {
-		const bag = (prefs.getPref(PATTERN_CHECK_PREF) as Record<string, boolean> | undefined) ?? {};
-		prefs.setPref(PATTERN_CHECK_PREF, { ...bag, [endpoint.key]: on });
+		patternFlags.write(prefs, endpoint.key, on);
 		// Written HERE, not only by the effect that mirrors the state below:
 		// the run loop resumes from `await askPatternConfirm(...)` in a
 		// microtask and reads this ref for the NEXT statement, which happens

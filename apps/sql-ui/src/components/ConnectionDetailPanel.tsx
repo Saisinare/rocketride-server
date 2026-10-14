@@ -53,6 +53,22 @@ export interface IConnectionDetailPanelProps {
 	onOpen: (endpoint: ISqlEndpoint) => void;
 }
 
+/** The badge variant and word for each endpoint state. */
+const STATE_VARIANT: Record<ISqlEndpoint['state'], 'success' | 'muted' | 'error'> = {
+	probing: 'muted',
+	ready: 'success',
+	stopped: 'muted',
+	unreachable: 'error',
+	inaccessible: 'error',
+};
+const STATE_LABEL: Record<ISqlEndpoint['state'], string> = {
+	probing: 'Checking',
+	ready: 'Running',
+	stopped: 'Stopped',
+	unreachable: 'Unreachable',
+	inaccessible: 'No access',
+};
+
 /** Probe lifecycle local to the drawer. */
 type ProbeStatus = 'idle' | 'probing' | 'done';
 
@@ -223,11 +239,13 @@ export const ConnectionDetailPanel: React.FC<IConnectionDetailPanelProps> = (pro
 					<LabelValue label="Pipeline" mono>{selected.pipelineName}</LabelValue>
 					<LabelValue label="Node" mono>{selected.nodeId}</LabelValue>
 					<LabelValue label="Provider" mono>{selected.provider}</LabelValue>
-					<LabelValue label="State">
-						<StatusBadge variant={selected.running ? 'success' : 'muted'}>
-							{selected.running ? 'Running' : 'Stopped'}
-						</StatusBadge>
+					<LabelValue label="Run">
+						{selected.runKind === 'deploy' ? (selected.ownerKind === 'team' ? 'Team deployment' : 'Personal deployment') : 'Your development run'}
 					</LabelValue>
+					<LabelValue label="State">
+						<StatusBadge variant={STATE_VARIANT[selected.state]}>{STATE_LABEL[selected.state]}</StatusBadge>
+					</LabelValue>
+					{selected.stateDetail && <div style={styles.hint}>{selected.stateDetail}</div>}
 				</Section>
 			)}
 
