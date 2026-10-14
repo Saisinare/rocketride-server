@@ -25,9 +25,11 @@
  * shared package tasks.
  *
  * Exposes:
- *   shared:test — runs node:test against script helpers and TSX component
- *                    smoke tests. Test files are co-located with their subject
- *                    and discovered recursively.
+ *   shared:test — type-checks apps/shared source AND tests (tsc -p
+ *                    tsconfig.test.json), then runs node:test against script
+ *                    helpers and TSX component smoke tests. Test files are
+ *                    co-located with their subject and discovered recursively.
+ *                    Fails — never passes silently — when no test file is found.
  *
  * Builds gate on the drift CHECK only (shared:check-gallery-tokens —
  * silent unless the committed map drifted, then the build fails naming
@@ -57,10 +59,25 @@ function makeTestAction() {
 				.map((f) => path.join('src', f));
 			const testFiles = [...scriptTests, ...componentTests];
 
+			// Fail rather than pass silently. The suites are tracked source, so an
+			// empty list means a broken checkout or a pattern that stopped
+			// matching — and `builder test` runs this action in CI, where
+			// returning cleanly would report the whole suite green while nothing
+			// at all had run.
 			if (testFiles.length === 0) {
-				task.output = 'No shared test files found';
-				return;
+				throw new Error(
+					`No shared test files found under ${SCRIPTS_DIR} or ${SRC_DIR} — ` +
+						'the suites are tracked source and must be present'
+				);
 			}
+
+			// tsx erases types rather than checking them, so without this step
+			// neither the tests nor the source they exercise would run under any
+			// typechecker (tsconfig.json deliberately excludes tests; see
+			// tsconfig.test.json). It assumes a built shell: on a fresh clone
+			// .rocketride/shell/shell.tgz is the bootstrap stub until shell:build
+			// replaces it (scripts/lib/appModule.js).
+			await execCommand('npx', ['tsc', '-p', 'tsconfig.test.json', '--noEmit'], { task, cwd: APP_ROOT });
 
 			// stub-css: no-op loader for stylesheet imports the shell barrel
 			// side-effect-pulls (Tabulator CSS) — node cannot execute CSS.
