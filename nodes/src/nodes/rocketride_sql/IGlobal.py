@@ -36,10 +36,11 @@ class IGlobal(DatabaseGlobalBase):
 
     Identical to the generic PostgreSQL node in every respect except one: it
     takes **no** connection config. Instead of reading host/user/password, it
-    resolves a ready per-tenant DSN from the account layer, keyed by the
-    authenticated ``client_id`` (see ``ai.common.rocketride_db``). Everything
-    else — schema reflection, EXPLAIN validation, the structured query surface,
-    and the raw EXECUTE path — is inherited unchanged from the base.
+    resolves a ready DSN for the organization's database (the tenant; a user
+    only where there is no organization) from the account layer (see
+    ``ai.common.rocketride_db``). Everything else — schema reflection, EXPLAIN
+    validation, the structured query surface, and the raw EXECUTE path — is
+    inherited unchanged from the base.
     """
 
     # Cache the resolved DSN between the paired _connection_params /
@@ -51,10 +52,11 @@ class IGlobal(DatabaseGlobalBase):
         """Resolve the cloud DSN and expose the pieces the base needs.
 
         There are no host/user/password fields; the DSN comes from
-        ``Account.resolve_db_dsn(client_id)``. Resolve it once here, cache it
-        for ``_build_connection_url``, and parse out ``database`` so the base's
-        schema-reflection messaging names the real tenant database. ``table``
-        remains the one structured, user-facing target field.
+        ``resolve_rocketride_dsn()`` (the task's tenant). Resolve it once
+        here, cache it for ``_build_connection_url``, and parse out
+        ``database`` so the base's schema-reflection messaging names the real
+        tenant database. ``table`` remains the one structured, user-facing
+        target field.
         """
         self._dsn = resolve_rocketride_dsn()
         fields = parse_dsn_fields(self._dsn)

@@ -612,3 +612,47 @@ class TestRocketrideVectorStore:
         store._createCollection(vectorSize=2000)
         assert any('USING hnsw' in sql for sql in store.client.executed)
         assert not warnings
+
+
+# ---------------------------------------------------------------------------
+# Tenancy wording
+# ---------------------------------------------------------------------------
+
+# How the docs used to describe the tenant: the signed-in user. The task engine
+# resolves the database by the task's organization (its user only where there
+# is no organization), so these phrases describe the wrong tenancy model.
+_STALE_TENANT_PHRASES = (
+    'signed-in rocketride identity',
+    'signed-in rocketride tenant',
+    'authenticated client_id',
+)
+
+
+def _prose(path: Path) -> str:
+    """A file's text with comment markers, backquotes and line breaks folded away, lower-cased.
+
+    A services.json description is an array of strings shown joined, so the
+    seams between its strings are folded away too.
+    """
+    text = path.read_text(encoding='utf-8')
+    text = text.replace('``', '').replace('`', '').replace('", "', '')
+    lines = [line.strip().lstrip('#').lstrip('/').strip() for line in text.splitlines()]
+    return ' '.join(' '.join(lines).split()).lower()
+
+
+class TestSqlTenancyWording:
+    """rocketride_sql describes its database as the organization's."""
+
+    def test_no_text_describes_the_signed_in_user_as_the_tenant(self):
+        stale = [
+            f'{path.name}: {phrase!r}'
+            for path in sorted(_SQL_NODE_DIR.iterdir())
+            if path.suffix in ('.py', '.json', '.md')
+            for phrase in _STALE_TENANT_PHRASES
+            if phrase in _prose(path)
+        ]
+        assert stale == []
+
+    def test_description_and_readme_name_the_organization(self):
+        assert "the connection to your organization's database" in _prose(_SQL_NODE_DIR / 'services.json')
+        assert 'per organization' in _prose(_SQL_NODE_DIR / 'README.md')
