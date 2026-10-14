@@ -11,10 +11,11 @@ const assert = require('node:assert');
 const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
+const { once } = require('node:events');
 const { finished } = require('node:stream/promises');
 
 const { BUILD_ROOT } = require('./paths');
-const { testServerLogFile, openServerLog } = require('./server');
+const { testServerLogFile, openServerLog, attachServerLog } = require('./server');
 
 /**
  * Create a fresh, empty temp directory for a single test case.
@@ -54,6 +55,42 @@ test('openServerLog: reports a log it cannot set up and returns null instead of 
 	assert.strictEqual(stream, null);
 	assert.strictEqual(errors.mock.callCount(), 1);
 	assert.match(errors.mock.calls[0].arguments[0], /cannot write/);
+});
+
+test('attachServerLog: records the log path once the file is open', async () => {
+	const logFile = path.join(tmpDir(), 'server.log');
+	const diagnostics = { logFile: null };
+
+	const stream = attachServerLog(logFile, diagnostics);
+	await once(stream, 'open');
+
+	assert.strictEqual(diagnostics.logFile, logFile);
+	stream.end();
+	await finished(stream);
+});
+
+test('attachServerLog: clears the log path when the file fails to open', async (t) => {
+	t.mock.method(console, 'error', () => {});
+	// A directory cannot be opened for writing; the error comes asynchronously.
+	const logFile = tmpDir();
+	const diagnostics = { logFile: null };
+
+	const stream = attachServerLog(logFile, diagnostics);
+	await once(stream, 'error');
+
+	assert.strictEqual(diagnostics.logFile, null);
+});
+
+test('attachServerLog: leaves the log path empty when the file cannot be set up', (t) => {
+	t.mock.method(console, 'error', () => {});
+	const blocker = path.join(tmpDir(), 'not-a-directory');
+	fs.writeFileSync(blocker, '');
+	const diagnostics = { logFile: null };
+
+	const stream = attachServerLog(path.join(blocker, 'logs', 'server.log'), diagnostics);
+
+	assert.strictEqual(stream, null);
+	assert.strictEqual(diagnostics.logFile, null);
 });
 
 test('openServerLog: replaces the log of an earlier run', async () => {
