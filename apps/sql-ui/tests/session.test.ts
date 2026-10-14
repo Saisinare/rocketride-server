@@ -36,6 +36,8 @@ import assert from 'node:assert/strict';
 import type { RocketRideClient } from 'shell';
 import type { ISqlEndpoint } from '../src/connect';
 import { createSqlSession } from '../src/connect/session';
+import { ExplorerToolError } from 'shared/explorer/errors';
+import { createGeneration } from 'shared/explorer/generation';
 import { currentRows, registerEndpoint, resetEndpoints } from './support';
 
 // =============================================================================
@@ -129,6 +131,42 @@ describe('execute retry policy', () => {
 		assert.deepEqual(result, { rows: [{ id: 1 }], affected_rows: 0 });
 		// Task tokens are deterministic: the restarted task has the SAME token.
 		assert.deepEqual(fake.calls.map((c) => c.token), ['tk_sentinel_session-suite', 'tk_sentinel_session-suite']);
+	});
+
+	it('sends nothing more for a read whose generation ticket expired while it waited: the one retry is dropped', async () => {
+		// The batch was abandoned (Stop waiting, the tab closed, the account
+		// changed) after the first attempt was refused before dispatch: the
+		// session must not send the statement again when the task comes back.
+		const generation = createGeneration();
+		const ticket = generation.next();
+		const fake = fakeClient((_call, index) => {
+			if (index === 0) {
+				generation.invalidate();
+				throw stopped();
+			}
+			return { rows: [{ id: 1 }], affected_rows: 0 };
+		});
+		const session = createSqlSession(fake.client, endpoint);
+
+		await assert.rejects(
+			session.execute('SELECT * FROM orders', { idempotent: true, generation: ticket }),
+			(error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale',
+		);
+		assert.equal(fake.calls.length, 1);
+	});
+
+	it('drops the answer of a read whose ticket expired while it ran, and still sends a current one', async () => {
+		const generation = createGeneration();
+		const stale = generation.next();
+		const fake = fakeClient(() => {
+			generation.next();
+			return { rows: [{ id: 1 }], affected_rows: 0 };
+		});
+		const session = createSqlSession(fake.client, endpoint);
+		await assert.rejects(session.execute('SELECT 1', { idempotent: true, generation: stale }), (error: unknown) => error instanceof ExplorerToolError && error.kind === 'stale');
+		const current = generation.next();
+		const quiet = fakeClient(() => ({ rows: [{ id: 2 }], affected_rows: 0 }));
+		assert.deepEqual(await createSqlSession(quiet.client, endpoint).execute('SELECT 2', { generation: current }), { rows: [{ id: 2 }], affected_rows: 0 });
 	});
 
 	it('does not retry an idempotent statement whose failure carries no restart code', async () => {

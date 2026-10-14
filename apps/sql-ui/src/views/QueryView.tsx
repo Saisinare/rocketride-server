@@ -376,8 +376,10 @@ export const QueryView: React.FC<IQueryViewProps> = ({ endpoint, label, initialS
 			return { send: { sql: prepared.sql }, patch: { limitApplied: prepared.limit, limitState: prepared.state } };
 		},
 		// `idempotent` gates the session's one retry after a restart: a read may be
-		// sent twice harmlessly, a write may NOT.
-		execute: (run, send) => getSession(client as NonNullable<typeof client>, endpoint).execute(send.sql, { idempotent: run.kind === 'read' }),
+		// sent twice harmlessly, a write may NOT. The batch's ticket goes down
+		// too, so a read the user stopped waiting for (or whose tab closed) is
+		// not sent again by that retry.
+		execute: (run, send, ticket) => getSession(client as NonNullable<typeof client>, endpoint).execute(send.sql, { idempotent: run.kind === 'read', generation: ticket }),
 		settle: (run, response) => {
 			const rows = response.rows ?? [];
 			const affected = response.affected_rows ?? 0;

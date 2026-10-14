@@ -28,9 +28,10 @@
 // about being guesses:
 //
 //   `classifyStatement` — what kind of statement this is. The runner uses it
-//   to decide whether a failed call may be retried with a fresh token
-//   (`idempotent`), so the rule is conservative: anything that is not clearly
-//   read-only is not a read. `EXPLAIN ANALYZE` really executes its inner
+//   to decide whether a call may take the session's one retry (`idempotent`),
+//   which follows only a `TASK_STOPPED` refusal the engine raises before the
+//   statement reaches the node; the rule is conservative all the same:
+//   anything that is not clearly read-only is not a read. `EXPLAIN ANALYZE` really executes its inner
 //   statement, so it is classified by that statement, not as a read — and
 //   `patternCheck` peels the same prefix for the same reason.
 //

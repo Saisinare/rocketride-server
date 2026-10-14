@@ -40,6 +40,7 @@
 import type { RocketRideClient } from 'shell';
 import { isStaleError } from 'shared/explorer/errors';
 import type { IToolSession } from 'shared/explorer/connect/session';
+import type { IGenerationTicket } from 'shared/explorer/generation';
 import { sqlEndpoints } from './endpointStore';
 import type {
 	ISqlEndpoint,
@@ -89,14 +90,17 @@ class SqlToolSession implements ISqlSession {
 	}
 
 	/** @inheritdoc */
-	async execute(sql: string, opts?: { params?: unknown[]; idempotent?: boolean }): Promise<ISqlExecuteResult> {
+	async execute(sql: string, opts?: { params?: unknown[]; idempotent?: boolean; generation?: IGenerationTicket }): Promise<ISqlExecuteResult> {
 		// Omit `params` entirely when there is nothing to bind: the node's
 		// placeholder rewriting is skipped for an empty list, so an unbound
 		// statement keeps travelling exactly as it did before.
 		const params = opts?.params;
 		const input = params && params.length > 0 ? { sql, params } : { sql };
-		// Default NO retry: an unmarked statement may well be a write.
-		return this.session.invoke<ISqlExecuteResult>('execute', input, { idempotent: opts?.idempotent === true });
+		// Default NO retry: an unmarked statement may well be a write. The
+		// caller's ticket goes down with the call, so a request it abandoned is
+		// never sent again by the session's retry.
+		const generation = opts?.generation;
+		return this.session.invoke<ISqlExecuteResult>('execute', input, { idempotent: opts?.idempotent === true, ...(generation === undefined ? {} : { generation }) });
 	}
 
 	/** @inheritdoc */
