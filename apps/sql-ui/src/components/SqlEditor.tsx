@@ -51,6 +51,7 @@ import type * as MonacoNS from 'monaco-editor';
 import type { SqlDialect } from '../connect';
 import type { ICompletionModel } from '../sql/completion';
 import { suggestAt } from '../sql/completion';
+import { editorTheme } from './editorTheme';
 
 // =============================================================================
 // TYPES
@@ -201,32 +202,33 @@ const THEME_NAME = 'rr-sql-theme';
  * Read a CSS custom property from :root.
  *
  * @param name - The custom property name.
- * @param fallback - Value when the property is unset.
- * @returns The trimmed value or the fallback.
+ * @returns The trimmed value, or '' when it is unset.
  */
-function cssVar(name: string, fallback: string): string {
-	return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+function readToken(name: string): string {
+	return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
 /**
  * Register the token-derived editor theme. Compact subset of explorer-ui's
- * theme bridge: background/foreground/line numbers from --rr-* tokens (which
- * are plain hex in every shipped theme), base vs/vs-dark from the palette mode.
+ * theme bridge: background/foreground/line numbers from --rr-* tokens, base
+ * vs/vs-dark from the palette mode.
+ *
+ * The tokens are CSS and are NOT all plain hex: RocketRide and RocketRide Light
+ * write --rr-text-secondary as rgba(), and Monaco reads theme colours as
+ * #RRGGBB only (an rgba() value is drawn red). editorTheme() blends such a token
+ * over the paper, writes every colour as #rrggbb, lifts line numbers to 4.5:1,
+ * and adds token rules for the syntax colours of Monaco's base palette that do
+ * not reach 4.5:1 on the editor background.
  *
  * @param monaco - The loaded Monaco namespace.
  */
 function defineTheme(monaco: typeof MonacoNS): void {
-	const dark = cssVar('--rr-palette-mode', 'light').replace(/['"]/g, '') === 'dark';
+	const { dark, colors, rules } = editorTheme(readToken);
 	monaco.editor.defineTheme(THEME_NAME, {
 		base: dark ? 'vs-dark' : 'vs',
 		inherit: true,
-		rules: [],
-		colors: {
-			'editor.background': cssVar('--rr-bg-paper', dark ? '#252526' : '#ffffff'),
-			'editor.foreground': cssVar('--rr-text-primary', dark ? '#cccccc' : '#1a1a1a'),
-			'editorLineNumber.foreground': cssVar('--rr-text-secondary', '#666666'),
-			'editorLineNumber.activeForeground': cssVar('--rr-text-primary', '#1a1a1a'),
-		},
+		rules: [...rules],
+		colors: { ...colors },
 	});
 }
 
