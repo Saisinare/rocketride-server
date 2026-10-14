@@ -35,18 +35,27 @@ seam (env ``ROCKETRIDE_CLIENT_ID`` + a fake, injectable
     # image: apache/age:release_PG16_1.5.0 + pgvector v0.8.0 (see the layer README)
 
 Configuration via environment variables:
-    RR_TEST_AGE_DSN — libpq URL of the AGE test database
+    RR_TEST_AGE_DSN — libpq URL the NODE connects through (may be a
+                      transaction-mode pooler in front of the database)
                       (default: postgresql://rruser:rrpass@localhost:55433/rrtenant)
+    RR_TEST_AGE_GRAPH — scratch graph name (default rr_graph_e2e_<random>); it
+                      is dropped and recreated by every test
+    RR_TEST_AGE_ADMIN_DSN — direct libpq URL for fixture setup/teardown and
+                      server-side inspection (default: RR_TEST_AGE_DSN). Set it
+                      when RR_TEST_AGE_DSN points at a pooler, so session-level
+                      fixture SETs never land on pooled server sessions.
 
 Skips cleanly when the database is unreachable.
 """
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import os
 import sys
 import types
+import uuid
 
 from pathlib import Path
 
@@ -60,8 +69,11 @@ _RRDB_PATH = _AI_SRC / 'ai' / 'common' / 'rocketride_db.py'
 _NODE_DIR = _REPO / 'nodes' / 'src' / 'nodes' / 'rocketride_graph'
 
 TEST_DSN = os.environ.get('RR_TEST_AGE_DSN', 'postgresql://rruser:rrpass@localhost:55433/rrtenant')
+ADMIN_DSN = os.environ.get('RR_TEST_AGE_ADMIN_DSN') or TEST_DSN
 TEST_CLIENT_ID = 'tenant-graph-test'
-GRAPH = 'rr_graph_e2e'
+# Per-run scratch graph, so two runs against one shared database cannot drop
+# each other's graph (RR_TEST_AGE_GRAPH fixes the name).
+GRAPH = os.environ.get('RR_TEST_AGE_GRAPH') or f'rr_graph_e2e_{uuid.uuid4().hex[:8]}'
 
 # RR_REQUIRE_DB_TESTS (set by CI once its DB containers are healthy) turns
 # every skip in this module into a hard failure: a broken container or missing
@@ -101,9 +113,13 @@ def _load_from_path(name: str, path: Path, *, is_package: bool = False):
     return module
 
 
-@pytest.fixture()
-def rr_env(monkeypatch):
-    """Stub the engine surface, load real graph base + age layer + node."""
+def make_rr_env(monkeypatch):
+    """Stub the engine surface, load real graph base + age layer + node.
+
+    The body of the ``rr_env`` fixture, callable without pytest's fixture
+    machinery (``nodes/test/graph_wire_fixtures.py`` uses it with its own
+    ``pytest.MonkeyPatch``).
+    """
     warnings: list[str] = []
 
     depends_mod = types.ModuleType('depends')
@@ -160,6 +176,14 @@ def rr_env(monkeypatch):
     rrdb_mod = _load_from_path('ai.common.rocketride_db', _RRDB_PATH)
     monkeypatch.setitem(sys.modules, 'ai.common.rocketride_db', rrdb_mod)
 
+    # Another test module may have left its own copies of the graph package's
+    # submodules in sys.modules, bound to that module's stubs (e.g. a different
+    # Config). Evict them so the package below re-imports against these stubs;
+    # monkeypatch puts them back afterwards.
+    for name in list(sys.modules):
+        if name == 'ai.common.graph' or name.startswith(('ai.common.graph.', 'nodes.rocketride_graph')):
+            monkeypatch.delitem(sys.modules, name)
+
     # Real graph base package (brings ai.common.graph.age with it).
     graph_pkg = _load_from_path('ai.common.graph', _GRAPH_PKG / '__init__.py', is_package=True)
     monkeypatch.setitem(sys.modules, 'ai.common.graph', graph_pkg)
@@ -188,11 +212,20 @@ def rr_env(monkeypatch):
 
 
 @pytest.fixture()
-def age_graph(rr_env):
-    """Provision + seed the test graph out-of-band (provisioning is not the
-    node's job while create_graph ownership is open).
+def rr_env(monkeypatch):
+    """Stub the engine surface, load real graph base + age layer + node."""
+    return make_rr_env(monkeypatch)
+
+
+@contextlib.contextmanager
+def seeded_age_graph():
+    """Provision + seed the test graph out-of-band, as the cloud provisioner
+    does for 'rocketride' (the node never creates a graph); drop it on exit.
+
+    The body of the ``age_graph`` fixture, usable without pytest's fixture
+    machinery (``nodes/test/graph_wire_fixtures.py`` uses it directly).
     """
-    conn = psycopg2.connect(TEST_DSN)
+    conn = psycopg2.connect(ADMIN_DSN)
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute('SET search_path = ag_catalog, "$user", public')
@@ -207,11 +240,20 @@ def age_graph(rr_env):
             "(a)-[:WORKS_AT]->(x:Company {name:'RocketRide'}) "
             '$$) AS (v agtype)'
         )
-    yield conn
-    with conn.cursor() as cur:
-        cur.execute('SET search_path = ag_catalog, "$user", public')
-        cur.execute('SELECT drop_graph(%s, true)', (GRAPH,))
-    conn.close()
+    try:
+        yield conn
+    finally:
+        with conn.cursor() as cur:
+            cur.execute('SET search_path = ag_catalog, "$user", public')
+            cur.execute('SELECT drop_graph(%s, true)', (GRAPH,))
+        conn.close()
+
+
+@pytest.fixture()
+def age_graph(rr_env):
+    """The seeded test graph (see :func:`seeded_age_graph`)."""
+    with seeded_age_graph() as conn:
+        yield conn
 
 
 def _begin(rr_env, config=None):
@@ -230,8 +272,9 @@ class TestLifecycle:
             assert glb.graph_name == GRAPH
             assert set(glb.graph_schema['nodes']) == {'Person', 'Company'}
             props = dict(glb.graph_schema['nodes']['Person'])
-            assert props.get('name') == 'str'
-            assert props.get('age') == 'int'
+            # One type vocabulary across engines (schema v2); was Python names.
+            assert props.get('name') == 'string'
+            assert props.get('age') == 'integer'
             rel_types = {r['type'] for r in glb.graph_schema['relationships']}
             assert rel_types == {'KNOWS', 'WORKS_AT'}
             knows = next(r for r in glb.graph_schema['relationships'] if r['type'] == 'KNOWS')
@@ -242,8 +285,52 @@ class TestLifecycle:
     def test_missing_graph_fails_fast(self, rr_env, age_graph):
         glb = rr_env.iglobal_cls()
         glb.glb = types.SimpleNamespace(logicalType='rocketride_graph', connConfig={'graph': 'rr_graph_missing'})
-        with pytest.raises(RuntimeError, match='does not exist'):
+        with pytest.raises(RuntimeError, match='does not exist') as err:
             glb.beginGlobal()
+        text = str(err.value)
+        # The provisioner creates 'rocketride'; nothing about graph ownership is open any more.
+        assert 'pending' not in text
+        assert (
+            "RocketRide creates the 'rocketride' graph when your organization's database is first provisioned" in text
+        )
+        assert "SELECT create_graph('rr_graph_missing')" in text
+
+    def test_node_configuration_cannot_choose_the_database(self, rr_env, age_graph):
+        """The DSN comes from the task's tenant only; connection-shaped config keys are ignored."""
+        unreachable = 'postgresql://victim:victim@unreachable.invalid:5432/victim_db?sslmode=disable'
+        glb = _begin(
+            rr_env,
+            {
+                'dsn': unreachable,
+                'url': unreachable,
+                'host': 'unreachable.invalid',
+                'port': 1,
+                'user': 'victim',
+                'password': 'victim',
+                'database': 'victim_db',
+                'tenant_id': 'victim-org',
+                'org_id': 'victim-org',
+                'client_id': 'victim-user',
+            },
+        )
+        try:
+            assert glb.database_name == _dsn_database(TEST_DSN)
+            assert glb._run_query('MATCH (p:Person) RETURN count(p) AS c') == [{'c': 3}]
+        finally:
+            glb.endGlobal()
+
+    def test_probe_names_the_organization_database(self, rr_env, age_graph):
+        glb = rr_env.iglobal_cls()
+        glb._probe_connection({'graph': 'rr_graph_missing'})
+        assert rr_env.warnings == [
+            "AGE graph 'rr_graph_missing' does not exist in your organization's RocketRide database"
+        ]
+
+
+def _dsn_database(dsn: str) -> str:
+    from urllib.parse import urlsplit
+
+    return urlsplit(dsn).path.lstrip('/')
 
 
 class TestSafePath:
@@ -286,7 +373,8 @@ class TestSafePath:
         age = sys.modules['ai.common.graph.age']
         glb = _begin(rr_env)
         try:
-            assert glb.client.autocommit is False
+            with glb.pool.connection() as conn:
+                assert conn.autocommit is False
             plan = age.TranslatedQuery(columns=['ro'], has_return=True)
             plan.statements.append('SHOW transaction_read_only')
             plan.binds.append(())
@@ -361,10 +449,13 @@ class TestExecuteParams:
             for _ in range(3):
                 with pytest.raises(Exception, match='division by zero'):
                     inst.execute({'query': 'RETURN 10 / $z AS q', 'params': {'z': 0}})
-            with glb.client.cursor() as cur:
-                cur.execute(r"SELECT count(*) FROM pg_prepared_statements WHERE name LIKE '\_rr\_age\_%'")
-                assert cur.fetchone()[0] == 0
-            glb.client.rollback()
+            # One call at a time reuses the pool's one idle connection: the
+            # session every failed EXECUTE ran on.
+            with glb.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(r"SELECT count(*) FROM pg_prepared_statements WHERE name LIKE '\_rr\_age\_%'")
+                    assert cur.fetchone()[0] == 0
+                conn.rollback()
             # The connection stays usable after the failures.
             assert inst.execute({'query': 'RETURN 10 / $z AS q', 'params': {'z': 2}})['rows'] == [{'q': 5}]
         finally:
@@ -719,8 +810,15 @@ class TestInstanceTools:
         inst = rr_env.iinstance_cls()
         inst.IGlobal = glb
         try:
-            assert inst.dialect({})['dialect'] == 'age'
+            dialect = inst.dialect({})
+            assert dialect['dialect'] == 'age'
+            assert dialect['engine'] == {'name': 'Apache AGE', 'version': '1.5.0', 'edition': None}
+            assert dialect['graph'] == GRAPH and dialect['database'] == 'rrtenant'
+            assert dialect['capabilities']['read_query'] is True and dialect['capabilities']['shortest_path'] is False
+            assert dialect['read_boundary'] == 'read_only_tx' and dialect['allow_execute'] is False
+            assert 'rrpass' not in str(dialect) and '5543' not in str(dialect)  # no credentials or hosts
             schema = inst.get_schema({})
             assert 'Person' in schema['labels']
+            assert schema['schema']['version'] == 2 and schema['schema']['error'] is None
         finally:
             glb.endGlobal()
