@@ -1,105 +1,84 @@
 /**
- * Tests for the test-server log file: the complete record of what a test server
- * printed, kept so CI can upload it when a test run fails.
+ * Tests for the test-server log: everything a test server prints, kept in
+ * build/test-logs/ so CI can upload it when a test run fails.
  *
- * No test runner is wired into this repo's build scripts yet, so this uses the
- * zero-dependency built-in runner. Run:
+ * A small node script stands in for the engine through startServer's `command`
+ * option. No test runner is wired into this repo's build scripts yet, so this
+ * uses the zero-dependency built-in runner. Run:
  *     node --test scripts/lib/server.test.js
  */
 const { test } = require('node:test');
 const assert = require('node:assert');
-const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
-const { once } = require('node:events');
-const { finished } = require('node:stream/promises');
 
 const { BUILD_ROOT } = require('./paths');
-const { testServerLogFile, openServerLog, attachServerLog } = require('./server');
+const { startServer, stopServer } = require('./server');
+
+// Reports ready the way Uvicorn does, keeps printing on both streams, and says
+// goodbye only when stdin closes, as the engine does under --autoterm.
+const FAKE_SERVER = `
+const server = require('net').createServer().listen(0, '127.0.0.1', () => {
+	console.log('Uvicorn running on http://127.0.0.1:' + server.address().port);
+	console.log('Application startup complete.');
+	console.log('after ready on stdout');
+	console.error('after ready on stderr');
+});
+process.stdin.on('end', () => {
+	console.log('stdin closed - goodbye');
+	server.close();
+});
+process.stdin.resume();
+`;
 
 /**
- * Create a fresh, empty temp directory for a single test case.
- * @returns {string} Absolute path to the new directory
+ * Start the fake server with a log name unique to this test run.
+ * @param {import('node:test').TestContext} t - Removes the log file afterwards
+ * @param {object} options - Extra startServer options
+ * @returns {Promise<{server: object, diagnostics: object, logFile: string}>}
  */
-function tmpDir() {
-	return fs.mkdtempSync(path.join(os.tmpdir(), 'rr-server-test-'));
+async function startFakeServer(t, options) {
+	const logName = `server-test-${process.pid}-${Date.now()}`;
+	const logFile = path.join(BUILD_ROOT, 'test-logs', `${logName}-server.log`);
+	t.after(() => fs.rmSync(logFile, { force: true }));
+
+	const { server, diagnostics } = await startServer({
+		script: 'fake-server',
+		command: [process.execPath, '-e', FAKE_SERVER],
+		logName,
+		...options,
+	});
+	return { server, diagnostics, logFile };
 }
 
-test('testServerLogFile: one file per suite under the build tree', () => {
-	assert.strictEqual(
-		testServerLogFile('client-typescript'),
-		path.join(BUILD_ROOT, 'test-logs', 'client-typescript-server.log')
-	);
-	assert.notStrictEqual(testServerLogFile('nodes'), testServerLogFile('client-python'));
-});
+test('startServer: the log holds everything the server printed until it exited', async (t) => {
+	const { server, diagnostics, logFile } = await startFakeServer(t, { verbose: true });
 
-test('openServerLog: creates missing directories and keeps every chunk in order', async () => {
-	const logFile = path.join(tmpDir(), 'a', 'b', 'server.log');
+	await stopServer({ server });
 
-	const stream = openServerLog(logFile);
-	stream.write(Buffer.from('stdout line\n'));
-	stream.write(Buffer.from('stderr line\n'));
-	stream.end();
-	await finished(stream);
-
-	assert.strictEqual(fs.readFileSync(logFile, 'utf8'), 'stdout line\nstderr line\n');
-});
-
-test('openServerLog: reports a log it cannot set up and returns null instead of throwing', (t) => {
-	const blocker = path.join(tmpDir(), 'not-a-directory');
-	fs.writeFileSync(blocker, '');
-	const errors = t.mock.method(console, 'error', () => {});
-
-	const stream = openServerLog(path.join(blocker, 'logs', 'server.log'));
-
-	assert.strictEqual(stream, null);
-	assert.strictEqual(errors.mock.callCount(), 1);
-	assert.match(errors.mock.calls[0].arguments[0], /cannot write/);
-});
-
-test('attachServerLog: records the log path once the file is open', async () => {
-	const logFile = path.join(tmpDir(), 'server.log');
-	const diagnostics = { logFile: null };
-
-	const stream = attachServerLog(logFile, diagnostics);
-	await once(stream, 'open');
-
+	const log = fs.readFileSync(logFile, 'utf8');
+	assert.match(log, /after ready on stdout/);
+	assert.match(log, /after ready on stderr/);
+	assert.match(log, /stdin closed - goodbye/);
 	assert.strictEqual(diagnostics.logFile, logFile);
-	stream.end();
-	await finished(stream);
+	const closed = await Promise.race([
+		diagnostics.logDone.then(() => true),
+		new Promise((resolve) => setImmediate(() => resolve(false))),
+	]);
+	assert.ok(closed, 'the log file is still open after the server stopped');
 });
 
-test('attachServerLog: clears the log path when the file fails to open', async (t) => {
-	t.mock.method(console, 'error', () => {});
-	// A directory cannot be opened for writing; the error comes asynchronously.
-	const logFile = tmpDir();
-	const diagnostics = { logFile: null };
+test('startServer: without --verbose and outside CI there is no log file', async (t) => {
+	const ci = process.env.CI;
+	delete process.env.CI;
+	t.after(() => {
+		if (ci !== undefined) process.env.CI = ci;
+	});
 
-	const stream = attachServerLog(logFile, diagnostics);
-	await once(stream, 'error');
+	const { server, diagnostics, logFile } = await startFakeServer(t, {});
+
+	await stopServer({ server });
 
 	assert.strictEqual(diagnostics.logFile, null);
-});
-
-test('attachServerLog: leaves the log path empty when the file cannot be set up', (t) => {
-	t.mock.method(console, 'error', () => {});
-	const blocker = path.join(tmpDir(), 'not-a-directory');
-	fs.writeFileSync(blocker, '');
-	const diagnostics = { logFile: null };
-
-	const stream = attachServerLog(path.join(blocker, 'logs', 'server.log'), diagnostics);
-
-	assert.strictEqual(stream, null);
-	assert.strictEqual(diagnostics.logFile, null);
-});
-
-test('openServerLog: replaces the log of an earlier run', async () => {
-	const logFile = path.join(tmpDir(), 'server.log');
-	fs.writeFileSync(logFile, 'earlier run, longer than the new one\n');
-
-	const stream = openServerLog(logFile);
-	stream.end('new run\n');
-	await finished(stream);
-
-	assert.strictEqual(fs.readFileSync(logFile, 'utf8'), 'new run\n');
+	assert.ok(!fs.existsSync(logFile));
 });

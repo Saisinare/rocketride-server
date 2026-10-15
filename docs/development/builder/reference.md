@@ -95,7 +95,7 @@ Not all modules support all commands. Run `./builder --help` for the full list.
 | Directory | Contents |
 | --------- | -------- |
 | `build/` | Temporary build artifacts |
-| `build/test-logs/` | Output of the test servers, one `<suite>-server.log` per suite. CI uploads it as an artifact when tests fail |
+| `build/test-logs/` | Output of the test servers, one `<suite>-server.log` per suite, written with `--verbose` and always in CI. Each run replaces the file of the previous one. CI uploads it as an artifact when tests fail |
 | `dist/` | Final distributable outputs |
 | `dist/server/` | Engine executable and runtime |
 | `dist/clients/` | Client library packages |
