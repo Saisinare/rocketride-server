@@ -53,7 +53,6 @@ const {
 	saveSourceHash,
 	setState,
 	parseServerAddress,
-	testServerLogFile,
 } = require('../../../scripts/lib');
 
 const PACKAGE_DIR = path.join(__dirname, '..');
@@ -204,7 +203,8 @@ function makeStartTestServerAction(options = {}) {
 			const result = await startServer({
 				script: 'ai/eaas.py',
 				trace: options.trace,
-				logFile: testServerLogFile('client-python'),
+				logName: 'client-python',
+				verbose: ctx.options?.verbose,
 				basePort: 20000,
 				// CI for fork PRs doesn't have repo secrets; the integration tests
 				// expect a shared API key between server and client. Default to the
