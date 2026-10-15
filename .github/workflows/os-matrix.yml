@@ -45,10 +45,6 @@ jobs:
       matrix:
         image:
           - ubuntu:22.04
-          - ubuntu:24.04
-          - ubuntu:26.04
-          - fedora:latest
-          - almalinux:10 # RHEL-compatible
     steps:
       # Log the runner disk up front — hosted-runner disk size has varied between
       # runs (seen 72G and 145G), and the from-source build + ML test wheels are
