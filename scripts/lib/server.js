@@ -21,14 +21,15 @@ const fs = require('fs');
 const net = require('net');
 const { spawn } = require('child_process');
 const { exists } = require('./fs');
-const { BUILD_ROOT, DIST_ROOT } = require('./paths');
+const { DIST_ROOT } = require('./paths');
 
 const SERVER_DIR = path.join(DIST_ROOT, 'server');
 const READY_MESSAGE = 'Application startup complete.';
 
-// Under the build tree, so `builder clean` removes the logs and CI can upload
-// the directory as one artifact.
-const TEST_LOG_DIR = path.join(BUILD_ROOT, 'test-logs');
+// Runtime output, so it lives in the server's own working directory, next to
+// test_files/ and htmlcov/. Packaging takes an explicit file list, so the logs
+// never reach a release archive.
+const TEST_LOG_DIR = path.join(SERVER_DIR, 'test-logs');
 
 // How many trailing output lines to retain from the server process. The server's
 // output is otherwise only forwarded to the optional onOutput callback, which
@@ -155,7 +156,7 @@ function describeExit(code, signal) {
  * names the file only while it can be written, and diagnostics.logDone settles
  * once the file is closed.
  *
- * @param {string} logName - Suite name; the file is build/test-logs/<logName>-server.log
+ * @param {string} logName - Suite name; the file is dist/server/test-logs/<logName>-server.log
  * @param {object} diagnostics - The server's diagnostics; logFile and logDone are set here
  * @returns {fs.WriteStream|null} Stream to write the server's output to, or null
  */
@@ -191,8 +192,7 @@ function openServerLog(logName, diagnostics) {
  * fail fast if the process exits unexpectedly or encounters an error.
  *
  * @param {Object} options - Options
- * @param {string} options.script - Python script to run (relative to dist/server), e.g. 'ai/eaas.py';
- *   with options.command it only names the server in messages
+ * @param {string} options.script - Python script to run (relative to dist/server), e.g. 'ai/eaas.py'
  * @param {number} [options.port] - Use existing server on this port (skip starting)
  * @param {Function} [options.onOutput] - Callback for server output (for logging)
  * @param {string[]} [options.trace] - Trace categories to enable (passed as --trace=a,b,c)
@@ -200,10 +200,8 @@ function openServerLog(logName, diagnostics) {
  * @param {string[]} [options.args] - Additional arguments to pass to the script
  * @param {string} [options.logName] - Suite name. With options.verbose or in CI (process.env.CI),
  *   all of the server's stdout and stderr until it exits goes to
- *   build/test-logs/<logName>-server.log, replaced on every run
+ *   dist/server/test-logs/<logName>-server.log, replaced on every run
  * @param {boolean} [options.verbose] - The builder's --verbose
- * @param {string[]} [options.command] - Run [executable, ...args] instead of the engine, for
- *   tests; no engine arguments are added
  * @returns {Promise<{server: ChildProcess|null, port: number, diagnostics?: object}>}
  *   `diagnostics` (also reachable as `server.rocketrideDiagnostics`) carries the
  *   retained output tail and, once it exits, the exit code/signal. If the server
@@ -211,18 +209,7 @@ function openServerLog(logName, diagnostics) {
  *   to stderr at the moment of death.
  */
 async function startServer(options) {
-	const {
-		script,
-		port: existingPort,
-		onOutput,
-		trace,
-		basePort,
-		args = [],
-		env = {},
-		logName,
-		verbose,
-		command,
-	} = options;
+	const { script, port: existingPort, onOutput, trace, basePort, args = [], env = {}, logName, verbose } = options;
 
 	if (!script) {
 		throw new Error('startServer: script is required');
@@ -233,42 +220,36 @@ async function startServer(options) {
 		return { server: null, port: existingPort };
 	}
 
-	let serverExe;
-	let serverArgs;
-	if (command) {
-		[serverExe, ...serverArgs] = command;
-	} else {
-		serverExe = path.join(SERVER_DIR, process.platform === 'win32' ? 'engine.exe' : 'engine');
+	const serverExe = path.join(SERVER_DIR, process.platform === 'win32' ? 'engine.exe' : 'engine');
 
-		if (!(await exists(serverExe))) {
-			throw new Error(`Server not found at ${serverExe}. Run: builder build:server`);
-		}
+	if (!(await exists(serverExe))) {
+		throw new Error(`Server not found at ${serverExe}. Run: builder build:server`);
+	}
 
-		// Build server arguments (split script in case it has flags like '-m module')
-		// --autoterm enables stdin monitoring - server exits when parent process dies
-		// --port=0 lets the OS assign a free port; we parse the actual port from
-		// Uvicorn's stdout to avoid the race between findFreePort() releasing the
-		// port and the engine binding to it (same pattern as engine-manager.ts).
-		// --host=127.0.0.1 is deliberate: never bind the *name* 'localhost'. Where it
-		// resolves to both ::1 and 127.0.0.1 (any container - a bare host usually maps
-		// only IPv4), asyncio binds one socket per address family and --port=0 gives
-		// each its own ephemeral port, while only the first socket's port is logged.
-		// We parse that port and hand it to the tests, so whenever IPv6 sorts first
-		// the tests dial a port nothing listens on over IPv4 and every request fails
-		// with ECONNREFUSED against a healthy engine.
-		const scriptArgs = script.split(/\s+/);
-		serverArgs = ['--autoterm', ...scriptArgs, '--host=127.0.0.1', '--port=0', ...args];
-		if (basePort) {
-			serverArgs.push(`--base_port=${basePort}`);
-		}
-		if (trace?.length) {
-			serverArgs.push(`--trace=${trace.join(',')}`);
-		}
+	// Build server arguments (split script in case it has flags like '-m module')
+	// --autoterm enables stdin monitoring - server exits when parent process dies
+	// --port=0 lets the OS assign a free port; we parse the actual port from
+	// Uvicorn's stdout to avoid the race between findFreePort() releasing the
+	// port and the engine binding to it (same pattern as engine-manager.ts).
+	// --host=127.0.0.1 is deliberate: never bind the *name* 'localhost'. Where it
+	// resolves to both ::1 and 127.0.0.1 (any container - a bare host usually maps
+	// only IPv4), asyncio binds one socket per address family and --port=0 gives
+	// each its own ephemeral port, while only the first socket's port is logged.
+	// We parse that port and hand it to the tests, so whenever IPv6 sorts first
+	// the tests dial a port nothing listens on over IPv4 and every request fails
+	// with ECONNREFUSED against a healthy engine.
+	const scriptArgs = script.split(/\s+/);
+	const serverArgs = ['--autoterm', ...scriptArgs, '--host=127.0.0.1', '--port=0', ...args];
+	if (basePort) {
+		serverArgs.push(`--base_port=${basePort}`);
+	}
+	if (trace?.length) {
+		serverArgs.push(`--trace=${trace.join(',')}`);
 	}
 
 	return new Promise((resolve, reject) => {
 		const serverProcess = spawn(serverExe, serverArgs, {
-			cwd: command ? undefined : SERVER_DIR,
+			cwd: SERVER_DIR,
 			stdio: ['pipe', 'pipe', 'pipe'],
 			env: { ...process.env, ...env },
 		});

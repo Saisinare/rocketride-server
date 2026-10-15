@@ -337,7 +337,7 @@ jobs:
         with:
           name: test-server-logs-${{ matrix.platform }}
           retention-days: 7
-          path: ${{ github.workspace }}/build/test-logs/
+          path: ${{ github.workspace }}/dist/server/test-logs/
           if-no-files-found: ignore
 
       - name: Perform CodeQL Analysis

@@ -159,7 +159,7 @@ jobs:
           # matrix.image contains ':', which an artifact name cannot
           name: test-server-logs-${{ strategy.job-index }}
           retention-days: 7
-          path: build/test-logs/
+          path: dist/server/test-logs/
           if-no-files-found: ignore
 
       # Runs only when the tests failed. memory.events.oom_kill is a cumulative

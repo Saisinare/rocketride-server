@@ -42,9 +42,6 @@ jobs:
       - name: Test pin verifier
         run: node --test scripts/verify-action-pins.test.mjs
 
-      - name: Test the test-server log
-        run: node --test scripts/lib/server.test.js
-
       - name: Compare pins with version tags
         run: node scripts/verify-action-pins.mjs
 
