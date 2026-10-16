@@ -36,7 +36,8 @@ import type { ReactNode } from 'react';
 import { useShellConnection, ConnectionManager, ConfirmDialog, useWorkspace } from 'shell';
 import type { ShellNotification } from 'shell';
 import { getDocs } from '../docs';
-import { SidebarView } from 'shared/modules/sidebar/SidebarView';
+import { SidebarChrome } from 'shared/tools/core/chrome/SidebarChrome';
+import { buildBuiltinSidebarItems } from './sidebarBuiltinTools';
 import { BxExport, useSidebarCollapsed, useSidebarActiveView } from 'shell';
 import { foldTaskEvent } from 'shared/modules/sidebar/taskFold';
 import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, SidebarMode, AgentSidebar, AppBuilderSidebar, AppListItem, ToolTabsSidebar } from 'shared/modules/sidebar/types';
@@ -733,7 +734,36 @@ const SidebarProvider: React.FC = () => {
 	return (
 		<>
 			<SidebarCollapsedGate>
-				<SidebarView connection={connection} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} activeFilePath={activeFilePath} onNavigate={handleNavigate} onOpenFile={handleOpenFile} onFileManage={handleFileManage} fileActions={[{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }]} onSourceAction={handleSourceAction} onOpenUnknownTask={handleOpenUnknownTask} onRefresh={refresh} appBuilder={appBuilder} agent={agent} showModeStrip hideModeStrip={!!shellView} sidebarMode={effectiveMode} onSidebarModeChange={handleSidebarModeChange} onShowIntro={handleShowIntro} onShowDesktop={handleShowDesktop} toolTabs={toolTabs} tabOrder={tabOrder} onReorderTabs={setTabOrder} />
+				<SidebarChrome
+					items={buildBuiltinSidebarItems({
+						agent: { agent, onShowIntro: handleShowIntro },
+						appdev: { appBuilder, onShowIntro: handleShowIntro, onShowDesktop: handleShowDesktop },
+						nodes: { onShowIntro: handleShowIntro },
+						pipelines: {
+							isConnected: connection.state === 'connected',
+							entries,
+							activeTasks,
+							unknownTasks,
+							activeFilePath,
+							onNavigate: handleNavigate,
+							onOpenFile: handleOpenFile,
+							onFileManage: handleFileManage,
+							fileActions: [{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }],
+							onSourceAction: handleSourceAction,
+							onOpenUnknownTask: handleOpenUnknownTask,
+							onRefresh: refresh,
+							onShowIntro: handleShowIntro,
+						},
+					})}
+					fallbackId="pipelines"
+					showModeStrip
+					hideModeStrip={!!shellView}
+					sidebarMode={effectiveMode}
+					onSidebarModeChange={handleSidebarModeChange}
+					toolTabs={toolTabs}
+					tabOrder={tabOrder}
+					onReorderTabs={setTabOrder}
+				/>
 			</SidebarCollapsedGate>
 			{confirmState && <ConfirmDialog title={confirmState.title} message={confirmState.message} confirmLabel={confirmState.confirmLabel} cancelLabel="Cancel" onConfirm={() => handleConfirmResult(true)} onCancel={() => handleConfirmResult(false)} />}
 			{actionError && <ConfirmDialog title="Pipeline Error" message={actionError} confirmLabel="OK" onConfirm={() => setActionError(null)} onCancel={() => setActionError(null)} />}

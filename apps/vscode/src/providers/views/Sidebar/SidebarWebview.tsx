@@ -28,7 +28,8 @@ import 'shell/themes/rocketride-default.css';
 import '../../../themes/rocketride-vscode.css';
 import './sidebar.css';
 
-import { SidebarView } from 'shared/modules/sidebar/SidebarView';
+import { SidebarChrome } from 'shared/tools/core/chrome/SidebarChrome';
+import { buildBuiltinSidebarItems } from './builtinTools';
 import { BxUser, BxCog, BxExport, BxLock, BxRocket } from 'shell';
 import { foldTaskEvent } from 'shared/modules/sidebar/taskFold';
 import { SidebarFooter } from 'shell';
@@ -42,7 +43,7 @@ import type { IPipelineDiscovery, ServiceClassInfo } from 'shared/tools/pipeline
 import type { IToolWorkspaceFs } from 'shared/tools/core';
 import { DevToolSidebarMount } from './DevToolSidebarMount';
 import type { DevToolHostInfo } from './DevToolSidebarMount';
-import { ToolPanel } from 'shared/modules/sidebar/SidebarView';
+import { ToolPanel } from 'shared/tools/core/chrome/SidebarChrome';
 
 // =============================================================================
 // TYPES — messages between extension host and webview
@@ -783,7 +784,27 @@ const SidebarViewWebview: React.FC = () => {
 	// No headerSlot: the VS Code host has no home-app destination, so it injects no
 	// host-specific top nav. The "Home" button is a SaaS-shell concept owned by the
 	// web host (rocket-ui), intentionally absent from shared / this extension.
-	return <SidebarView connection={connection} isSubscribed={subscribed} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} onNavigate={onNavigate} onOpenFile={onOpenFile} onSourceAction={onSourceAction} onRefresh={onRefresh} footerSlot={footerSlot} onOpenUnknownTask={onOpenUnknownTask} appBuilder={{ apps, onNewApp, onOpenApp }} sidebarMode={sidebarMode} onSidebarModeChange={onSidebarModeChange} onShowIntro={onShowIntro} toolTabs={{ tools, available: availableTools, onOpenTool, onFocusTool, onShowTool, onRemoveTool, renderToolPanel }} tabOrder={tabOrder} onReorderTabs={onReorderTabs} />;
+	// The builtin tools come from the host's composition root (builtinTools)
+	// — this file stays plumbing; the chrome knows nothing about any tool.
+	const items = buildBuiltinSidebarItems({
+		appdev: { appBuilder: { apps, onNewApp, onOpenApp }, onShowIntro },
+		nodes: { onShowIntro },
+		pipelines: {
+			isConnected: connection.state === 'connected',
+			isSubscribed: subscribed,
+			entries,
+			activeTasks,
+			unknownTasks,
+			onNavigate,
+			onOpenFile,
+			onSourceAction,
+			onRefresh,
+			onOpenUnknownTask,
+			onShowIntro,
+		},
+	});
+
+	return <SidebarChrome items={items} fallbackId="pipelines" footerSlot={footerSlot} sidebarMode={sidebarMode} onSidebarModeChange={onSidebarModeChange} toolTabs={{ tools, available: availableTools, onOpenTool, onFocusTool, onShowTool, onRemoveTool, renderToolPanel }} tabOrder={tabOrder} onReorderTabs={onReorderTabs} />;
 };
 
 export default SidebarViewWebview;
