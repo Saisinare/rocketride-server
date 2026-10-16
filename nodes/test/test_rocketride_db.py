@@ -40,6 +40,8 @@ import json
 import sys
 import types
 
+from ._store_base_stubs import store_base_stubs
+
 from pathlib import Path
 
 import pytest
@@ -537,6 +539,11 @@ def _vector_store_cls(monkeypatch):
             self.threshold_search = 0.5
 
     store_mod.DocumentStoreBase = _StubDocumentStoreBase
+    # rocketride_vector's IGlobal / IInstance sit on the store base since #2587;
+    # these tests drive the driver Store directly, so only the names matter.
+    bases = store_base_stubs()
+    store_mod.StoreGlobalBase = bases.StoreGlobalBase
+    store_mod.StoreInstanceBase = bases.StoreInstanceBase
     config = types.ModuleType('ai.common.config')
     config.Config = types.SimpleNamespace(getNodeConfig=lambda provider, connConfig: dict(connConfig))
     transform = types.ModuleType('ai.common.transform')
@@ -594,7 +601,7 @@ class TestRocketrideVectorStore:
         glb.glb = types.SimpleNamespace(
             logicalType='rocketride_vector', connConfig={'collection': 'rr_vec', 'scope': 'team'}
         )
-        glb.validateConfig()
+        glb._probe_connection(glb.glb.connConfig)
         assert warnings == [] and connects == []
 
     def test_save_time_probe_still_checks_the_scope(self, monkeypatch):
@@ -607,7 +614,7 @@ class TestRocketrideVectorStore:
         glb.glb = types.SimpleNamespace(
             logicalType='rocketride_vector', connConfig={'collection': 'rr_vec', 'scope': 'org', 'target': 't-1'}
         )
-        glb.validateConfig()
+        glb._probe_connection(glb.glb.connConfig)
         assert len(warnings) == 1 and 'the org scope takes no target' in warnings[0]
 
     def test_connects_via_resolved_dsn(self, monkeypatch):

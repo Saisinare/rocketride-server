@@ -53,6 +53,8 @@ import sys
 import urllib.parse
 import types
 
+from ._store_base_stubs import store_base_stubs
+
 from pathlib import Path
 
 import pytest
@@ -181,6 +183,8 @@ def _build_rr_env(monkeypatch):
                 'maxChunkId',
             ):
                 setattr(self, name, kw.get(name))
+            # The drivers page with these since #2631; the stand-in must carry them too.
+            self.offset = kw.get('offset', 0)
             self.limit = kw.get('limit', 10)
 
     class _QuestionText(str):
@@ -222,7 +226,12 @@ def _build_rr_env(monkeypatch):
                 self._createCollection(len(documents[0].embedding))
             return True
 
+    # rocketride_vector's IGlobal / IInstance sit on the store base since #2587;
+    # these tests drive the driver Store directly, so only the names matter.
+    bases = store_base_stubs()
     store_mod.DocumentStoreBase = _StubDocumentStoreBase
+    store_mod.StoreGlobalBase = bases.StoreGlobalBase
+    store_mod.StoreInstanceBase = bases.StoreInstanceBase
 
     monkeypatch.setitem(sys.modules, 'ai', ai_pkg)
     monkeypatch.setitem(sys.modules, 'ai.common', common_pkg)

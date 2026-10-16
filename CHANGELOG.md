@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — since 2026-09-22
 
 ### Added
+- **nodes**: `rocketride_vector` can expose its store to agents and apps as tools (agents call `<node id>.search`, apps call `client.tool` with the tool name and the node id): `search`, `objdir`, `get` and `stats` when the new "Expose as tools" setting is on, `upsert` and `delete` only when "Allow writes through tools" is on as well. Both are off by default, since the table lives in the team's managed database. The node now sits on the shared store base classes instead of a copy of their lane code (#2587)
 - **docker**: releases publish `rocketride-node`, an image that runs one pipeline task (engine-base plus a warmed wheel cache), and `rocketride-engine-base`; both cosign-signed, the node image checked before signing and never tagged `latest`.
 
 ### Changed
@@ -15,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **ai**: Whisper no longer falls silently back to the CPU on a GPU host: the requirements pin `ctranslate2>=4.8,<5` so a stale engine cache cannot keep the 4.7.x build the GPU probe refuses, the probe runs a real transcription on the GPU in a child process before the model is declared GPU-ready, and a fallback is logged at error level with its cause and stamped as `device_fallback` in the model metadata. The first GPU load in a process runs the `tiny` model once when its weights are local (fetched beforehand when the hub is reachable), which adds a few seconds; without them the probe stops at the storage-view check, as before, and the GPU is still used; a probe that runs out of GPU memory is reported but not remembered (#2498)
+- **nodes**: the `objdir` tool of `store_postgres` and `rocketride_vector` no longer lists the store's internal `schema` control row (it appeared as a `None` key) or soft-deleted documents (#2587)
 - **ai**: the shared embedding factory imports providers from the shipped `nodes` package (#2587).
 - **nodes**: PostgreSQL vector stores accept document metadata fields outside the SQL schema and roll back failed chunk replacements, preserving existing documents (#2587).
 
