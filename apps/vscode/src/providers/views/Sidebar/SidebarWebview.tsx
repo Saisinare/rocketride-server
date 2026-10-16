@@ -35,7 +35,10 @@ import { SidebarFooter } from 'shell';
 import type { SidebarFooterMenuItem } from 'shell';
 import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, AppListItem, SidebarMode, ToolTab } from 'shared/modules/sidebar/types';
 import { useMessaging } from '../hooks/useMessaging';
+import { ConnectionManager } from 'shell';
 import { startWorkspaceAppDiscovery } from 'shared/tools/appdev';
+import { startPipelineDiscovery } from 'shared/tools/pipelines';
+import type { IPipelineDiscovery, ServiceClassInfo } from 'shared/tools/pipelines';
 import type { IToolWorkspaceFs } from 'shared/tools/core';
 import { DevToolSidebarMount } from './DevToolSidebarMount';
 import type { DevToolHostInfo } from './DevToolSidebarMount';
@@ -44,12 +47,6 @@ import { ToolPanel } from 'shared/modules/sidebar/SidebarView';
 // =============================================================================
 // TYPES — messages between extension host and webview
 // =============================================================================
-
-interface HostProjectEntry {
-	path: string;
-	projectId?: string;
-	sources?: { id: string; name: string; provider?: string }[];
-}
 
 interface TaskEventBody {
 	action: 'begin' | 'end' | 'restart' | 'running';
@@ -62,7 +59,7 @@ interface TaskEventBody {
 	tasks?: { id: string; name: string; projectId: string; source: string; runKind?: string }[];
 }
 
-type OutgoingMessage = { type: 'view:ready' } | { type: 'connect' } | { type: 'disconnect' } | { type: 'command'; command: string; args?: unknown[] } | { type: 'openFile'; fsPath: string } | { type: 'runPipeline'; fsPath: string; sourceId?: string } | { type: 'stopPipeline'; projectId: string; sourceId: string } | { type: 'refresh' } | { type: 'openUnknownTask'; projectId: string; sourceId: string; displayName: string } | { type: 'setDevelopmentMode'; mode: string } | { type: 'setDeployTargetMode'; mode: string | null } | { type: 'openApp'; appId: string } | { type: 'setSidebarMode'; mode: SidebarMode } | { type: 'openTool'; toolId: string } | { type: 'focusTool'; toolId: string } | { type: 'removeTool'; toolId: string } | { type: 'showToolReadme'; toolId: string } | { type: 'reorderTabs'; order: string[] } | { type: 'devtool:peer'; appId: string; payload: unknown } | { type: 'openToolDocument'; appId: string; docKey: string; title: string } | { type: 'closeToolDocument'; appId: string; docKey: string } | { type: 'svc:fs'; id: number; method: 'findFiles'; include: string; exclude?: string } | { type: 'svc:fs'; id: number; method: 'readText'; path: string } | { type: 'svc:fs'; id: number; method: 'readBase64'; path: string; maxBytes: number } | { type: 'svc:fs.watch'; id: number; globs: string[] } | { type: 'svc:fs.unwatch'; id: number };
+type OutgoingMessage = { type: 'view:ready' } | { type: 'connect' } | { type: 'disconnect' } | { type: 'command'; command: string; args?: unknown[] } | { type: 'openFile'; fsPath: string } | { type: 'runPipeline'; fsPath: string; sourceId?: string } | { type: 'stopPipeline'; projectId: string; sourceId: string } | { type: 'openUnknownTask'; projectId: string; sourceId: string; displayName: string } | { type: 'setDevelopmentMode'; mode: string } | { type: 'setDeployTargetMode'; mode: string | null } | { type: 'openApp'; appId: string } | { type: 'setSidebarMode'; mode: SidebarMode } | { type: 'openTool'; toolId: string } | { type: 'focusTool'; toolId: string } | { type: 'removeTool'; toolId: string } | { type: 'showToolReadme'; toolId: string } | { type: 'reorderTabs'; order: string[] } | { type: 'devtool:peer'; appId: string; payload: unknown } | { type: 'openToolDocument'; appId: string; docKey: string; title: string } | { type: 'closeToolDocument'; appId: string; docKey: string } | { type: 'svc:fs'; id: number; method: 'findFiles'; include: string; exclude?: string } | { type: 'svc:fs'; id: number; method: 'workspaceRoots' } | { type: 'svc:fs'; id: number; method: 'readText'; path: string } | { type: 'svc:fs'; id: number; method: 'readBase64'; path: string; maxBytes: number } | { type: 'svc:fs.watch'; id: number; globs: string[] } | { type: 'svc:fs.unwatch'; id: number };
 
 interface DashboardTaskDTO {
 	id: string;
@@ -91,9 +88,6 @@ type IncomingMessage =
 				deployProgressLogLine?: string;
 				// Shared auth
 				cloudConnected?: boolean;
-				// Pipeline data
-				entries: HostProjectEntry[];
-				unknownTasks: UnknownTask[];
 				/** Host-persisted sidebar mode (workspaceState). */
 				sidebarMode?: SidebarMode;
 				/** Host-persisted strip tab order (workspaceState). */
@@ -104,7 +98,6 @@ type IncomingMessage =
 	// the dev-tool catalog, and the devToolSidebar connection facts — posted
 	// separately so these slow lookups can never delay or drop the sync half.
 	| { type: 'extrasUpdate'; userName?: string; userEmail?: string; tools: ToolTab[]; availableTools: ToolTab[]; devToolHost: DevToolHostInfo | null }
-	| { type: 'entriesUpdate'; entries: HostProjectEntry[] }
 	| { type: 'toolsUpdate'; tools: ToolTab[]; available: ToolTab[] }
 	| { type: 'stripSeed'; tools: ToolTab[]; tabOrder: string[]; sidebarMode: SidebarMode }
 	| { type: 'devtool:activeDoc'; appId: string | null; docKey: string | null }
@@ -112,9 +105,7 @@ type IncomingMessage =
 	| { type: 'svc:fs:result'; id: number; ok: boolean; result?: unknown; error?: string }
 	| { type: 'svc:fs:event'; id: number; path: string }
 	| { type: 'modeUpdate'; mode: SidebarMode }
-	| { type: 'taskEvent'; event: TaskEventBody }
-	| { type: 'statusUpdate'; projectId: string; sourceId: string; errors: string[]; warnings: string[] }
-	| { type: 'dashboardSnapshot'; tasks: DashboardTaskDTO[] };
+	| { type: 'statusUpdate'; projectId: string; sourceId: string; errors: string[]; warnings: string[] };
 
 // =============================================================================
 // COMPONENT
@@ -248,8 +239,8 @@ const SidebarViewWebview: React.FC = () => {
 						state: msg.data.connectionState as ConnectionInfo['state'],
 						mode: msg.data.connectionMode,
 					});
-					setEntries(msg.data.entries);
-					if (msg.data.unknownTasks) setUnknownTasks(msg.data.unknownTasks);
+					// No entries here: the PIPELINES CONTROLLER in this webview
+					// discovers them (shared tools/pipelines over svc:fs).
 					// Shared auth
 					if (msg.data.cloudConnected !== undefined) setCloudSignedIn(msg.data.cloudConnected);
 
@@ -283,10 +274,6 @@ const SidebarViewWebview: React.FC = () => {
 						sidebarModeSeededRef.current = true;
 						setSidebarMode(msg.data.sidebarMode);
 					}
-					break;
-
-				case 'entriesUpdate':
-					setEntries(msg.entries);
 					break;
 
 				case 'toolsUpdate':
@@ -360,10 +347,6 @@ const SidebarViewWebview: React.FC = () => {
 					setSidebarMode(msg.mode);
 					break;
 
-				case 'taskEvent':
-					handleTaskEvent(msg.event);
-					break;
-
 				case 'statusUpdate': {
 					// Update errors/warnings for a specific source. Advance the
 					// sync refs FIRST (same rule as handleTaskEvent): a task event
@@ -377,37 +360,38 @@ const SidebarViewWebview: React.FC = () => {
 					break;
 				}
 
-				case 'dashboardSnapshot': {
-					// Seed active tasks + unknown tasks from dashboard (initial load)
-					const taskMap = new Map<string, ActiveTaskState>();
-					const unknown: UnknownTask[] = [];
-					for (const t of msg.tasks) {
-						if (t.completed) continue;
-						// Same classification the shared fold applies on every event
-						// path: deploy runs never seed the dev sidebar.
-						if (t.runKind === 'deploy') continue;
-						const k = `${t.projectId}.${t.source}`;
-						// Preserve accumulated diagnostics for a task that was
-						// already tracked — the snapshot confirms it is still
-						// running, it does not reset its indicators (same rule as
-						// the shared fold's bulk 'running' rebuild).
-						const prev = activeTasksRef.current.get(k);
-						taskMap.set(k, { running: true, errors: prev?.errors ?? [], warnings: prev?.warnings ?? [] });
-						if (!isKnownTask(t.projectId, t.source)) {
-							unknown.push({ projectId: t.projectId, sourceId: t.source, displayName: t.name || t.source, projectLabel: t.projectId.substring(0, 8) });
-						}
-					}
-					// Advance the sync refs FIRST (same rule as handleTaskEvent)
-					// so an event in the same tick folds from the seeded state.
-					activeTasksRef.current = taskMap;
-					unknownTasksRef.current = unknown;
-					setActiveTasks(taskMap);
-					setUnknownTasks(unknown);
-					break;
-				}
 			}
 		},
 	});
+
+	/** Seeds active + unknown tasks from a dashboard snapshot (initial load,
+	 *  fetched on THIS webview's own engine client). */
+	const seedFromDashboard = useCallback((tasks: DashboardTaskDTO[]): void => {
+		const taskMap = new Map<string, ActiveTaskState>();
+		const unknown: UnknownTask[] = [];
+		for (const t of tasks) {
+			if (t.completed) continue;
+			// Same classification the shared fold applies on every event
+			// path: deploy runs never seed the dev sidebar.
+			if (t.runKind === 'deploy') continue;
+			const k = `${t.projectId}.${t.source}`;
+			// Preserve accumulated diagnostics for a task that was already
+			// tracked — the snapshot confirms it is still running, it does
+			// not reset its indicators (same rule as the shared fold's bulk
+			// 'running' rebuild).
+			const prev = activeTasksRef.current.get(k);
+			taskMap.set(k, { running: true, errors: prev?.errors ?? [], warnings: prev?.warnings ?? [] });
+			if (!isKnownTask(t.projectId, t.source)) {
+				unknown.push({ projectId: t.projectId, sourceId: t.source, displayName: t.name || t.source, projectLabel: t.projectId.substring(0, 8) });
+			}
+		}
+		// Advance the sync refs FIRST (same rule as handleTaskEvent) so an
+		// event in the same tick folds from the seeded state.
+		activeTasksRef.current = taskMap;
+		unknownTasksRef.current = unknown;
+		setActiveTasks(taskMap);
+		setUnknownTasks(unknown);
+	}, [isKnownTask]);
 
 	// ── Workspace-FS capability + the AppDev controller ─────────────────────
 	// The IToolWorkspaceFs the shared tool code runs against: requests ride
@@ -422,6 +406,8 @@ const SidebarViewWebview: React.FC = () => {
 		return {
 			findFiles: (include, exclude) =>
 				request({ type: 'svc:fs', id: ++svcSeqRef.current, method: 'findFiles', include, ...(exclude !== undefined ? { exclude } : {}) }) as Promise<string[]>,
+			workspaceRoots: () =>
+				request({ type: 'svc:fs', id: ++svcSeqRef.current, method: 'workspaceRoots' }) as Promise<string[]>,
 			readTextFile: (path) =>
 				request({ type: 'svc:fs', id: ++svcSeqRef.current, method: 'readText', path }) as Promise<string>,
 			readFileBase64: (path, maxBytes) =>
@@ -443,6 +429,66 @@ const SidebarViewWebview: React.FC = () => {
 	// host serves globs and bytes; what an .rrapp binding IS lives in the
 	// tool.
 	useEffect(() => startWorkspaceAppDiscovery(workspaceFs, setApps), [workspaceFs]);
+
+	// ── This webview's OWN engine connection ────────────────────────────────
+	// The controllers talk to the engine directly (services catalog, task
+	// events, dashboard) — no extension-host relay. Connect the realm's
+	// shell singleton from the host-delivered facts; reconnects follow a
+	// changed engine URL automatically (initialize is idempotent per URI).
+	useEffect(() => {
+		if (!devToolHost) return;
+		const cm = ConnectionManager.getInstance();
+		cm.initialize({ uri: devToolHost.engineHttpUrl });
+		if (!cm.isConnected()) void cm.connect(devToolHost.authToken || undefined).catch(() => { /* retried on the next facts push */ });
+	}, [devToolHost]);
+
+	// ── The PIPELINES controller ────────────────────────────────────────────
+	// Discovery runs HERE (shared tools/pipelines over svc:fs); the service
+	// catalog comes from this realm's own client and re-derives source rows
+	// when it lands/changes (no file reread needed for that path).
+	const pipelinesRef = useRef<IPipelineDiscovery | null>(null);
+	useEffect(() => {
+		const cm = ConnectionManager.getInstance();
+		const discovery = startPipelineDiscovery(
+			workspaceFs,
+			{ getServices: () => cm.getCachedServices()?.services as Record<string, ServiceClassInfo> | undefined },
+			setEntries,
+		);
+		pipelinesRef.current = discovery;
+		const offServices = cm.on('shell:servicesUpdated', () => discovery.refresh({ reparse: false }));
+		return () => {
+			offServices();
+			pipelinesRef.current = null;
+			discovery.stop();
+		};
+	}, [workspaceFs]);
+
+	// ── Task feed on the controller's own client ────────────────────────────
+	// Dashboard seed + live apaevt_task folding, straight from the engine —
+	// the extension host no longer forwards either. (Per-task error/warning
+	// STATUS still arrives as host messages: it reads the canvas editor's
+	// diagnostics cache, which migrates with that feature.)
+	useEffect(() => {
+		const cm = ConnectionManager.getInstance();
+		const seed = (): void => {
+			const client = cm.getClient();
+			if (!client) return;
+			client.addMonitor({ token: '*' }, ['task']).catch(() => { /* feed degrades to dashboard-only */ });
+			client.getDashboard().then((dashboard: { tasks?: DashboardTaskDTO[] } | null) => {
+				if (dashboard?.tasks) seedFromDashboard(dashboard.tasks);
+			}).catch(() => { /* no snapshot — events still fold */ });
+		};
+		const offEvent = cm.on('shell:event', ({ event }) => {
+			const e = event as { event?: string; body?: unknown };
+			if (e?.event === 'apaevt_task' && e.body) handleTaskEvent(e.body as TaskEventBody);
+		});
+		const offConnected = cm.on('shell:connected', seed);
+		if (cm.isConnected()) seed();
+		return () => {
+			offEvent();
+			offConnected();
+		};
+	}, [handleTaskEvent, seedFromDashboard]);
 
 	// ── Callbacks for SidebarView ────────────────────────────────────────────
 
@@ -479,8 +525,8 @@ const SidebarViewWebview: React.FC = () => {
 	);
 
 	const onRefresh = useCallback(() => {
-		sendMessage({ type: 'refresh' });
-	}, [sendMessage]);
+		pipelinesRef.current?.refresh();
+	}, []);
 
 	const onOpenDocs = useCallback(() => {
 		sendMessage({ type: 'command', command: 'rocketride.sidebar.documentation.open' });

@@ -44,6 +44,9 @@ export const hostWorkspaceFs: IToolWorkspaceFs = {
 		const uris = await vscode.workspace.findFiles(include, exclude ?? null);
 		return uris.map((uri) => uri.fsPath);
 	},
+	async workspaceRoots() {
+		return (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+	},
 	async readTextFile(path) {
 		const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(path));
 		return Buffer.from(bytes).toString('utf8');

@@ -34,6 +34,7 @@
 //
 // Wire protocol (webview → host):
 //   { type:'svc:fs',         id, method:'findFiles',  include, exclude? }
+//   { type:'svc:fs',         id, method:'workspaceRoots' }
 //   { type:'svc:fs',         id, method:'readText',   path }
 //   { type:'svc:fs',         id, method:'readBase64', path, maxBytes }
 //   { type:'svc:fs.watch',   id, globs }
@@ -53,6 +54,7 @@ import * as vscode from 'vscode';
 /** A request message this service consumes. */
 type FsServiceRequest =
 	| { type: 'svc:fs'; id: number; method: 'findFiles'; include: string; exclude?: string }
+	| { type: 'svc:fs'; id: number; method: 'workspaceRoots' }
 	| { type: 'svc:fs'; id: number; method: 'readText'; path: string }
 	| { type: 'svc:fs'; id: number; method: 'readBase64'; path: string; maxBytes: number }
 	| { type: 'svc:fs.watch'; id: number; globs: string[] }
@@ -116,6 +118,9 @@ export class WorkspaceFsService {
 					result = uris.map((uri) => uri.fsPath);
 					break;
 				}
+				case 'workspaceRoots':
+					result = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+					break;
 				case 'readText': {
 					this.assertInside(msg.path);
 					const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(msg.path));

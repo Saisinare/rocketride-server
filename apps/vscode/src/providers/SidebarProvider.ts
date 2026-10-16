@@ -26,7 +26,11 @@ import { ConfigManager } from '../config';
 import { ConnectionManager, isCloudConnected } from '../connection/connection';
 import { DeployManager } from '../connection/deploy-manager';
 import { CloudAuthProvider } from '../auth/CloudAuthProvider';
-import { PipelineFileParser, ParsedPipelineFile, ServiceClassInfo } from '../shared/util/pipelineParser';
+// Deep import on purpose: the tools/pipelines BARREL exports the discovery
+// controller, which carries sidebar view types the extension host's no-DOM
+// compile must never see. parse.ts is the pure parsing contract.
+import { parsePipelineContent } from 'shared/tools/pipelines/parse';
+import type { ParsedPipelineFile, ServiceClassInfo } from 'shared/tools/pipelines/parse';
 import { GenericEvent, PIPE_BUILDER_APP_ID } from '../shared/types';
 import { isSubscribed } from '../shared/util/subscriptionGate';
 import { isDeployRunBody } from '../shared/util/runClassification';
@@ -67,16 +71,6 @@ interface ToolRowDTO {
 }
 
 // =============================================================================
-// TYPES — serialisable ProjectEntry sent to webview
-// =============================================================================
-
-interface ProjectEntryDTO {
-	path: string;
-	projectId?: string;
-	sources?: { id: string; name: string; provider?: string }[];
-}
-
-// =============================================================================
 // CONSTANTS
 // =============================================================================
 
@@ -92,9 +86,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 	private configManager = ConfigManager.getInstance();
 	private connectionManager = ConnectionManager.getInstance();
 	private deployManager = DeployManager.getDeployInstance();
-
-	// ── Pipeline file state ──────────────────────────────────────────────────
-	private parsedFiles = new Map<string, ParsedPipelineFile>();
 
 	// ── Sidebar mode (persisted per workspace) ───────────────────────────────
 	// NO App Builder state here: MY APPS discovery runs in the WEBVIEW's
@@ -128,7 +119,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		this.tabOrder = this.context?.workspaceState.get<string[]>(TAB_ORDER_KEY) ?? [];
 		this.setupFileWatching();
 		this.setupEventListeners();
-		this.loadPipelineFiles();
 		this.disposables.push({ dispose: () => this.workspaceFs.dispose() });
 		// Pin/unpin from anywhere (the picker, the tool panel's Remove row)
 		// refreshes the tabs.
@@ -218,9 +208,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 					case 'stopPipeline':
 						this.stopPipeline(message.projectId, message.sourceId);
 						break;
-					case 'refresh':
-						await this.loadPipelineFiles();
-						break;
 					case 'openUnknownTask':
 						vscode.commands.executeCommand('rocketride.page.status.open', message.projectId, message.sourceId, message.displayName);
 						break;
@@ -302,11 +289,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		this.disposables.push(
 			watcherPipe,
 			watcherPipe.onDidCreate((uri) => this.handleFileCreated(uri)),
-			watcherPipe.onDidDelete((uri) => this.handleFileDeleted(uri)),
 			watcherPipe.onDidChange((uri) => this.handleFileChanged(uri)),
 			watcherPipeJson,
 			watcherPipeJson.onDidCreate((uri) => this.handleFileCreated(uri)),
-			watcherPipeJson.onDidDelete((uri) => this.handleFileDeleted(uri)),
 			watcherPipeJson.onDidChange((uri) => this.handleFileChanged(uri))
 		);
 
@@ -487,7 +472,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 					if (result && typeof result === 'object' && !Array.isArray(result)) {
 						const parsed = result as Record<string, unknown>;
 						if (Array.isArray(parsed.components)) {
-							const existingIds = new Set([...this.parsedFiles.values()].map((f) => f.projectId).filter((id): id is string => typeof id === 'string' && id.trim() !== ''));
+							const existingIds = await this.collectProjectIds(uri.fsPath);
 							const projectId = typeof parsed.project_id === 'string' && parsed.project_id.trim() !== '' ? parsed.project_id : null;
 							const isDuplicate = projectId !== null && existingIds.has(projectId);
 							if (!projectId || isDuplicate) {
@@ -503,13 +488,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		} catch {
 			// File can't be read yet
 		}
-		await this.loadPipelineFiles();
-	}
-
-	/** Removes the deleted file from the parsed-files cache and updates the webview. */
-	private async handleFileDeleted(uri: vscode.Uri): Promise<void> {
-		this.parsedFiles.delete(uri.fsPath);
-		this.sendEntriesUpdate();
 	}
 
 	/** Re-parses a changed .pipe file, ensures project_id, and optionally restarts. */
@@ -529,12 +507,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 						const root = result as Record<string, unknown>;
 						const target = root.pipeline && typeof root.pipeline === 'object' && !Array.isArray(root.pipeline) ? (root.pipeline as Record<string, unknown>) : root;
 						if (Array.isArray(target.components)) {
-							const existingIds = new Set(
-								[...this.parsedFiles.values()]
-									.filter((f) => f.filePath !== uri.fsPath)
-									.map((f) => f.projectId)
-									.filter((id): id is string => typeof id === 'string' && id.trim() !== '')
-							);
+							const existingIds = await this.collectProjectIds(uri.fsPath);
 							const projectId = typeof target.project_id === 'string' && target.project_id.trim() !== '' ? target.project_id : null;
 							const isDuplicate = projectId !== null && existingIds.has(projectId);
 							if (!projectId || isDuplicate) {
@@ -551,14 +524,49 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 			// File can't be read
 		}
 
-		// Re-parse the changed file
-		const parsedFile = await PipelineFileParser.parseFile(uri.fsPath, this.getServiceClassInfoMap());
-		this.parsedFiles.set(uri.fsPath, parsedFile);
-
-		this.sendEntriesUpdate();
+		// Re-parse the changed file for the restart decision only — the
+		// sidebar's entry list is the webview controller's business now.
+		const text = await this.readFileText(uri);
+		if (text === null) return;
+		const parsedFile = parsePipelineContent(text, uri.fsPath, this.getServiceClassInfoMap());
 
 		// Handle pipeline restart based on configuration
 		await this.handlePipelineRestart(uri, parsedFile);
+	}
+
+	/** Reads a file as UTF-8, or null when unreadable. */
+	private async readFileText(uri: vscode.Uri): Promise<string | null> {
+		try {
+			return Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * The project_ids of every OTHER pipeline file in the workspace — the
+	 * duplicate check behind project-id stamping. Collected on demand (this
+	 * provider keeps no parse cache anymore; stamping is its one remaining
+	 * .pipe concern — the always-on invariant).
+	 *
+	 * @param excludeFsPath - The file being stamped (its own id is not a duplicate).
+	 * @returns The set of ids in use.
+	 */
+	private async collectProjectIds(excludeFsPath: string): Promise<Set<string>> {
+		const ids = new Set<string>();
+		const files = await vscode.workspace.findFiles('{**/*.pipe,**/*.pipe.json}', '**/node_modules/**');
+		await Promise.all(files.filter((f) => f.fsPath !== excludeFsPath).map(async (file) => {
+			const text = await this.readFileText(file);
+			if (text === null) return;
+			try {
+				const parsed = JSON.parse(text) as Record<string, unknown>;
+				const body = (parsed.pipeline && typeof parsed.pipeline === 'object' ? parsed.pipeline : parsed) as Record<string, unknown>;
+				if (typeof body.project_id === 'string' && body.project_id.trim() !== '') ids.add(body.project_id);
+			} catch {
+				// Not valid JSON — carries no claimable id.
+			}
+		}));
+		return ids;
 	}
 
 	// =========================================================================
@@ -605,10 +613,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		});
 
 		// Re-parse when service definitions arrive
-		const servicesUpdatedHandler = () => {
-			this.loadPipelineFiles();
-		};
-		this.connectionManager.on('shell:servicesUpdated', servicesUpdatedHandler);
 
 		// Re-fetch teams when cloud auth state changes (sign-in/sign-out)
 		const cloudAuth = CloudAuthProvider.getInstance();
@@ -637,7 +641,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 			{ dispose: () => this.connectionManager.off('shell:disconnected', disconnectedHandler) },
 			{ dispose: () => this.connectionManager.off('shell:error', errorHandler) },
 			configChange,
-			{ dispose: () => this.connectionManager.off('shell:servicesUpdated', servicesUpdatedHandler) },
 			{ dispose: () => this.deployManager.off('shell:statusChange', deployConnStateHandler) },
 			{ dispose: () => this.deployManager.off('shell:connected', deployConnectedHandler) },
 			{ dispose: () => this.deployManager.off('shell:disconnected', deployDisconnectedHandler) },
@@ -645,14 +648,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		);
 
 		// Forward server events to webview
+		// NO apaevt_task forwarding: the webview folds task events from its
+		// OWN engine client now. Status updates still relay because they read
+		// the canvas editor's host-side diagnostics cache (migrates with it).
 		this.connectionManager.on('shell:event', (event: GenericEvent) => {
-			if (event?.event === 'apaevt_task') {
-				// Forward task event to webview for state tracking
-				this._view?.webview.postMessage({
-					type: 'taskEvent',
-					event: event.body,
-				});
-			} else if (event?.event === 'apaevt_status_update') {
+			if (event?.event === 'apaevt_status_update') {
 				// Forward status updates (errors/warnings) to webview.
 				// Deploy runs never touch the dev lists (THE one host-side
 				// classifier, shared with ProjectProvider's status cache) —
@@ -721,9 +721,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 				cloudConnected: isCloudConnected(),
 				// Subscription
 				isSubscribed: isSubscribed(this.connectionManager.getClient(), PIPE_BUILDER_APP_ID),
-				// Pipeline data
-				entries: this.buildEntries(),
-				unknownTasks: [],
+				// NO entries/tasks: the webview's PIPELINES CONTROLLER discovers
+				// files itself and folds task events from its own client.
 				sidebarMode: this.sidebarMode,
 				tabOrder: this.tabOrder,
 			},
@@ -788,79 +787,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		this._view.webview.postMessage({ type: 'extrasUpdate', userName, userEmail, tools, availableTools, devToolHost });
 	}
 
-	/** Sends only updated entries. */
-	private sendEntriesUpdate(): void {
-		if (!this._view) return;
-		this._view.webview.postMessage({
-			type: 'entriesUpdate',
-			entries: this.buildEntries(),
-		});
-	}
-
-	// =========================================================================
-	// PIPELINE FILE LOADING
-	// =========================================================================
-
-	/** Scans the workspace for .pipe / .pipe.json files, parses them, and updates the webview. */
-	private async loadPipelineFiles(): Promise<void> {
-		const [pipeFiles, pipeJsonFiles] = await Promise.all([vscode.workspace.findFiles('**/*.pipe', '**/node_modules/**'), vscode.workspace.findFiles('**/*.pipe.json', '**/node_modules/**')]);
-		const files = [...pipeFiles, ...pipeJsonFiles];
-
-		this.parsedFiles.clear();
-
-		for (const uri of files) {
-			const parsedFile = await PipelineFileParser.parseFile(uri.fsPath, this.getServiceClassInfoMap());
-			this.parsedFiles.set(uri.fsPath, parsedFile);
-		}
-
-		vscode.commands.executeCommand('setContext', 'rocketride.noPipelineFiles', files.length === 0);
-		this.sendEntriesUpdate();
-	}
-
-	/** Returns the cached service class definitions (used to resolve source display names). */
+	/** Returns the cached service class definitions (restart-flow parsing). */
 	private getServiceClassInfoMap(): Record<string, ServiceClassInfo> | undefined {
 		const cached = this.connectionManager.getCachedServices();
 		return cached?.services as Record<string, ServiceClassInfo> | undefined;
-	}
-
-	// =========================================================================
-	// ENTRY BUILDER
-	// =========================================================================
-
-	/** Builds the flat ProjectEntry[] array for the webview. */
-	private buildEntries(): ProjectEntryDTO[] {
-		const services = this.connectionManager.getCachedServices()?.services ?? {};
-		const entries: ProjectEntryDTO[] = [];
-
-		for (const [fsPath, pf] of this.parsedFiles) {
-			const relativePath = vscode.workspace.asRelativePath(fsPath);
-
-			if (!pf.isValid) {
-				entries.push({ path: relativePath });
-				continue;
-			}
-
-			// Build sources with resolved display names
-			const sources = pf.sourceComponents
-				.map((sc) => {
-					const providerDef = sc.provider ? (services[sc.provider] as { title?: string } | undefined) : undefined;
-					return {
-						id: sc.id,
-						name: sc.name || providerDef?.title || sc.id,
-						provider: sc.provider,
-					};
-				})
-				.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-
-			entries.push({
-				path: relativePath,
-				projectId: pf.projectId,
-				sources,
-			});
-		}
-
-		entries.sort((a, b) => a.path.localeCompare(b.path, undefined, { sensitivity: 'base' }));
-		return entries;
 	}
 
 	// =========================================================================

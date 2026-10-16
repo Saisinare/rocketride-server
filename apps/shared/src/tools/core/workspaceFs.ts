@@ -43,6 +43,13 @@ export interface IToolWorkspaceFs {
 	 */
 	findFiles(include: string, exclude?: string): Promise<string[]>;
 	/**
+	 * The open workspace folders' absolute root paths — what absolute result
+	 * paths are made display-relative against.
+	 *
+	 * @returns The roots (possibly empty), host-native separators.
+	 */
+	workspaceRoots(): Promise<string[]>;
+	/**
 	 * Reads a file as UTF-8 text.
 	 *
 	 * @param path - Absolute path (must be inside the workspace).
