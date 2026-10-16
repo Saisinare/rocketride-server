@@ -178,6 +178,11 @@
 #define PYENUM(name, enumValue) value(#name, enumValue)
 
 namespace engine::store::pythonBase {
+// Set while a Python caller is inside getPipe(): the pipe gate's exception
+// goes there, so it is re-raised and released on the caller's thread
+static thread_local std::optional<pybind11::error_already_set> *pipeRefusal =
+    nullptr;
+
 //-----------------------------------------------------------------------------
 /// @details
 ///		Declare our engine interfaces
@@ -223,6 +228,29 @@ PYBIND11_EMBEDDED_MODULE(engLib, engLib) {
             // Set the Python error
             PyErr_SetObject(exc_type.ptr(), exc_instance.ptr());
         }
+    });
+
+    //-------------------------------------------------------------
+    /// @details
+    ///		Set the callable that runs before every getPipe(); raising
+    ///		refuses the pipe. Call once, before any pipe is taken.
+    ///------------------------------------------------------------
+    engLib.PYBIND_FUNCTION(setPipeGate, [](py::object gate) {
+        // Held by the module, not the static hook, so Python owns its lifetime
+        py::module_::import("engLib").attr("_pipeGate") = gate;
+        IServiceEndpoint::pipeGate = []() -> Error {
+            engine::python::LockPython lock;
+            try {
+                py::module_::import("engLib").attr("_pipeGate")();
+                return {};
+            } catch (py::error_already_set &e) {
+                // The exception's own text: what() also carries the traceback
+                std::string reason = py::str(e.value());
+                auto ccode = APERR(Ec::LicenseLimit, reason);
+                if (pipeRefusal) *pipeRefusal = std::move(e);
+                return ccode;
+            }
+        };
     });
 
     //-------------------------------------------------------------
@@ -847,11 +875,17 @@ PYBIND11_EMBEDDED_MODULE(engLib, engLib) {
         .PYBIND_FUNCTION(
             getPipe,
             [](IServiceEndpoint &self) -> IServiceFilterInstance & {
-                // Allow others to run while we are doing this
-                engine::python::UnlockPython unlock;
+                // Keep a refusal from the pipe gate to re-raise it as raised
+                std::optional<py::error_already_set> refusal;
+                pipeRefusal = &refusal;
 
-                // Retrieve the processing pipeline
-                auto result = self.getPipe();
+                // Retrieve the pipe, letting others run meanwhile
+                auto result = [&] {
+                    engine::python::UnlockPython unlock;
+                    return self.getPipe();
+                }();
+                pipeRefusal = nullptr;
+                if (refusal) throw *refusal;
                 if (!result) throw result.ccode();
 
                 // Get the ServicePipe
