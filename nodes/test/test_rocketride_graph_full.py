@@ -26,8 +26,8 @@
 """Integration tests for rocketride_graph against a real Postgres + Apache AGE.
 
 Runs the node end-to-end on the live pin (PG16 + AGE 1.5.0) through the real
-seam (env ``ROCKETRIDE_CLIENT_ID`` + a fake, injectable
-``Account.resolve_db_dsn``). Container:
+seam (the DSN delivered in ``ROCKETRIDE_DB_DSNS``, as the task engine does).
+Container:
 
     docker run -d --name rr-pg-phase2 -p 55433:5432 \
         -e POSTGRES_PASSWORD=rrpass -e POSTGRES_USER=rruser -e POSTGRES_DB=rrtenant \
@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -70,7 +71,6 @@ _NODE_DIR = _REPO / 'nodes' / 'src' / 'nodes' / 'rocketride_graph'
 
 TEST_DSN = os.environ.get('RR_TEST_AGE_DSN', 'postgresql://rruser:rrpass@localhost:55433/rrtenant')
 ADMIN_DSN = os.environ.get('RR_TEST_AGE_ADMIN_DSN') or TEST_DSN
-TEST_CLIENT_ID = 'tenant-graph-test'
 # Per-run scratch graph, so two runs against one shared database cannot drop
 # each other's graph (RR_TEST_AGE_GRAPH fixes the name).
 GRAPH = os.environ.get('RR_TEST_AGE_GRAPH') or f'rr_graph_e2e_{uuid.uuid4().hex[:8]}'
@@ -188,17 +188,8 @@ def make_rr_env(monkeypatch):
     graph_pkg = _load_from_path('ai.common.graph', _GRAPH_PKG / '__init__.py', is_package=True)
     monkeypatch.setitem(sys.modules, 'ai.common.graph', graph_pkg)
 
-    # The injectable fake resolver — the same seam a SaaS build fills in.
-    account_mod = types.ModuleType('ai.account')
-
-    async def fake_resolve_db_dsn(client_id):
-        assert client_id == TEST_CLIENT_ID
-        return TEST_DSN
-
-    account_mod.account = types.SimpleNamespace(resolve_db_dsn=fake_resolve_db_dsn)
-    monkeypatch.setitem(sys.modules, 'ai.account', account_mod)
-    monkeypatch.setenv('ROCKETRIDE_CLIENT_ID', TEST_CLIENT_ID)
-    monkeypatch.delenv('ROCKETRIDE_DB_DSN', raising=False)
+    # Deliver the DSN the way the task engine does: nodes never resolve one.
+    monkeypatch.setenv('ROCKETRIDE_DB_DSNS', json.dumps({'org': TEST_DSN}))
 
     iglobal = _load_from_path('nodes.rocketride_graph.IGlobal', _NODE_DIR / 'IGlobal.py')
     pkg = types.ModuleType('nodes.rocketride_graph')
@@ -288,11 +279,10 @@ class TestLifecycle:
         with pytest.raises(RuntimeError, match='does not exist') as err:
             glb.beginGlobal()
         text = str(err.value)
-        # The provisioner creates 'rocketride'; nothing about graph ownership is open any more.
+        # Every RocketRide database (organization, team or personal) comes with
+        # 'rocketride'; nothing about graph ownership is open any more.
         assert 'pending' not in text
-        assert (
-            "RocketRide creates the 'rocketride' graph when your organization's database is first provisioned" in text
-        )
+        assert "Every RocketRide database comes with the 'rocketride' graph" in text
         assert "SELECT create_graph('rr_graph_missing')" in text
 
     def test_node_configuration_cannot_choose_the_database(self, rr_env, age_graph):
@@ -319,18 +309,57 @@ class TestLifecycle:
         finally:
             glb.endGlobal()
 
-    def test_probe_names_the_organization_database(self, rr_env, age_graph):
+    def test_probe_warns_about_a_missing_graph(self, rr_env, age_graph):
         glb = rr_env.iglobal_cls()
         glb._probe_connection({'graph': 'rr_graph_missing'})
-        assert rr_env.warnings == [
-            "AGE graph 'rr_graph_missing' does not exist in your organization's RocketRide database"
-        ]
+        assert rr_env.warnings == ["AGE graph 'rr_graph_missing' does not exist yet in the tenant database"]
 
 
 def _dsn_database(dsn: str) -> str:
     from urllib.parse import urlsplit
 
     return urlsplit(dsn).path.lstrip('/')
+
+
+@pytest.mark.skipif(
+    ADMIN_DSN != TEST_DSN,
+    reason='a backend pid names a server session only on a direct connection; through a '
+    'transaction-mode pooler each transaction may run on another one (the direct pass covers this)',
+)
+class TestSessionNeverIdleInTransaction:
+    """A transaction-mode pooler pins a server connection to a client inside
+    a transaction: between calls the node's session must be plain 'idle'.
+    """
+
+    @staticmethod
+    def _state(age_graph, glb) -> str:
+        # The node holds a pool, not one client: every connection it keeps must
+        # be checked back in, and every one of them plain 'idle'.
+        assert glb.pool.size == glb.pool.idle, 'a connection is still checked out'
+        pids = [conn.get_backend_pid() for conn, _returned in glb.pool._idle]
+        assert pids, 'the pool kept no connection to inspect'
+        with age_graph.cursor() as cur:  # autocommit: a fresh stats snapshot each call
+            cur.execute('SELECT DISTINCT state FROM pg_stat_activity WHERE pid = ANY(%s)', (pids,))
+            states = sorted(row[0] for row in cur.fetchall())
+        return states[0] if len(states) == 1 else ','.join(states)
+
+    def test_idle_after_begin_and_every_query_path(self, rr_env, age_graph):
+        glb = _begin(rr_env, {'allow_execute': True})
+        inst = rr_env.iinstance_cls()
+        inst.IGlobal = glb
+        try:
+            assert self._state(age_graph, glb) == 'idle', 'after beginGlobal (connect + schema reflection)'
+            glb._run_query('MATCH (p:Person) RETURN p.name AS name')
+            assert self._state(age_graph, glb) == 'idle', 'after a read'
+            glb._validate_query('MATCH (p:Person) RETURN p.name AS name')
+            assert self._state(age_graph, glb) == 'idle', 'after validate'
+            inst.execute({'query': "CREATE (d:Person {name: 'erin'}) RETURN d.name AS name"})
+            assert self._state(age_graph, glb) == 'idle', 'after a write'
+            with pytest.raises(Exception, match='division by zero'):
+                inst.execute({'query': 'RETURN 10 / $z AS q', 'params': {'z': 0}})
+            assert self._state(age_graph, glb) == 'idle', 'after a failed query'
+        finally:
+            glb.endGlobal()
 
 
 class TestSafePath:

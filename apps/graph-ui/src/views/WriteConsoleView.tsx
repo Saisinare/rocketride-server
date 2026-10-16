@@ -33,7 +33,7 @@
 // The text check is not a database safeguard. For Neo4j and FalkorDB the database
 // account the node connects with is the boundary (a read-only one for browsing, one
 // that can write only where this console is meant to). rocketride_graph has no
-// account to choose: it connects as the role that owns the organization's database,
+// account to choose: it connects as the role that owns the RocketRide database,
 // so for it the boundary is whether the node allows execute at all.
 // =============================================================================
 

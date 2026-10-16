@@ -367,6 +367,7 @@ class _Engine:
             not in (
                 'ROCKETRIDE_MOCK',
                 'ROCKETRIDE_DB_DSN',
+                'ROCKETRIDE_DB_DSNS',
                 'ROCKETRIDE_DB_RESOLVE_ERROR',
                 'ROCKETRIDE_DB_BROKER_URL',
                 'ROCKETRIDE_DB_BROKER_TOKEN',

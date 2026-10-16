@@ -1291,8 +1291,8 @@ def tenant_db():
 
 
 def _begin_as_tenant(rr_env, tenant_db, monkeypatch, config=None):
-    """The node as a cloud task runs it: the resolved tenant DSN, the default graph name."""
-    monkeypatch.setenv('ROCKETRIDE_DB_DSN', tenant_db.dsn)
+    """The node as a cloud task runs it: the delivered tenant DSN, the default graph name."""
+    monkeypatch.setenv('ROCKETRIDE_DB_DSNS', json.dumps({'org': tenant_db.dsn}))
     glb = rr_env.iglobal_cls()
     glb.glb = types.SimpleNamespace(logicalType='rocketride_graph', connConfig=dict(config or {}))
     glb.beginGlobal()

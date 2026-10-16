@@ -25,11 +25,10 @@
 
 Mirrors ``graph_neo4j`` on :class:`GraphGlobalBase`, with two differences:
 
-1. **Connection** — no host/user/password config; the DSN of the
-   organization's database (the tenant; a user only where there is no
-   organization) comes from the account layer (``ai.common.rocketride_db``),
-   same seam as ``rocketride_sql`` / ``rocketride_vector``. The tenant
-   database is Postgres + Apache AGE.
+1. **Connection** — no host/user/password config; the DSN is the one the
+   task engine delivered for the node's scope / target
+   (``ai.common.rocketride_db``), same seam as ``rocketride_sql`` /
+   ``rocketride_vector``. The tenant database is Postgres + Apache AGE.
 2. **Query paths** — Apache AGE cannot run bare Cypher, so ``_run_query``
    (safe), ``_run_query_raw`` (EXECUTE) and ``_validate_query`` all route
    through the Cypher->AGE translation layer (``ai.common.graph.age``).
@@ -69,7 +68,7 @@ from ai.common.graph.age import (
 )
 from ai.common.graph.connection_pool import ConnectionPool, PoolClosed, PoolTimeout
 from ai.common.graph.schema import SCHEMA_LABEL_LIMIT, SCHEMA_REL_TYPE_LIMIT, SCHEMA_SAMPLE_SIZE
-from ai.common.rocketride_db import resolve_rocketride_dsn
+from ai.common.rocketride_db import DsnNotDelivered, db_target, resolve_rocketride_dsn
 
 DEFAULT_GRAPH_NAME = 'rocketride'
 DEFAULT_MAX_ROWS = 1000
@@ -170,13 +169,13 @@ class IGlobal(GraphGlobalBase):
     # ------------------------------------------------------------------
 
     def _open_driver(self, config: Dict[str, Any]) -> None:
-        """Resolve the tenant DSN, open the pool, and fail fast on a missing graph."""
+        """Read the delivered DSN, open the pool, and fail fast on a missing graph."""
         self.graph_name = str(config.get('graph') or DEFAULT_GRAPH_NAME).strip()
         self.max_rows = self._config_int(config, 'max_rows', DEFAULT_MAX_ROWS)
         self.query_timeout_ms = self._config_int(config, 'query_timeout_ms', DEFAULT_QUERY_TIMEOUT_MS)
 
-        # The one RocketRide difference: DSN from the account seam, no config.
-        dsn = resolve_rocketride_dsn()
+        # The one RocketRide difference: the delivered DSN, no connection config.
+        dsn = resolve_rocketride_dsn(*db_target(config))
         pool = ConnectionPool(
             lambda: _open_connection(dsn),
             max_size=DEFAULT_POOL_SIZE,
@@ -208,15 +207,13 @@ class IGlobal(GraphGlobalBase):
 
         if not graph_exists:
             pool.close()
-            # The cloud provisioner creates the default graph ('rocketride')
-            # when the organization's database is first provisioned. The node
-            # never creates one itself: a mistyped Graph name must fail here,
-            # not silently start an empty graph.
+            # The provisioner creates the default graph in every tenant
+            # database. Any other name must already exist: the node never
+            # creates a graph itself.
             raise RuntimeError(
-                f"AGE graph {self.graph_name!r} does not exist in your organization's RocketRide database. "
-                f"RocketRide creates the {DEFAULT_GRAPH_NAME!r} graph when your organization's database is "
-                'first provisioned; set Graph name to an existing graph, or create this one first '
-                f"(SELECT create_graph('{self.graph_name}'))."
+                f'AGE graph {self.graph_name!r} does not exist in the tenant database. '
+                f'Every RocketRide database comes with the {DEFAULT_GRAPH_NAME!r} graph; use it, '
+                f"or create this one first (SELECT create_graph('{self.graph_name}'))."
             )
         self.pool = pool
 
@@ -226,10 +223,14 @@ class IGlobal(GraphGlobalBase):
             pool.close()
 
     def _probe_connection(self, config: Dict[str, Any]) -> None:
-        """Save-time probe: warn-only (the user is still editing the node)."""
+        """Save-time probe: warn-only (the user is still editing the node).
+
+        Outside a task no DSN is delivered, so only scope / target are
+        checked: connectivity is checked when the pipeline runs.
+        """
         conn = None
         try:
-            dsn = resolve_rocketride_dsn()
+            dsn = resolve_rocketride_dsn(*db_target(config))
             conn = psycopg2.connect(dsn, connect_timeout=CONNECT_TIMEOUT_S)
             with conn.cursor() as cur:
                 cur.execute('SELECT 1')
@@ -240,11 +241,9 @@ class IGlobal(GraphGlobalBase):
                 graph = str(config.get('graph') or DEFAULT_GRAPH_NAME).strip()
                 cur.execute('SELECT 1 FROM ag_catalog.ag_graph WHERE name = %s', (graph,))
                 if cur.fetchone() is None:
-                    warning(f"AGE graph {graph!r} does not exist in your organization's RocketRide database")
-        except NotImplementedError as e:
-            # No database broker on this engine (a server-process caller;
-            # inside a task the engine turns this into a ValueError reason).
-            warning(str(e))
+                    warning(f'AGE graph {graph!r} does not exist yet in the tenant database')
+        except DsnNotDelivered:
+            return
         except Exception as e:
             warning(str(e).strip().splitlines()[0] if str(e).strip() else repr(e))
         finally:
