@@ -12,7 +12,8 @@
 		"description": "Real-time server dashboard showing connections, tasks, and activity",
 		"icon": "./src/icon.svg",
 		"categories": [
-			"tools"
+			"tools",
+			"devTool"
 		],
 		"mode": "free",
 		"authenticated": true,

@@ -36,7 +36,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import type { ShellAppProps } from 'shell';
+import type { ShellAppProps, DevToolProps } from 'shell';
 import { commonStyles } from 'shell';
 import { useShellConnection, useWorkspace, DocTabs, DocSplitLayout, AppLayout, EmptyState, BxFolderOpen } from 'shell';
 import type { Documents } from 'shell';
@@ -50,6 +50,7 @@ import {
 } from './viewers';
 import type { ViewerId } from './viewerRegistry';
 import ExplorerSidebar from './ExplorerSidebar';
+import { attachExplorerPeerHost } from './explorerBridge';
 
 // =============================================================================
 // BLOB URL REF-COUNTING
@@ -158,6 +159,40 @@ const ExplorerApp: React.FC<ShellAppProps> = () => {
 			<ExplorerAppReady docs={getDocs()!} />
 		</AppLayout>
 	);
+};
+
+// =============================================================================
+// DEV-TOOL SURFACE — the explorer without shell chrome
+// =============================================================================
+
+/**
+ * Dev-tool surface — the editor groups without the shell AppLayout chrome,
+ * for host workbenches that mount the tool directly (the VS Code dev-tool
+ * panel). The file tree lives in the HOST's sidebar (devToolSidebar below);
+ * its opens/renames/moves arrive over the peer channel and are applied to
+ * this document's Documents singleton. No workspace binding: tab layout is
+ * session-local here.
+ */
+export const ExplorerDevTool: React.FC<DevToolProps> = ({ peer }) => {
+	const { client } = useShellConnection();
+	const [ready, setReady] = useState(false);
+
+	useEffect(() => {
+		if (!client) return;
+		createDocs(createStoreVfs(client));
+		setReady(true);
+		return () => { destroyDocs(); setReady(false); };
+	}, [client]);
+
+	// Frame side of the tree's peer protocol — apply incoming document
+	// actions, publish the active path for the tree highlight.
+	useEffect(() => {
+		if (!ready) return;
+		return attachExplorerPeerHost(peer);
+	}, [ready, peer]);
+
+	if (!ready) return <div style={styles.welcome}>Initialising...</div>;
+	return <ExplorerAppReady docs={getDocs()!} />;
 };
 
 // =============================================================================

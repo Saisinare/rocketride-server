@@ -31,7 +31,8 @@
 import 'react/jsx-dev-runtime';
 
 import type { AppDescriptor } from 'shell';
-import MonitorApp from './MonitorApp';
+import MonitorApp, { MonitorDevToolFrame } from './MonitorApp';
+import { MonitorDevToolSidebar } from './MonitorSidebar';
 
 /**
  * AppDescriptor for the Server Monitor app.
@@ -49,9 +50,14 @@ const MONITOR_APP: AppDescriptor = {
 		// (wordmark-header era) masked the app's real icon on the rail and
 		// panel header. Absent, the shell falls through to the manifest icon.
 	},
-	// Frame-only app: MonitorApp's root AppLayout keeps the branded sidebar
-	// frame (empty slot) and the status bar.
+	// The full app: the monitor surface with the page menu in the sidebar
+	// (the old top tab strip is gone) and the status bar.
 	app: MonitorApp,
+	// Dev-tool mounts: the bare monitor surface in the host's main area, the
+	// page menu in the host's sidebar — page selection syncs over the peer
+	// channel. Each mount runs against its own connected shell singleton.
+	devToolFrame: MonitorDevToolFrame,
+	devToolSidebar: MonitorDevToolSidebar,
 };
 
 export default MONITOR_APP;

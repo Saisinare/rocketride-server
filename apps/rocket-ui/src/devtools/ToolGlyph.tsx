@@ -21,43 +21,41 @@
 // SOFTWARE.
 
 // =============================================================================
-// PROFILER-UI DOCUMENTS INSTANCE
+// TOOL GLYPH — a dev tool's icon as a currentColor glyph
 // =============================================================================
 //
-// App-owned Documents instance shared between ProfilerApp and ProfilerSidebar.
-// Created by ProfilerApp on mount.
-// All documents are static (profiler sessions per connection) — no VFS needed.
+// Rail icons and strip tabs must follow the chrome's foreground color (rest /
+// hover / active states), so the tool's icon URL is applied as a CSS MASK
+// filled with currentColor — the same treatment the shared SidebarView gives
+// its tool strip tabs — rather than drawn as an <img>. Tools without an icon
+// fall back to the generic extensions glyph.
 // =============================================================================
 
-import { Documents } from 'shell';
-import type { WorkspaceBinding } from 'shell';
-
-/** The app's Documents instance. Set by ProfilerApp on mount. */
-let _docs: Documents | null = null;
+import React from 'react';
+import type { CSSProperties } from 'react';
+import { CodiconExtensions } from 'shared/components/icons/Codicon';
 
 /**
- * Returns the app's Documents instance, or null if not yet initialised.
- */
-export function getDocs(): Documents | null {
-	return _docs;
-}
-
-/**
- * Creates and stores the app's Documents instance.
- * Called once by ProfilerApp on mount.
+ * One dev tool's rail/strip glyph.
  *
- * @param workspace - Optional workspace binding for automatic persistence.
+ * @param props.iconUrl - The tool's icon URL; absent renders the generic glyph.
+ * @param props.size - Square glyph size in px (20 reads well on the rail).
  */
-export function createDocs(workspace?: WorkspaceBinding): Documents {
-	_docs = new Documents(null, workspace);
-	return _docs;
-}
-
-/**
- * Destroys the app's Documents instance.
- * Called by ProfilerApp on unmount.
- */
-export function destroyDocs(): void {
-	_docs?.destroy();
-	_docs = null;
-}
+export const ToolGlyph: React.FC<{ iconUrl?: string | undefined; size?: number }> = ({ iconUrl, size = 20 }) => {
+	if (!iconUrl) return <CodiconExtensions size={size} />;
+	const mask: CSSProperties = {
+		width: size,
+		height: size,
+		display: 'inline-block',
+		backgroundColor: 'currentColor',
+		WebkitMaskImage: `url(${iconUrl})`,
+		maskImage: `url(${iconUrl})`,
+		WebkitMaskRepeat: 'no-repeat',
+		maskRepeat: 'no-repeat',
+		WebkitMaskSize: 'contain',
+		maskSize: 'contain',
+		WebkitMaskPosition: 'center',
+		maskPosition: 'center',
+	};
+	return <span aria-hidden style={mask} />;
+};

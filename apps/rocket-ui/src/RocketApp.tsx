@@ -55,6 +55,12 @@ import AppBuilderProvider from './providers/AppBuilderProvider';
 import NewAppProvider from './providers/NewAppProvider';
 import AgentProvider from './providers/AgentProvider';
 import IntroProvider from './providers/IntroProvider';
+import DesktopProvider from './providers/DesktopProvider';
+import DevToolReadmeProvider from './providers/DevToolReadmeProvider';
+import DevToolMount from './devtools/DevToolMount';
+import { ToolGlyph } from './devtools/ToolGlyph';
+import { useDevToolPins } from './devtools/devToolPins';
+import { CodiconExtensions } from 'shared/components/icons/Codicon';
 import { AgentSession } from 'shared/agent/agent';
 
 // =============================================================================
@@ -364,14 +370,29 @@ const RocketApp: React.FC<ShellAppProps> = (_props) => {
 	// VS Code's own (codicons) wherever an exact analogue exists; Agent
 	// gets its own animated robot glyph — VS Code has no agent concept to
 	// borrow from.
-	const sidebarViews = useMemo<SidebarViewContainer[]>(() => [
-		{ id: 'explorer', title: 'Explorer', icon: <CodiconFiles size={20} />, content: explorerNode },
-		{ id: 'scm', title: 'Source Control', icon: <CodiconSourceControl size={20} />, content: scmNode, ...(pendingCount > 0 ? { badge: pendingCount } : {}) },
-		{ id: 'agent', title: 'Agent', icon: <AgentIcon size={20} />, isDefault: true },
-		{ id: 'apps', title: 'Apps', icon: <AppsIcon size={20} /> },
-		{ id: 'nodes', title: 'Nodes', icon: <CodiconCircuitBoard size={20} /> },
-		{ id: 'pipelines', title: 'Pipelines', icon: <CodiconTypeHierarchy size={20} /> },
-	], [explorerNode, scmNode, pendingCount]);
+	// Pinned dev tools ride the SAME rail/strip as the built-in modes: one
+	// container per pin (sharing the SidebarProvider node, which mounts the
+	// tool's devToolSidebar behind its id), plus the Dev Tools catalog. The
+	// persisted strip order (drag-reorder in classic mode) ranks the tool
+	// containers here too, so the three chromes agree on one order.
+	const { pinnedTools, tabOrder } = useDevToolPins();
+	const sidebarViews = useMemo<SidebarViewContainer[]>(() => {
+		const rank = new Map(tabOrder.map((id, i) => [id, i]));
+		const toolViews = pinnedTools
+			.slice()
+			.sort((a, b) => (rank.get(`tool:${a.id}`) ?? Number.MAX_SAFE_INTEGER) - (rank.get(`tool:${b.id}`) ?? Number.MAX_SAFE_INTEGER))
+			.map((t): SidebarViewContainer => ({ id: `tool:${t.id}`, title: t.name, icon: <ToolGlyph iconUrl={t.iconUrl} size={20} /> }));
+		return [
+			{ id: 'explorer', title: 'Explorer', icon: <CodiconFiles size={20} />, content: explorerNode },
+			{ id: 'scm', title: 'Source Control', icon: <CodiconSourceControl size={20} />, content: scmNode, ...(pendingCount > 0 ? { badge: pendingCount } : {}) },
+			{ id: 'agent', title: 'Agent', icon: <AgentIcon size={20} />, isDefault: true },
+			{ id: 'apps', title: 'Apps', icon: <AppsIcon size={20} /> },
+			{ id: 'nodes', title: 'Nodes', icon: <CodiconCircuitBoard size={20} /> },
+			{ id: 'pipelines', title: 'Pipelines', icon: <CodiconTypeHierarchy size={20} /> },
+			...toolViews,
+			{ id: 'toolStore', title: 'Dev Tools', icon: <CodiconExtensions size={20} /> },
+		];
+	}, [explorerNode, scmNode, pendingCount, pinnedTools, tabOrder]);
 
 	// The layout declaration: VS Code-style chrome (activity rail + panel) +
 	// status bar. The sidebar only mounts once Documents is ready —
@@ -599,11 +620,26 @@ const RocketEditorContent: React.FC<{
 	// Static document routes — not backed by VFS
 	if (uri === 'monitor') return <MonitorProvider />;
 	if (uri === 'newapp') return <NewAppProvider />;
+	// The shared desktop page (shell's DesktopView) as a document tab.
+	if (uri === 'desktop') return <DesktopProvider />;
 	// Agent conversation tabs carry only the session GUID in the URI — the
 	// transcript lives in the fs store, never in workspace state.
 	if (uri.startsWith('agent:')) return <AgentProvider sessionId={uri.slice('agent:'.length)} />;
 	// Embedded "Introduction to ..." pages from the sidebar modes.
 	if (uri.startsWith('intro:')) return <IntroProvider mode={uri.slice('intro:'.length)} />;
+	// A pinned dev tool's main surface (descriptor.devToolFrame). The URI is
+	// `tool:<appId>` for the tool's single frame, or `tool:<appId>/<docKey>`
+	// for a per-document frame (e.g. one tab per database connection — the
+	// tool opened it through DevToolProps.documents).
+	if (uri.startsWith('tool:')) {
+		const rest = uri.slice('tool:'.length);
+		const slash = rest.indexOf('/');
+		const appId = slash < 0 ? rest : rest.slice(0, slash);
+		const docKey = slash < 0 ? undefined : rest.slice(slash + 1);
+		return <DevToolMount appId={appId} slot="frame" {...(docKey !== undefined ? { docKey } : {})} />;
+	}
+	// A dev tool's details page (README + Install/Remove).
+	if (uri.startsWith('toolreadme:')) return <DevToolReadmeProvider appId={uri.slice('toolreadme:'.length)} />;
 	// Workspace Explorer's read-only text viewer for files with no designer.
 	if (uri.startsWith('file:')) return <FileProvider path={uri.slice('file:'.length)} />;
 	// Source Control's unified diff of one pending change.

@@ -66,6 +66,30 @@
 	--rr-bg-surface: #ffffff;
 
 	/* ================================================================== */
+	/* Document tabs (DocTabs editor-group strips)                         */
+	/* ================================================================== */
+
+	/** Tab strip background — the shaded band the tabs sit on. */
+	--rr-doctabs-bg: #f3f3f3;
+
+	/** Active tab fill — matches the content background so the active tab
+	    reads as part of the editor below it. */
+	--rr-doctabs-tab-active-bg: #ffffff;
+
+	/** Inactive tab hover overlay — neutral, never the active fill
+	    (inactive tabs otherwise carry no fill; the strip shows through). */
+	--rr-doctabs-tab-hover-bg: rgba(0, 0, 0, 0.04);
+
+	/** Active tab label colour. */
+	--rr-doctabs-fg-active: #1a1a1a;
+
+	/** Inactive tab label colour. */
+	--rr-doctabs-fg-inactive: #666666;
+
+	/** 1px separator between tabs. */
+	--rr-doctabs-border: #dcdcdc;
+
+	/* ================================================================== */
 	/* Title bar                                                           */
 	/* ================================================================== */
 

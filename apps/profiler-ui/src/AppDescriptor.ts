@@ -31,14 +31,16 @@
 import 'react/jsx-dev-runtime';
 
 import type { AppDescriptor } from 'shell';
-import ProfilerApp from './ProfilerApp';
+import ProfilerApp, { ProfilerDevTool } from './ProfilerApp';
+import { ProfilerDevToolSidebar } from './ProfilerSidebar';
 
 /**
  * AppDescriptor for the Profiler app.
  *
- * Provides cProfile-based process profiling: start/stop sessions on the
- * server process or pipeline engine subprocesses, view function-level
- * pstats reports, and manage connections.
+ * Provides cProfile-based process profiling against the host's connected
+ * engine: start/stop sessions on the server process or pipeline engine
+ * subprocesses and view function-level pstats reports. All controls live in
+ * the sidebar panel.
  */
 const PROFILER_APP: AppDescriptor = {
 	id: 'rocketride.profiler',
@@ -50,9 +52,14 @@ const PROFILER_APP: AppDescriptor = {
 		// (wordmark-header era) masked the app's real icon on the rail and
 		// panel header. Absent, the shell falls through to the manifest icon.
 	},
-	// Frame-only app: ProfilerApp's root AppLayout keeps the branded sidebar
-	// frame (empty slot) and the status bar.
+	// The full app: the profiler frame with the control panel in the sidebar
+	// and the status bar.
 	app: ProfilerApp,
+	// Dev-tool mounts: the bare frame in the host's main area, the control
+	// panel in the host's sidebar — state and actions sync over the peer
+	// channel.
+	devToolFrame: ProfilerDevTool,
+	devToolSidebar: ProfilerDevToolSidebar,
 };
 
 export default PROFILER_APP;

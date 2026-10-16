@@ -30,7 +30,7 @@
  * `.projects`-prefixed pipeline files) holding the app's SOURCE truth:
  * package.json (with the appManifest binding block), tsconfig.json, src/**.
  *
- * This is the web twin of the VSCode workspace scan (appScan.ts): the
+ * This is the web twin of the workspace scan (shared tools/appdev): the
  * sidebar lists what you can open and edit here — server registry state
  * deliberately not merged in.
  */

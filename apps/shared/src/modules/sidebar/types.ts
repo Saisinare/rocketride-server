@@ -153,7 +153,62 @@ export interface AgentSidebar {
  * agent sidebar; 'apps' only when the host wires the app builder; 'nodes'
  * is the node-builder placeholder shown whenever the mode tabs render.
  */
-export type SidebarMode = 'agent' | 'pipelines' | 'apps' | 'nodes';
+export type SidebarMode = 'agent' | 'pipelines' | 'apps' | 'nodes' | 'toolStore' | `tool:${string}`;
+
+// =============================================================================
+// DEV-TOOL TABS
+// =============================================================================
+
+/** One pinned dev tool shown as an icon tab on the mode strip. */
+export interface ToolTab {
+	/** The tool's app id. */
+	id: string;
+	/** Display name (the icon tab's tooltip, the panel heading). */
+	name: string;
+	/** Absolute icon URL for the tab glyph (host-resolved). */
+	iconUrl?: string;
+	/** Display version for the tool panel. */
+	version?: string;
+	/** Short description (the modules list's second line). */
+	description?: string;
+	/** Module Federation container name — set when the host mounts the tool's devToolSidebar. */
+	moduleId?: string;
+	/** Registry version resolving the remote entry URL. */
+	registryVersion?: number;
+}
+
+/**
+ * Dev-tool tabs capability — presence adds the pinned tools as icon tabs on
+ * the mode strip plus a trailing "+" that opens the host's tool picker.
+ */
+export interface ToolTabsSidebar {
+	/** Pinned (installed) tools, in tab order. */
+	tools: ToolTab[];
+	/**
+	 * The full dev-tool catalog (installed or not) — the modules button's
+	 * list body, VS Code extensions-view style. Installed state is derived
+	 * from membership in `tools`.
+	 */
+	available: ToolTab[];
+	/** Opens (or focuses) the tool's frame in the host's editor area. */
+	onOpenTool: (id: string) => void;
+	/**
+	 * Brings an ALREADY-OPEN window of the tool forward, creating nothing —
+	 * the strip-tab selection action. Selecting a tab switches the sidebar
+	 * body; it must not spawn editor windows. Hosts that cannot tell the two
+	 * apart omit this and the strip falls back to `onOpenTool`.
+	 */
+	onFocusTool?: (id: string) => void;
+	/** Opens the tool's details page (README + Install/Remove) — a modules-list row click. */
+	onShowTool: (id: string) => void;
+	/** Unpins a tool (removes its tab). */
+	onRemoveTool: (id: string) => void;
+	/**
+	 * Replaces the built-in tool panel (icon/name/version/Open/Remove) with
+	 * host-rendered content — the slot where a devToolSidebar mounts.
+	 */
+	renderToolPanel?: (id: string) => ReactNode;
+}
 
 // =============================================================================
 // CONNECTION STATE
@@ -260,4 +315,25 @@ export interface ISidebarViewProps {
 	 * "+ New session" / "+ New app" / "+ New pipeline" / the Nodes placeholder).
 	 */
 	onShowIntro?: (mode: 'agent' | 'apps' | 'nodes' | 'pipelines') => void;
+	/**
+	 * Opens the shared Desktop page (shell's DesktopView). Presence adds a
+	 * "Desktop" row at the top of the Apps tab body.
+	 */
+	onShowDesktop?: () => void;
+	/**
+	 * Pinned dev-tool tabs — presence adds one icon tab per tool to the mode
+	 * strip, plus the trailing "+" picker tab.
+	 */
+	toolTabs?: ToolTabsSidebar;
+	/**
+	 * Persisted strip order — tab ids (mode ids and `tool:<appId>` ids) in
+	 * display order. Ids it names render first in that order; anything it
+	 * doesn't name keeps its default position after them.
+	 */
+	tabOrder?: string[];
+	/**
+	 * Enables drag-reorder of EVERY strip tab; fired with the full ordered
+	 * id list on drop (hosts persist it and pass it back as `tabOrder`).
+	 */
+	onReorderTabs?: (orderedIds: string[]) => void;
 }

@@ -53,7 +53,8 @@
 // =============================================================================
 
 import React, { useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { BxDockLeft } from '../BoxIcon';
+import { createPortal } from 'react-dom';
+import { BxDockLeft, BxDotsHorizontal } from '../BoxIcon';
 import { ConnectionManager } from '../../connection/connection';
 import { useWorkspace } from '../workspace/WorkspaceContext';
 import type { ShellThemeConfig, ShellAccountConfig } from '../workspace/types';
@@ -89,6 +90,10 @@ const SNAP_THRESHOLD = 100;
 /** Keyboard resize step (arrow keys on the sash), in px — the DetailPanel
     standard. */
 const KEY_RESIZE_STEP = 24;
+/** Vertical gap between rail buttons (the rail's flex gap). */
+const RAIL_GAP = 4;
+/** Drag-and-drop MIME for rail view reordering. */
+const RAIL_DND_MIME = 'application/rr-rail-view';
 
 // Per-app memory (remembered/remember) is shared with the compact drawer —
 // see SidebarViewStrip.tsx. Both frames read and write the same stored
@@ -130,6 +135,47 @@ const styles = {
 		['--rr-bg-surface-alt' as string]: 'var(--rr-bg-rail-hover, rgba(255, 255, 255, 0.12))',
 	} as CSSProperties,
 	railSpacer: { flex: 1 } as CSSProperties,
+	/** The measured box the view buttons stack in — fills the rail down to
+	    the footer; buttons past the fit collapse behind the more button. */
+	railViews: {
+		flex: 1,
+		minHeight: 0,
+		width: '100%',
+		display: 'flex',
+		flexDirection: 'column',
+		alignItems: 'center',
+		gap: RAIL_GAP,
+		overflow: 'hidden',
+	} as CSSProperties,
+	/** The overflow menu beside the rail — icon + title rows. */
+	railMoreMenu: {
+		position: 'fixed',
+		zIndex: 1000,
+		minWidth: 180,
+		maxHeight: '60vh',
+		overflowY: 'auto',
+		padding: '4px 0',
+		background: 'var(--rr-bg-paper)',
+		border: '1px solid var(--rr-border)',
+		borderRadius: 6,
+		boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+		fontFamily: 'var(--rr-font-family)',
+		fontSize: 12.5,
+	} as CSSProperties,
+	railMenuItem: (hovered: boolean, active: boolean): CSSProperties => ({
+		display: 'flex',
+		alignItems: 'center',
+		gap: 10,
+		width: '100%',
+		padding: '6px 12px',
+		border: 'none',
+		background: hovered ? 'var(--rr-bg-list-hover, var(--rr-bg-surface-alt))' : 'transparent',
+		color: 'var(--rr-text-primary)',
+		fontWeight: active ? 600 : 400,
+		cursor: 'pointer',
+		textAlign: 'left',
+		font: 'inherit',
+	}),
 	railButton: (active: boolean, hovered: boolean): CSSProperties => ({
 		position: 'relative',
 		display: 'flex',
@@ -280,7 +326,66 @@ const SidebarWorkbench: React.FC<SidebarWorkbenchProps> = ({ variant, themeConfi
 	// to the classic column), so there is no legacy projection here. Containers
 	// WITHOUT their own content still share the registered `sidebar` node —
 	// that is the one-data-owner path, not a legacy shim.
-	const views: SidebarViewContainer[] = (sidebarViews ?? []).slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+	const declaredViews: SidebarViewContainer[] = (sidebarViews ?? []).slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+	// --- Rail order: user-dragged, remembered per app -----------------------------
+	// Ids the memory names render first in that order; anything it doesn't
+	// name keeps its declared position after them (new containers appear at
+	// the end rather than scrambling the user's arrangement).
+	const [railOrder, setRailOrder] = useState<string[]>(() => remembered(activeAppId).railOrder ?? []);
+	const views: SidebarViewContainer[] = useMemo(() => {
+		if (railOrder.length === 0) return declaredViews;
+		const rank = new Map(railOrder.map((id, i) => [id, i]));
+		const named = declaredViews.filter((v) => rank.has(v.id)).sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+		return [...named, ...declaredViews.filter((v) => !rank.has(v.id))];
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- declaredViews is rebuilt per render; its CONTENT only changes with sidebarViews
+	}, [sidebarViews, railOrder]);
+
+	// --- Rail drag-reorder ---------------------------------------------------------
+	const [dragViewId, setDragViewId] = useState<string | null>(null);
+	/** Insertion hint while dragging: drop before/after this button. */
+	const [dropHint, setDropHint] = useState<{ id: string; after: boolean } | null>(null);
+
+	/** Applies a drop: rebuild the FULL ordered id list and remember it. */
+	const handleRailDrop = useCallback((targetId: string, after: boolean) => {
+		setDropHint(null);
+		const dragged = dragViewId;
+		setDragViewId(null);
+		if (!dragged || dragged === targetId) return;
+		const ids = views.map((v) => v.id).filter((id) => id !== dragged);
+		const at = ids.indexOf(targetId);
+		if (at < 0) return;
+		ids.splice(at + (after ? 1 : 0), 0, dragged);
+		setRailOrder(ids);
+		remember(activeAppId, { railOrder: ids });
+	}, [dragViewId, views, activeAppId]);
+
+	// --- Rail overflow ----------------------------------------------------------------
+	// The view buttons stack in a measured box (railViews) that ends where the
+	// footer begins; buttons past the fit collapse behind a "more" button whose
+	// menu lists the hidden containers — the TabControl overflow treatment,
+	// vertical.
+	const viewsBoxRef = useRef<HTMLDivElement | null>(null);
+	const [railSlots, setRailSlots] = useState(Number.MAX_SAFE_INTEGER);
+	useLayoutEffect(() => {
+		const el = viewsBoxRef.current;
+		if (!el || typeof ResizeObserver === 'undefined') return;
+		const observer = new ResizeObserver((entries) => {
+			const h = entries[0]?.contentRect.height ?? 0;
+			if (h > 0) setRailSlots(Math.max(1, Math.floor((h + RAIL_GAP) / (RAIL_BTN + RAIL_GAP))));
+		});
+		observer.observe(el);
+		return () => observer.disconnect();
+	}, [variant]);
+	const railOverflowing = views.length > railSlots;
+	// One slot is spent on the more button itself when overflowing.
+	const visibleViews = railOverflowing ? views.slice(0, Math.max(0, railSlots - 1)) : views;
+	const hiddenViews = railOverflowing ? views.slice(Math.max(0, railSlots - 1)) : [];
+
+	// The overflow menu (portal beside the rail).
+	const [moreOpen, setMoreOpen] = useState(false);
+	const [menuHoverId, setMenuHoverId] = useState<string | null>(null);
+	const moreBtnRef = useRef<HTMLButtonElement | null>(null);
 
 	// --- Panel state: width, open, active view -----------------------------------
 	// Initializers read the per-app memory synchronously (ShellLayout keys this
@@ -527,26 +632,97 @@ const SidebarWorkbench: React.FC<SidebarWorkbenchProps> = ({ variant, themeConfi
 				    ACTIVITY RAIL — one icon per container; footer at the foot
 				    ================================================================ */}
 				<div style={styles.rail} role="tablist" aria-orientation="vertical" aria-label="Sidebar views">
-					{views.map((v) => {
-						const isActive = open && activeView?.id === v.id;
-						return (
+					<div ref={viewsBoxRef} style={styles.railViews}>
+						{visibleViews.map((v) => {
+							const isActive = open && activeView?.id === v.id;
+							const hint = dropHint?.id === v.id ? dropHint : null;
+							return (
+								<button
+									key={v.id}
+									role="tab"
+									aria-selected={isActive}
+									title={v.title}
+									aria-label={v.title}
+									draggable
+									onClick={() => activate(v.id)}
+									onMouseEnter={() => setHoveredRailId(v.id)}
+									onMouseLeave={() => setHoveredRailId(null)}
+									onDragStart={(e) => {
+										e.dataTransfer.setData(RAIL_DND_MIME, v.id);
+										e.dataTransfer.effectAllowed = 'move';
+										setDragViewId(v.id);
+									}}
+									onDragEnd={() => { setDragViewId(null); setDropHint(null); }}
+									onDragOver={(e) => {
+										if (!e.dataTransfer.types.includes(RAIL_DND_MIME)) return;
+										e.preventDefault();
+										e.dataTransfer.dropEffect = 'move';
+										const rect = e.currentTarget.getBoundingClientRect();
+										setDropHint({ id: v.id, after: e.clientY > rect.top + rect.height / 2 });
+									}}
+									onDragLeave={() => setDropHint((cur) => (cur?.id === v.id ? null : cur))}
+									onDrop={(e) => {
+										if (!e.dataTransfer.types.includes(RAIL_DND_MIME)) return;
+										e.preventDefault();
+										const rect = e.currentTarget.getBoundingClientRect();
+										handleRailDrop(v.id, e.clientY > rect.top + rect.height / 2);
+									}}
+									style={{
+										...styles.railButton(isActive, hoveredRailId === v.id),
+										...(dragViewId === v.id ? { opacity: 0.4 } : null),
+										// Insertion hint: a brand edge on the drop side.
+										...(hint ? { boxShadow: `inset 0 ${hint.after ? -2 : 2}px 0 var(--rr-brand)` } : null),
+									}}
+								>
+									<span style={{ display: 'flex', width: RAIL_ICON, height: RAIL_ICON, alignItems: 'center', justifyContent: 'center' }}>{v.icon}</span>
+									{v.badge != null && v.badge !== 0 && <span style={styles.railBadge}>{v.badge}</span>}
+								</button>
+							);
+						})}
+						{hiddenViews.length > 0 && (
 							<button
-								key={v.id}
-								role="tab"
-								aria-selected={isActive}
-								title={v.title}
-								aria-label={v.title}
-								onClick={() => activate(v.id)}
-								onMouseEnter={() => setHoveredRailId(v.id)}
+								ref={moreBtnRef}
+								title="More views"
+								aria-label="More views"
+								aria-haspopup="menu"
+								aria-expanded={moreOpen}
+								onClick={() => setMoreOpen((o) => !o)}
+								onBlur={() => setTimeout(() => setMoreOpen(false), 150)}
+								onMouseEnter={() => setHoveredRailId('rr-rail-more')}
 								onMouseLeave={() => setHoveredRailId(null)}
-								style={styles.railButton(isActive, hoveredRailId === v.id)}
+								// The hidden ACTIVE container surfaces as a lit more
+								// button — the selection stays visible when its icon
+								// does not fit.
+								style={styles.railButton(open && hiddenViews.some((v) => v.id === activeView?.id), hoveredRailId === 'rr-rail-more')}
 							>
-								<span style={{ display: 'flex', width: RAIL_ICON, height: RAIL_ICON, alignItems: 'center', justifyContent: 'center' }}>{v.icon}</span>
-								{v.badge != null && v.badge !== 0 && <span style={styles.railBadge}>{v.badge}</span>}
+								<BxDotsHorizontal size={RAIL_ICON} />
+								{moreOpen && moreBtnRef.current && createPortal(
+									(() => {
+										const rect = moreBtnRef.current.getBoundingClientRect();
+										return (
+											<div role="menu" style={{ ...styles.railMoreMenu, left: rect.right + 6, top: Math.min(rect.top, window.innerHeight - 320) }}>
+												{hiddenViews.map((v) => (
+													<button
+														key={v.id}
+														role="menuitem"
+														style={styles.railMenuItem(menuHoverId === v.id, open && activeView?.id === v.id)}
+														onMouseEnter={() => setMenuHoverId(v.id)}
+														onMouseLeave={() => setMenuHoverId(null)}
+														onMouseDown={(e) => { e.preventDefault(); activate(v.id); setMoreOpen(false); }}
+													>
+														<span style={{ display: 'flex', width: 16, height: 16, alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{v.icon}</span>
+														<span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.title}</span>
+														{v.badge != null && v.badge !== 0 && <span style={{ ...styles.railBadge, position: 'static' }}>{v.badge}</span>}
+													</button>
+												))}
+											</div>
+										);
+									})(),
+									document.body,
+								)}
 							</button>
-						);
-					})}
-					<div style={styles.railSpacer} />
+						)}
+					</div>
 					{/* The platform footer rides the rail so the account menu stays
 					    reachable with the panel closed. The Documentation icon joins
 					    it ONLY while the panel is closed — open, the panel's own

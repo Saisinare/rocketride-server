@@ -13,7 +13,8 @@
 		"icon": "./icon.svg",
 		"readme": "./README.md",
 		"categories": [
-			"tools"
+			"tools",
+			"devTool"
 		],
 		"mode": "free",
 		"authenticated": true,

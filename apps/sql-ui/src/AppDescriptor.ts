@@ -31,7 +31,8 @@
 import 'react/jsx-dev-runtime';
 
 import type { AppDescriptor } from 'shell';
-import SqlApp from './SqlApp';
+import SqlApp, { SqlDevTool } from './SqlApp';
+import { SqlDevToolSidebar } from './SqlSidebar';
 
 /**
  * SQL Explorer app descriptor. The client area hosts the connection landing
@@ -52,6 +53,11 @@ const SQL_APP: AppDescriptor = {
 	// Two-column app: SqlApp's root AppLayout declares the navigation/schema
 	// sidebar and the status bar.
 	app: SqlApp,
+	// Dev-tool mounts: the workbench in the host's main area, the
+	// connections/schema sidebar in the host's sidebar — actions and state
+	// sync over the peer channel (sqlBridge).
+	devToolFrame: SqlDevTool,
+	devToolSidebar: SqlDevToolSidebar,
 };
 
 export default SQL_APP;

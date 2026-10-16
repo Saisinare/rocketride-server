@@ -12,7 +12,8 @@
 		"description": "CPU profiling for server and pipeline processes",
 		"icon": "./src/icon.svg",
 		"categories": [
-			"tools"
+			"tools",
+			"devTool"
 		],
 		"mode": "free",
 		"authenticated": true,

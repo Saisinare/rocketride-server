@@ -39,7 +39,10 @@ import { getDocs } from '../docs';
 import { SidebarView } from 'shared/modules/sidebar/SidebarView';
 import { BxExport, useSidebarCollapsed, useSidebarActiveView } from 'shell';
 import { foldTaskEvent } from 'shared/modules/sidebar/taskFold';
-import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, SidebarMode, AgentSidebar, AppBuilderSidebar, AppListItem } from 'shared/modules/sidebar/types';
+import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, SidebarMode, AgentSidebar, AppBuilderSidebar, AppListItem, ToolTabsSidebar } from 'shared/modules/sidebar/types';
+import { useDevToolPins, toToolTab } from '../devtools/devToolPins';
+import { setToolFrameOpener } from '../devtools/peer';
+import DevToolMount from '../devtools/DevToolMount';
 import type { TaskLifecycleEvent } from 'shared/modules/sidebar/taskFold';
 import { AgentSession, AGENTS_DIR } from 'shared/agent/agent';
 import type { AgentSessionMeta } from 'shared/agent/agent';
@@ -597,9 +600,77 @@ const SidebarProvider: React.FC = () => {
 		[sessions, activeFilePath, showConfirm]
 	);
 
+	// --- Dev tools (pinned tool tabs + catalog) --------------------------------
+
+	// Pins, strip order, and the server's devTool catalog — prefs-backed, one
+	// source of truth shared with RocketApp's rail containers.
+	const { tabOrder, catalog: toolCatalog, pinnedTools, unpin: unpinTool, setTabOrder } = useDevToolPins();
+
+	/** Opens (or focuses) a tool's frame as a `tool:<appId>` document. */
+	const handleOpenTool = useCallback((id: string) => {
+		const name = toolCatalog.find((a) => a.id === id)?.name ?? id;
+		getDocs()?.openStaticDocument(`tool:${id}`, name);
+	}, [toolCatalog]);
+
+	/** Strip tab selection: bring an OPEN document of the tool forward —
+	 *  never create one; selecting a sidebar tab must not spawn tabs. */
+	const handleFocusTool = useCallback((id: string) => {
+		const docs = getDocs();
+		if (!docs) return;
+		const state = docs.getState();
+		for (const [groupId, group] of Object.entries(state.groups)) {
+			for (let i = 0; i < group.editorIds.length; i++) {
+				const editorId = group.editorIds[i];
+				const uri = editorId ? state.editors[editorId]?.documentUri : undefined;
+				if (uri === `tool:${id}` || uri?.startsWith(`tool:${id}/`)) {
+					docs.setActiveGroup(groupId);
+					docs.setActiveEditor(groupId, i);
+					return;
+				}
+			}
+		}
+	}, []);
+
+	// A sidebar-mount peer post with no mounted frame summons the tool's
+	// document (the in-memory counterpart of the bridge's onPanelNeeded).
+	useEffect(() => {
+		setToolFrameOpener(handleOpenTool);
+		return () => setToolFrameOpener(null);
+	}, [handleOpenTool]);
+
+	// The dev-tool tabs contract: presence adds the pinned tool tabs and the
+	// Dev Tools catalog tab to the mode strip (classic mode); the workbench
+	// rail mirrors the same pins through RocketApp's sidebarViews.
+	const toolTabs: ToolTabsSidebar = useMemo(() => ({
+		tools: pinnedTools,
+		available: toolCatalog.map(toToolTab),
+		onOpenTool: handleOpenTool,
+		onFocusTool: handleFocusTool,
+		onShowTool: (id: string) => {
+			const name = toolCatalog.find((a) => a.id === id)?.name ?? id;
+			getDocs()?.openStaticDocument(`toolreadme:${id}`, `Dev Tool: ${name}`);
+		},
+		onRemoveTool: (id: string) => {
+			// A removed tool keeps no live surface — close its open frame and
+			// every per-document tab it opened (`tool:<id>/<docKey>`).
+			unpinTool(id);
+			const docs = getDocs();
+			if (!docs) return;
+			for (const uri of Object.keys(docs.getState().documents)) {
+				if (uri === `tool:${id}` || uri.startsWith(`tool:${id}/`)) docs.discardDocument(uri);
+			}
+		},
+		renderToolPanel: (id: string) => <DevToolMount appId={id} name={pinnedTools.find((t) => t.id === id)?.name ?? id} slot="sidebar" />,
+	}), [pinnedTools, toolCatalog, handleOpenTool, handleFocusTool, unpinTool]);
+
 	/** Opens a mode's embedded "Introduction to ..." page as a document tab. */
 	const handleShowIntro = useCallback((mode: IntroMode) => {
 		getDocs()?.openStaticDocument(`intro:${mode}`, INTRO_PAGES[mode].title);
+	}, []);
+
+	/** Opens the shared Desktop page (shell's DesktopView) as a document tab. */
+	const handleShowDesktop = useCallback(() => {
+		getDocs()?.openStaticDocument('desktop', 'Desktop');
 	}, []);
 
 	// --- Render ----------------------------------------------------------------
@@ -624,8 +695,33 @@ const SidebarProvider: React.FC = () => {
 	// prefs-backed state behave exactly as before.
 	const shellView = useSidebarActiveView();
 	/** Narrows a rail container id to the SidebarView mode union. */
-	const isKnownMode = (id: string | undefined): id is SidebarMode => id === 'agent' || id === 'apps' || id === 'nodes' || id === 'pipelines';
+	const isKnownMode = (id: string | undefined): id is SidebarMode =>
+		id === 'agent' || id === 'apps' || id === 'nodes' || id === 'pipelines' || id === 'toolStore' || !!id?.startsWith('tool:');
 	const effectiveMode = shellView && isKnownMode(shellView.activeViewId) ? shellView.activeViewId : sidebarMode;
+
+	// Rail → frame: SELECTING a tool's rail/strip container opens its document
+	// (the classic strip gets this from SidebarView's own tab handler; the
+	// workbench rail only reports the selection). Transitions only — a page
+	// boot restoring a remembered tool selection must not force the document
+	// open.
+	const prevShellViewRef = useRef<string | undefined>(shellView?.activeViewId);
+	useEffect(() => {
+		const id = shellView?.activeViewId;
+		const prev = prevShellViewRef.current;
+		prevShellViewRef.current = id;
+		if (id && id !== prev && prev !== undefined && id.startsWith('tool:')) handleOpenTool(id.slice('tool:'.length));
+	}, [shellView?.activeViewId, handleOpenTool]);
+
+	// Frame → rail: focusing a tool's document highlights its rail container
+	// (the VS Code host's onPanelFocused → setModeExternal, in-tree). The
+	// container id is the tool, so a per-document URI (`tool:<appId>/<docKey>`)
+	// maps back to its tool's container.
+	useEffect(() => {
+		if (!shellView || !activeFilePath.startsWith('tool:')) return;
+		const containerId = `tool:${activeFilePath.slice('tool:'.length).split('/')[0]}`;
+		if (shellView.activeViewId !== containerId) shellView.setActiveView(containerId);
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- sync on document focus changes only
+	}, [activeFilePath]);
 
 	// The sidebar node — the pipelines Explorer plus its confirm/error dialogs.
 	// Only the Explorer sits behind the collapse gate: the shell frame owns the
@@ -637,7 +733,7 @@ const SidebarProvider: React.FC = () => {
 	return (
 		<>
 			<SidebarCollapsedGate>
-				<SidebarView connection={connection} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} activeFilePath={activeFilePath} onNavigate={handleNavigate} onOpenFile={handleOpenFile} onFileManage={handleFileManage} fileActions={[{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }]} onSourceAction={handleSourceAction} onOpenUnknownTask={handleOpenUnknownTask} onRefresh={refresh} appBuilder={appBuilder} agent={agent} showModeStrip hideModeStrip={!!shellView} sidebarMode={effectiveMode} onSidebarModeChange={handleSidebarModeChange} onShowIntro={handleShowIntro} />
+				<SidebarView connection={connection} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} activeFilePath={activeFilePath} onNavigate={handleNavigate} onOpenFile={handleOpenFile} onFileManage={handleFileManage} fileActions={[{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }]} onSourceAction={handleSourceAction} onOpenUnknownTask={handleOpenUnknownTask} onRefresh={refresh} appBuilder={appBuilder} agent={agent} showModeStrip hideModeStrip={!!shellView} sidebarMode={effectiveMode} onSidebarModeChange={handleSidebarModeChange} onShowIntro={handleShowIntro} onShowDesktop={handleShowDesktop} toolTabs={toolTabs} tabOrder={tabOrder} onReorderTabs={setTabOrder} />
 			</SidebarCollapsedGate>
 			{confirmState && <ConfirmDialog title={confirmState.title} message={confirmState.message} confirmLabel={confirmState.confirmLabel} cancelLabel="Cancel" onConfirm={() => handleConfirmResult(true)} onCancel={() => handleConfirmResult(false)} />}
 			{actionError && <ConfirmDialog title="Pipeline Error" message={actionError} confirmLabel="OK" onConfirm={() => setActionError(null)} onCancel={() => setActionError(null)} />}

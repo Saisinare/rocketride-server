@@ -158,7 +158,13 @@ import { BxPlus, BxEditAlt, BxTrash, BxDesktop, BxGridAlt, BxCog, BxListUl, BxSt
 // =============================================================================
 
 // Shell component prop contracts + workspace/config types
-export type { ShellAppProps, AppDescriptor, AppManifestEntry, ShellConfig, ShellApiConfig, WorkspacePrefs, WorkspaceState, AppWorkspaceState, SettingValue, SettingSchema, AppConfiguration, ShellBrandingConfig, ShellThemeConfig, ShellThemeOption, ShellAccountConfig } from './components/workspace/types';
+export type { ShellAppProps, AppDescriptor, DevToolProps, DevToolClient, AppManifestEntry, ShellConfig, ShellApiConfig, WorkspacePrefs, WorkspaceState, AppWorkspaceState, SettingValue, SettingSchema, AppConfiguration, ShellBrandingConfig, ShellThemeConfig, ShellThemeOption, ShellAccountConfig } from './components/workspace/types';
+
+// Tool channel — the typed state/event surface between a tool's controller
+// (devToolSidebar) and its document views (devToolFrame). Hosts construct it
+// over the peer transport; tools receive it as DevToolProps.channel.
+export { createToolChannel, asToolStateMessage, asToolEventMessage } from './components/workspace/toolChannel';
+export type { ToolChannel, ToolChannelUnsubscribe, IToolStateMessage, IToolEventMessage } from './components/workspace/toolChannel';
 
 // Top-level shell + sidebar component prop types
 export type { ShellProps } from './components/layout/Shell';
@@ -358,7 +364,7 @@ export type { IGridFilterDef, IGridFilterOption, IFilterStripProps } from './com
 export type { IDataGridPersistence, DataGridLayout } from './components/data-grid/persistence';
 export type { IGridConfigGetDetail, IGridConfigSetDetail, IGridConfigClearDetail } from './components/data-grid/gridConfigChannel';
 export type { Announcement } from './hooks/useAnnouncements';
-export type { DashboardResponse, DashboardOverview, DashboardConnection, DashboardTask, DashboardEvent, TaskEvent, ActivityEvent, ListPageRequest, ListPageResponse } from './modules/server';
+export type { DashboardResponse, DashboardOverview, DashboardConnection, DashboardTask, DashboardEvent, TaskEvent, ActivityEvent, ListPageRequest, ListPageResponse, MonitorPageId } from './modules/server';
 // =============================================================================
 // PLATFORM VIEW MODULES — the shared partition's shell half, now in-package
 // =============================================================================
@@ -373,6 +379,7 @@ import MonitorView, { parseActivityEvent } from './modules/server';
 import { ActivityPanel, ConnectionsPanel, TasksPanel, OverviewGrid, getEventDisplay } from './modules/server/components';
 import { formatNumber, formatTime, formatUptime, formatTimeAgo, formatDayTime } from './modules/server/util';
 import AccountView from './modules/account';
+import { DesktopView } from './modules/desktop';
 import { EnvironmentView } from './modules/environment';
 import { CheckoutModal, PlanPicker } from './modules/checkout';
 import { UpgradeModal } from './modules/billing';
@@ -381,9 +388,13 @@ export {
 	MonitorView, parseActivityEvent,
 	ActivityPanel, ConnectionsPanel, TasksPanel, OverviewGrid, getEventDisplay,
 	formatNumber, formatTime, formatUptime, formatTimeAgo, formatDayTime,
-	AccountView, EnvironmentView,
+	AccountView, DesktopView, EnvironmentView,
 	CheckoutModal, PlanPicker, UpgradeModal,
 };
+
+// The shared desktop page's type surface (the component itself is exported
+// above and on shellApi; its default server adapter stays internal).
+export type { DesktopApp, DesktopViewProps, DesktopAdapter, DesktopQuote, DesktopVersionRow, DesktopVersionOverride } from './modules/desktop';
 
 export type { EventTone } from './modules/server/components';
 export type { CheckoutPlan, PlanAction, PromoRedemption, PromoValidation } from './modules/checkout/types';
@@ -540,6 +551,9 @@ export const shellApi = {
 	get BxChevronRight() { return BxChevronRight; },
 	get BxFolderOpen() { return BxFolderOpen; },
 	get AppLayout() { return AppLayout; },
+	// The shared desktop page (greeting + quote + app-card grid) — consumed
+	// by every launcher host (hello, home, rocket-ui's Desktop page).
+	get DesktopView() { return DesktopView; },
 	// Desktop version selector — session override read + apply/clear
 	get getAppVersionOverride() { return getAppVersionOverride; },
 	get applyAppVersionOverride() { return applyAppVersionOverride; },

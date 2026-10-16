@@ -12,7 +12,8 @@
 		"description": "Browse, query, design, and diagram SQL databases through pipeline database nodes",
 		"icon": "./src/icon.svg",
 		"categories": [
-			"tools"
+			"tools",
+			"devTool"
 		],
 		"mode": "free",
 		"authenticated": true,

@@ -20,8 +20,9 @@ import * as path from 'path';
 import { randomBytes } from 'crypto';
 import { ConnectionManager } from '../connection/connection';
 import { GenericEvent } from '../shared/types';
-import { appIconDataUri, MAX_README_IMAGE_BYTES, scanWorkspaceApps } from '../appdev/appScan';
-import type { ScannedApp } from '../appdev/appScan';
+import { appIconDataUri, MAX_README_IMAGE_BYTES, scanWorkspaceApps } from 'shared/tools/appdev';
+import type { IScannedWorkspaceApp as ScannedApp } from 'shared/tools/appdev';
+import { hostWorkspaceFs } from './toolhost/hostWorkspaceFs';
 import { ensureAppTrigger, ensureProjectId, readAppListing, saveAppListing } from '../appdev/appMarker';
 import type { AppListing } from '../appdev/appMarker';
 // Deep file imports (never the barrel — it drags the React view layer
@@ -31,7 +32,7 @@ import { runListingPreflight } from 'shared/modules/appdev/preflight';
 import { probePackage } from 'shared/modules/appdev/compatProbe';
 import { walkDeploymentHistory } from 'shared/modules/appdev/wire';
 import type { WireHistoryRow } from 'shared/modules/appdev/wire';
-import { ensureWatch, getWatchManager } from '../appdev/watchManager';
+import { ensureDevSession, getDevSessionManager } from '../appdev/devSessionManager';
 import { deployApp } from '../appdev/publish';
 import { vendorAppTypes } from '../appdev/appTypes';
 import { getLogger } from '../shared/util/output';
@@ -93,7 +94,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	 */
 	public async show(appId: string): Promise<void> {
 		// Resolve the app's bound folder
-		const apps = await scanWorkspaceApps();
+		const apps = await scanWorkspaceApps(hostWorkspaceFs);
 		const app = apps.find((a) => a.id === appId);
 		if (!app) {
 			vscode.window.showErrorMessage(`App "${appId}" has no bound folder in this workspace.`);
@@ -122,7 +123,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 		// The trigger file carries nothing — identity lives ONLY in the
 		// containing folder's package.json appManifest.
 		const folder = uri.with({ path: uri.path.slice(0, uri.path.lastIndexOf('/')) }).fsPath;
-		const apps = await scanWorkspaceApps();
+		const apps = await scanWorkspaceApps(hostWorkspaceFs);
 		return apps.find((a) => a.folder === folder)?.id ?? '';
 	}
 
@@ -131,11 +132,11 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	 * extension host came up. "Developer: Restart Extension Host" kills the
 	 * dev servers via deactivation but keeps the tabs and their persisted
 	 * webview contexts — VSCode never re-resolves the custom editor, so
-	 * view:ready never re-fires and the open-path ensureWatch belongs to a
+	 * view:ready never re-fires and the open-path ensureDevSession belongs to a
 	 * resolve that never ran. The tab list is the one surface that survives
 	 * every restart mode; activation reconciles against it directly.
 	 *
-	 * Safe against a concurrent re-resolve: ensureWatch rides the per-app
+	 * Safe against a concurrent re-resolve: ensureDevSession rides the per-app
 	 * serialized chain and doStart's existing-session guard no-ops the loser.
 	 */
 	public async reconcileOpenTabs(): Promise<void> {
@@ -152,9 +153,9 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 		for (const uri of uris) {
 			try {
 				const appId = await this.appIdOf(uri);
-				const apps = await scanWorkspaceApps();
+				const apps = await scanWorkspaceApps(hostWorkspaceFs);
 				const app = apps.find((a) => a.id === appId);
-				if (app && !getWatchManager()?.isRunning(app.id)) void ensureWatch(app);
+				if (app && !getDevSessionManager()?.isRunning(app.id)) void ensureDevSession(app);
 			} catch {
 				// Unresolvable tab (marker unreadable / app unbound) — VSCode's
 				// eventual re-resolve reports that failure in a visible panel.
@@ -170,7 +171,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 		const appId = await this.appIdOf(document.uri);
 
 		// Resolve the app's facts from the workspace binding
-		const apps = await scanWorkspaceApps();
+		const apps = await scanWorkspaceApps(hostWorkspaceFs);
 		const app = apps.find((a) => a.id === appId);
 
 		panel.title = app?.name ?? appId;
@@ -202,7 +203,8 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 							// the gated default.
 							capabilities: {
 								hasNativeFiles: true,
-								canDebug: true,
+								// External-browser debug was removed (2026-10-16).
+								canDebug: false,
 								hasReviewLadder: !(this.connectionManager.getClient()?.getAccountInfo()?.capabilities ?? []).includes('oss'),
 							},
 							stage: AppScreenProvider.normalizeStage(this.context.workspaceState.get(`appdev.stage.${appId}`)),
@@ -229,7 +231,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 						}
 						// The resolve-time watch start can lose a race with the
 						// workspace scan — retry here (idempotent when running)
-						if (app && !getWatchManager()?.isRunning(appId)) void ensureWatch(app);
+						if (app && !getDevSessionManager()?.isRunning(appId)) void ensureDevSession(app);
 						// (No origin sanity warning anymore: LOCAL-FIRST previews
 						// deliberately live on the dev server's proxy origin,
 						// which differs from the engine origin by design.)
@@ -249,10 +251,6 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 						await this.context.workspaceState.update(`appdev.prefs.${appId}`, bag);
 						break;
 					}
-
-					case 'appdev:debug':
-						await vscode.commands.executeCommand('rocketride.app.debug', appId);
-						break;
 
 					case 'appdev:login': {
 						// The preview shell needs a session and this window is
@@ -315,7 +313,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 						// server, pnpm install (package.json may have changed),
 						// fresh rsbuild dev. The new server's first successful
 						// build triggers the normal preview reload.
-						if (app) await getWatchManager()?.restart(app);
+						if (app) await getDevSessionManager()?.restart(app);
 						break;
 
 					case 'appdev:reveal': {
@@ -384,7 +382,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 									break;
 								case 'loadListing': {
 									// The listing IS the appManifest — read it from disk.
-									const apps = await scanWorkspaceApps();
+									const apps = await scanWorkspaceApps(hostWorkspaceFs);
 									const scanned = apps.find((a) => a.id === appId);
 									value = scanned ? await readAppListing(scanned.folder) : null;
 									break;
@@ -392,7 +390,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 								case 'saveListing': {
 									// Persist the listing back into package.json (files are
 									// truth; the next deploy packs it as metadata.manifest).
-									const apps = await scanWorkspaceApps();
+									const apps = await scanWorkspaceApps(hostWorkspaceFs);
 									const scanned = apps.find((a) => a.id === appId);
 									if (!scanned) throw new Error(`App "${appId}" has no bound folder in this workspace.`);
 									await saveAppListing(scanned.folder, callArgs?.[0] as AppListing);
@@ -410,7 +408,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 									// host's IO: native-fs existence + the dependency compat
 									// probe (Node fetch), which closes the gap where a Node-only
 									// dep would survive to deploy from VSCode.
-									const apps = await scanWorkspaceApps();
+									const apps = await scanWorkspaceApps(hostWorkspaceFs);
 									const scanned = apps.find((a) => a.id === appId);
 									if (!scanned) {
 										value = await runListingPreflight(null, { fileExists: async () => false });
@@ -462,7 +460,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 									// copies app-root-relative paths, so a pick outside the app
 									// folder is refused, not silently accepted.
 									const kind = String(callArgs?.[0] ?? '') === 'icon' ? 'icon' : 'readme';
-									const apps = await scanWorkspaceApps();
+									const apps = await scanWorkspaceApps(hostWorkspaceFs);
 									const scanned = apps.find((a) => a.id === appId);
 									if (!scanned) throw new Error(`App "${appId}" has no bound folder in this workspace.`);
 									const picked = await vscode.window.showOpenDialog({
@@ -494,7 +492,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 									// accepted. The native dialog cannot offer files and folders
 									// TOGETHER on Windows/Linux (macOS only), so a QuickPick
 									// asks which kind first.
-									const apps = await scanWorkspaceApps();
+									const apps = await scanWorkspaceApps(hostWorkspaceFs);
 									const scanned = apps.find((a) => a.id === appId);
 									if (!scanned) throw new Error(`App "${appId}" has no bound folder in this workspace.`);
 									const wsRoot = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(scanned.folder))?.uri;
@@ -539,21 +537,21 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 									// undefined on anything unservable) with the README size
 									// budget — screenshots/GIFs dwarf icons.
 									const rel = String(callArgs?.[0] ?? '').replace(/^\.\//, '');
-									const apps = await scanWorkspaceApps();
+									const apps = await scanWorkspaceApps(hostWorkspaceFs);
 									const scanned = apps.find((a) => a.id === appId);
 									if (!scanned) throw new Error(`App "${appId}" has no bound folder in this workspace.`);
 									const abs = path.resolve(scanned.folder, ...rel.split('/'));
 									if (!abs.startsWith(path.resolve(scanned.folder) + path.sep)) {
 										throw new Error('Path escapes the app folder.');
 									}
-									value = (await appIconDataUri(abs, MAX_README_IMAGE_BYTES)) ?? null;
+									value = (await appIconDataUri(hostWorkspaceFs, abs, MAX_README_IMAGE_BYTES)) ?? null;
 									break;
 								}
 								case 'readFile': {
 									// One app-folder-relative text file for preview (icon SVG,
 									// README markdown). Traversal-guarded and size-capped.
 									const rel = String(callArgs?.[0] ?? '').replace(/^\.\//, '');
-									const apps = await scanWorkspaceApps();
+									const apps = await scanWorkspaceApps(hostWorkspaceFs);
 									const scanned = apps.find((a) => a.id === appId);
 									if (!scanned) throw new Error(`App "${appId}" has no bound folder in this workspace.`);
 									const abs = path.resolve(scanned.folder, ...rel.split('/'));
@@ -614,7 +612,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 			this.devEntries.delete(appId);
 			// The App Screen owns the watch lifecycle: closing it ends the
 			// session and drops the dev overlay (shell returns to published).
-			void getWatchManager()?.stop(appId);
+			void getDevSessionManager()?.stop(appId);
 		});
 
 		// Start the inner loop (setting-gated by rocketride.appdev.autoWatch)
@@ -633,8 +631,8 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 					// A rewired dependency spec invalidates any memoised
 					// workspace install — the watch's pnpm install must run
 					// again so the app actually links the new spec.
-					if (result.rewired) getWatchManager()?.invalidateInstall();
-					return ensureWatch(app);
+					if (result.rewired) getDevSessionManager()?.invalidateInstall();
+					return ensureDevSession(app);
 				}
 				this.notifyWatch(appId, { state: 'error', target: 'platform package', reason: result.reason });
 			});
@@ -648,7 +646,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 
 	/**
 	 * Whether an App Builder panel is currently open for this app — the
-	 * watchManager's crash-recovery gate (respawn only while someone is
+	 * dev-session manager's crash-recovery gate (respawn only while someone is
 	 * looking at the preview).
 	 *
 	 * @param appId - The app to check.
@@ -951,14 +949,14 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 				for (const [appId, status] of this.lastWatch) {
 					if (status.state !== 'error' || status.target !== 'platform package') continue;
 					void (async () => {
-						const apps = await scanWorkspaceApps();
+						const apps = await scanWorkspaceApps(hostWorkspaceFs);
 						const app = apps.find((a) => a.id === appId);
 						if (!app) return;
 						const result = await vendorAppTypes(this.context, app.folder);
 						if (result.ok) {
 							// Same rewired-spec invalidation as the open path.
-							if (result.rewired) getWatchManager()?.invalidateInstall();
-							return ensureWatch(app);
+							if (result.rewired) getDevSessionManager()?.invalidateInstall();
+							return ensureDevSession(app);
 						}
 						this.notifyWatch(appId, { state: 'error', target: 'platform package', reason: result.reason });
 					})();
@@ -999,7 +997,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 					);
 					if (stillOpen) continue;
 					const appId = await this.appIdOf(input.uri);
-					void getWatchManager()?.stop(appId);
+					void getDevSessionManager()?.stop(appId);
 				} catch { /* unresolvable marker — nothing to stop */ }
 			}
 		});

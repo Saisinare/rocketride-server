@@ -37,6 +37,10 @@ export interface WorkbenchMemory {
 	open?: boolean;
 	/** The active view container id. */
 	view?: string;
+	/** User-dragged rail order — container ids in display order. Ids it
+	    names render first in that order; anything it doesn't name keeps its
+	    declared position after them. */
+	railOrder?: string[];
 }
 
 /**
@@ -123,7 +127,8 @@ const styles = {
 		// The active marker is the strip's brand underline (the TabControl
 		// treatment), not a filled square — this is a tab, not a rail button.
 		borderBottom: `2px solid ${active ? 'var(--rr-brand)' : 'transparent'}`,
-		borderRadius: '6px 6px 0 0',
+		// Square corners — the strip matches VS Code's flat tab chrome.
+		borderRadius: 0,
 		background: hovered && !active ? 'var(--rr-bg-list-hover, var(--rr-bg-surface-alt))' : 'transparent',
 		cursor: 'pointer',
 		color: active ? 'var(--rr-text-primary)' : 'var(--rr-text-secondary)',

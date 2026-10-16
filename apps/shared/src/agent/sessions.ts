@@ -109,6 +109,18 @@ function isValidAppId(appId: string): boolean {
 /** The controlling app id, stamped once via configureSessions(). */
 let controllingAppId: string | null = null;
 
+/** Resolves the first time configureSessions() stamps an id — lets early
+    callers wait out the host's mount order instead of racing it. */
+let notifyConfigured: (() => void) | null = null;
+const configuredSignal = new Promise<void>((resolve) => {
+	notifyConfigured = resolve;
+});
+
+/** How long a session verb waits for the host to configure before failing
+    loudly — generous for any mount order, short enough to surface a host
+    that genuinely never configures. */
+const CONFIGURE_WAIT_MS = 5000;
+
 /**
  * Stamps the controlling app id that namespaces all session storage.
  * Called by AgentSession.configure() — never by hosts directly.
@@ -121,15 +133,29 @@ export function configureSessions(appId: string): void {
 		throw new Error(`Invalid controlling app id for agent sessions: '${appId}'`);
 	}
 	controllingAppId = appId;
+	notifyConfigured?.();
 }
 
 /**
  * The configured `.agents/<appId>` directory.
  *
+ * The host stamps the id from a mount effect while session consumers (e.g.
+ * a restored agent conversation tab) load from their own mount effects —
+ * the two race within one React commit. All verbs are async anyway, so an
+ * early caller WAITS (bounded) for the stamp instead of failing on order.
+ *
  * @returns The namespace directory store path.
  */
-function agentsDir(): string {
-	if (!controllingAppId) throw new Error('Agent sessions are not configured — call AgentSession.configure(appId) first.');
+async function agentsDir(): Promise<string> {
+	if (!controllingAppId) {
+		await Promise.race([
+			configuredSignal,
+			new Promise<never>((_, reject) => setTimeout(
+				() => reject(new Error('Agent sessions are not configured — call AgentSession.configure(appId) first.')),
+				CONFIGURE_WAIT_MS,
+			)),
+		]);
+	}
 	return `${AGENTS_DIR}/${controllingAppId}`;
 }
 
@@ -139,10 +165,10 @@ function agentsDir(): string {
  * @param sessionId - The session GUID.
  * @returns The session file store path.
  */
-function sessionPath(sessionId: string): string {
+async function sessionPath(sessionId: string): Promise<string> {
 	// step: ids are GUIDs by construction — anything else is a caller bug
 	if (!UUID_RE.test(sessionId)) throw new Error(`Invalid agent session id: '${sessionId}'`);
-	return `${agentsDir()}/${sessionId}.json`;
+	return `${await agentsDir()}/${sessionId}.json`;
 }
 
 /**
@@ -207,8 +233,8 @@ async function readCatalog(path: string): Promise<AgentSessionMeta[]> {
  *
  * @param mutate - Pure transform of the current rows to the new rows.
  */
-function updateCatalog(mutate: (rows: AgentSessionMeta[]) => AgentSessionMeta[]): Promise<void> {
-	const path = `${agentsDir()}/catalog.json`;
+async function updateCatalog(mutate: (rows: AgentSessionMeta[]) => AgentSessionMeta[]): Promise<void> {
+	const path = `${await agentsDir()}/catalog.json`;
 	const op = catalogChain.then(async () => {
 		const rows = mutate(await readCatalog(path));
 		await requireClient().fsWriteJson(path, { version: 1, sessions: rows } satisfies CatalogFile);
@@ -230,7 +256,7 @@ function updateCatalog(mutate: (rows: AgentSessionMeta[]) => AgentSessionMeta[])
  * @returns The requested catalog page.
  */
 export async function getAgentSessions(offset: number, count: number): Promise<AgentSessionMeta[]> {
-	const rows = await readCatalog(`${agentsDir()}/catalog.json`);
+	const rows = await readCatalog(`${await agentsDir()}/catalog.json`);
 	return rows.sort((a, b) => b.date - a.date).slice(offset, offset + count);
 }
 
@@ -240,8 +266,8 @@ export async function getAgentSessions(offset: number, count: number): Promise<A
  * @param sessionId - The session GUID.
  * @returns The session file content.
  */
-export function getContext(sessionId: string): Promise<string> {
-	return requireClient().fsReadString(sessionPath(sessionId));
+export async function getContext(sessionId: string): Promise<string> {
+	return requireClient().fsReadString(await sessionPath(sessionId));
 }
 
 /**
@@ -250,7 +276,7 @@ export function getContext(sessionId: string): Promise<string> {
  * @param sessionId - The session GUID.
  */
 export async function deleteSession(sessionId: string): Promise<void> {
-	const path = sessionPath(sessionId);
+	const path = await sessionPath(sessionId);
 	await requireClient().fsDelete(path);
 	emitFsChange(path, 'agent');
 	await updateCatalog((rows) => rows.filter((r) => r.sessionId !== sessionId));
@@ -262,7 +288,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
  * @param session - The complete session file content to persist.
  */
 export async function saveSession(session: AgentSessionFile): Promise<void> {
-	const path = sessionPath(session.sessionId);
+	const path = await sessionPath(session.sessionId);
 	await requireClient().fsWriteJson(path, session);
 	emitFsChange(path, 'agent');
 	const meta: AgentSessionMeta = { sessionId: session.sessionId, date: session.date, title: session.title };

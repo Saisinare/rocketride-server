@@ -181,7 +181,7 @@ export const GALLERY_TOKEN_USAGE: Record<string, IGalleryTokenUsage> = {
 		commonStyles: {},
 	},
 	'tab-control': {
-		direct: ['--rr-bg-scrollbar-thumb', '--rr-bg-widget-header', '--rr-border', '--rr-brand', '--rr-color-error', '--rr-fg-button', '--rr-scrollbar-thumb', '--rr-text-primary', '--rr-text-secondary'],
+		direct: ['--rr-bg-paper', '--rr-bg-scrollbar-thumb', '--rr-bg-widget-header', '--rr-border', '--rr-brand', '--rr-color-error', '--rr-fg-button', '--rr-scrollbar-thumb', '--rr-text-primary', '--rr-text-secondary'],
 		commonStyles: {},
 	},
 	'toggle-group': {

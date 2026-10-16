@@ -53,15 +53,18 @@ import { WelcomeProvider } from './providers/WelcomeProvider';
 import { AccountProvider } from './providers/AccountProvider';
 import { EnvironmentProvider } from './providers/EnvironmentProvider';
 import { NewAppProvider } from './providers/NewAppProvider';
+import { DevToolStore } from './providers/DevToolStore';
+import { DevToolBridge } from './providers/DevToolBridge';
+import { DevToolPanelProvider } from './providers/DevToolPanelProvider';
+import { DevToolReadmeProvider } from './providers/DevToolReadmeProvider';
 // BillingProvider removed — billing is now a tab in AccountProvider
 // AuthProvider removed — auth failures now open the Settings page directly
 import { AgentManager } from './agents/agent-manager';
 import { syncServiceCatalog } from './agents/services';
 import { CloudAuthProvider } from './auth/CloudAuthProvider';
 import { AppScreenProvider } from './providers/AppScreenProvider';
-import { initWatchManager } from './appdev/watchManager';
+import { initDevSessionManager } from './appdev/devSessionManager';
 import { ensureShell, refreshVendoredPlatform } from './appdev/appTypes';
-import { debugApp } from './appdev/debug';
 
 // Extension context — set once in activate(), available via getExtensionContext()
 let extensionContext: vscode.ExtensionContext;
@@ -281,9 +284,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				logger.output(`${icons.info} Creating tree providers...`);
 				progress.report({ increment: 50, message: 'Creating tree providers...' });
 
-				// Register unified sidebar webview
-				sidebar = new SidebarProvider(context.extensionUri);
-				const sidebarWebviewProvider = vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, sidebar);
+				// Pinned dev-tools store — created before the sidebar (which
+				// renders the tool tabs) and shared with the picker below —
+				// plus the peer bridge relaying frame ↔ sidebar tool messages.
+				const devTools = new DevToolStore(context);
+				const devToolBridge = new DevToolBridge();
+				// A sidebar interaction with a closed tool panel reopens it —
+				// the message waits in the bridge buffer and flushes on mount.
+				devToolBridge.onPanelNeeded = (appId) => {
+					void vscode.commands.executeCommand('rocketride.devtool.open', appId);
+				};
+
+				// Register unified sidebar webview. retainContextWhenHidden: the
+				// sidebar carries live state (dev-tool sidebar mounts, their SDK
+				// connections, task indicators) that must survive switching to
+				// another activity-bar container (Explorer, Git, ...).
+				sidebar = new SidebarProvider(context.extensionUri, context, devTools, devToolBridge);
+				const sidebarWebviewProvider = vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, sidebar, {
+					webviewOptions: { retainContextWhenHidden: true },
+				});
 
 				context.subscriptions.push(sidebarWebviewProvider);
 
@@ -309,14 +328,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				// The guard wrapper ships beside the bundle (staged by
 				// vscode:stage-files); every dev server spawns through it so
 				// it dies with this extension host.
-				const watchManager = initWatchManager(appScreen, context.asAbsolutePath('devServerGuard.cjs'));
+				const devSessions = initDevSessionManager(appScreen, context.asAbsolutePath('devServerGuard.cjs'));
 				context.subscriptions.push(
 					vscode.window.registerCustomEditorProvider('rocketride.appBuilder', appScreen, {
 						webviewOptions: { retainContextWhenHidden: true },
 						supportsMultipleEditorsPerDocument: false,
 					}),
 					appScreen,
-					{ dispose: () => watchManager.dispose() },
+					{ dispose: () => devSessions.dispose() },
 				);
 				// Tabs that predate this host ("Developer: Restart Extension
 				// Host" keeps them open but never re-resolves them) still need
@@ -328,7 +347,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				const environment = new EnvironmentProvider(context);
 				// New App wizard — registers rocketride.app.create itself
 				const newApp = new NewAppProvider(context);
-				context.subscriptions.push(account, environment, newApp);
+				// Dev tools: the tool panels (MF host webviews) + the modules
+				// flow's details page (README + Install/Remove — Remove also
+				// closes the tool's open panel). Each registers its own command.
+				const devToolPanels = new DevToolPanelProvider(context, devToolBridge);
+				// Focusing a tool's editor tab highlights its tab on the
+				// sidebar strip (and shows its sidebar body).
+				devToolPanels.onPanelFocused = (appId) => sidebar?.setModeExternal(`tool:${appId}`);
+				// Tool sidebars follow the editor's fronted tab: the fronted
+				// tool document's key, or null when a non-tool tab is active.
+				devToolPanels.onActiveDocChange = (appId, docKey) => sidebar?.notifyToolActiveDoc(appId, docKey);
+				const devToolReadme = new DevToolReadmeProvider(context, devTools, (appId) => devToolPanels.close(appId));
+				context.subscriptions.push(account, environment, newApp, devTools, devToolPanels, devToolReadme);
 
 				// Register unified project editor (canvas + status + trace)
 				project = new ProjectProvider(context);
@@ -522,14 +552,6 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('rocketride.app.open', (appId: string) => {
 			// Fire-and-forget: a rejection has no other surface here — say it.
 			appScreen?.show(appId).catch((err) => vscode.window.showErrorMessage(`Failed to open app: ${err instanceof Error ? err.message : String(err)}`));
-		}),
-		vscode.commands.registerCommand('rocketride.app.debug', (appId: string) => {
-			// The persistent browser profile lives in global storage: per-machine,
-			// outside every workspace (a workspace-local profile risks committing
-			// a signed-in session to the repository). Per APP, because Chromium
-			// refuses a second browser process on one userDataDir — a shared
-			// profile would make two apps' debug sessions mutually exclusive.
-			debugApp(appId, path.join(context.globalStorageUri.fsPath, 'app-debug-profile', appId)).catch((err) => vscode.window.showErrorMessage(`Failed to debug app: ${err instanceof Error ? err.message : String(err)}`));
 		}),
 		vscode.commands.registerCommand('rocketride.refresh', async () => {
 			await refreshAllProviders();

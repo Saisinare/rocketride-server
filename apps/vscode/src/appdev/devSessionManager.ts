@@ -4,7 +4,7 @@
 // =============================================================================
 
 /**
- * WatchManager — the App Builder inner loop's engine room (local-first).
+ * DevSessionManager — the App Builder inner loop's engine room (local-first).
  *
  * Per app: runs `rsbuild dev` in the app's folder under a generated
  * PASSTHROUGH-PROXY wrapper config (the preview shell loads everything
@@ -30,17 +30,17 @@ import { ConnectionManager } from '../connection/connection';
 import { extractInstallCause, isTransientLockError, setWorkspaceInstallDelegate } from './appTypes';
 import { getLogger } from '../shared/util/output';
 import { writeProxyConfig } from './proxyConfig';
-import type { ScannedApp } from './appScan';
+import type { IScannedWorkspaceApp as ScannedApp } from 'shared/tools/appdev';
 import type { AppScreenProvider, AppWatchStatus } from '../providers/AppScreenProvider';
 
 // =============================================================================
 // TYPES
 // =============================================================================
 
-/** One running watch session. Every session is OWNED — the manager spawned
+/** One running dev session. Every session is OWNED — the manager spawned
     its process tree (under the guard wrapper, whose stdin tether kills the
     server when this extension host dies — see doStart) and observes its exit. */
-interface WatchSession {
+interface DevSession {
 	app: ScannedApp;
 	/** The spawned dev-server tree. */
 	proc: ChildProcess;
@@ -83,8 +83,8 @@ interface WatchSession {
 // MANAGER
 // =============================================================================
 
-export class WatchManager {
-	private sessions = new Map<string, WatchSession>();
+export class DevSessionManager {
+	private sessions = new Map<string, DevSession>();
 	/**
 	 * THE CATALOG DISCIPLINE: every lifecycle operation for an app —
 	 * start, stop, restart — is appended to that app's serialized chain
@@ -115,7 +115,7 @@ export class WatchManager {
 	 */
 	private install: { gen: number; promise: Promise<boolean> } | null = null;
 	private installGen = 0;
-	/** Monotonic source of linger tokens (see WatchSession.lingerToken). */
+	/** Monotonic source of linger tokens (see DevSession.lingerToken). */
 	private lingerSeq = 0;
 	private connectionManager = ConnectionManager.getInstance();
 	private logger = getLogger();
@@ -337,7 +337,7 @@ export class WatchManager {
 		// engine origin may differ between sessions (local-first dev design)
 		const engineOrigin = this.connectionManager.getHttpUrl() || 'http://localhost:5565';
 		// step: a failed wrapper write must SETTLE readiness — an unsettled
-		// promise leaves debugApp waiting forever and the panel badge frozen,
+		// promise leaves ready-waiters hanging and the panel badge frozen,
 		// and no session record exists yet for the exit handler to clean up
 		let proxyConfigPath: string;
 		try {
@@ -361,7 +361,7 @@ export class WatchManager {
 			detached: process.platform !== 'win32',
 		});
 
-		const session: WatchSession = { app, proc, startedAt: Date.now(), buildStart: Date.now(), lastLineAt: Date.now() };
+		const session: DevSession = { app, proc, startedAt: Date.now(), buildStart: Date.now(), lastLineAt: Date.now() };
 		this.sessions.set(app.id, session);
 		this.notify(app.id, { state: 'building' });
 		this.startHeartbeat(session);
@@ -410,11 +410,11 @@ export class WatchManager {
 			// respawns itself — bounded, so a server that dies on every boot
 			// cannot loop forever. Surviving the window resets the streak.
 			if (this.appScreen.hasPanel(app.id)) {
-				const quickDeath = Date.now() - session.startedAt < WatchManager.RESPAWN_WINDOW_MS;
+				const quickDeath = Date.now() - session.startedAt < DevSessionManager.RESPAWN_WINDOW_MS;
 				const strikes = quickDeath ? (this.respawnStrikes.get(app.id) ?? 0) + 1 : 1;
 				this.respawnStrikes.set(app.id, strikes);
-				if (strikes <= WatchManager.MAX_RESPAWNS) {
-					this.console(app.id, 'warn', `dev server exited (${code}) — respawning (attempt ${strikes}/${WatchManager.MAX_RESPAWNS})`);
+				if (strikes <= DevSessionManager.MAX_RESPAWNS) {
+					this.console(app.id, 'warn', `dev server exited (${code}) — respawning (attempt ${strikes}/${DevSessionManager.MAX_RESPAWNS})`);
 					void this.start(app, { respawn: true });
 					return;
 				}
@@ -450,7 +450,7 @@ export class WatchManager {
 	 * session that no longer exists — and double-fires once a respawned
 	 * session installs its own watcher on the same file.
 	 */
-	private disposeSessionResources(session: WatchSession): void {
+	private disposeSessionResources(session: DevSession): void {
 		if (session.reloadTimer) clearTimeout(session.reloadTimer);
 		if (session.pkgTimer) clearTimeout(session.pkgTimer);
 		if (session.heartbeatTimer) clearInterval(session.heartbeatTimer);
@@ -471,7 +471,7 @@ export class WatchManager {
 	 *
 	 * @param session - The session to watch for stalls.
 	 */
-	private startHeartbeat(session: WatchSession): void {
+	private startHeartbeat(session: DevSession): void {
 		session.heartbeatTimer = setInterval(() => {
 			// step: only speak while something is actually awaited
 			if (session.firstBuildDone && session.buildStart === undefined) return;
@@ -479,9 +479,9 @@ export class WatchManager {
 			const elapsed = formatMs(now - (session.buildStart ?? session.startedAt));
 			// step: a long-quiet compiler is the stall signal — escalate to warn
 			const quietMs = now - (session.lastLineAt ?? session.startedAt);
-			const quiet = quietMs >= WatchManager.HEARTBEAT_MS ? ` — no rsbuild output for ${formatMs(quietMs)}` : '';
+			const quiet = quietMs >= DevSessionManager.HEARTBEAT_MS ? ` — no rsbuild output for ${formatMs(quietMs)}` : '';
 			this.console(session.app.id, quiet ? 'warn' : 'log', `still building (${elapsed} elapsed)${quiet}`);
-		}, WatchManager.HEARTBEAT_MS);
+		}, DevSessionManager.HEARTBEAT_MS);
 	}
 
 	/**
@@ -520,11 +520,11 @@ export class WatchManager {
 			// token (guards a session the user reopened after the timer fired).
 			const token = ++this.lingerSeq;
 			session.lingerToken = token;
-			this.logger.output(`[appdev] ${appId}: panel closed — dev server lingers ${WatchManager.LINGER_MS / 1000}s for a fast reopen`);
+			this.logger.output(`[appdev] ${appId}: panel closed — dev server lingers ${DevSessionManager.LINGER_MS / 1000}s for a fast reopen`);
 			session.lingerTimer = setTimeout(() => {
 				session.lingerTimer = undefined;
 				void this.enqueue(appId, () => this.doLingerExpiry(appId, token));
-			}, WatchManager.LINGER_MS);
+			}, DevSessionManager.LINGER_MS);
 			return;
 		}
 
@@ -857,7 +857,7 @@ export class WatchManager {
 	 * @param chunk - Raw process output chunk.
 	 * @param stream - Which pipe the chunk arrived on (separate line carries).
 	 */
-	private handleOutput(session: WatchSession, chunk: string, stream: 'stdout' | 'stderr'): void {
+	private handleOutput(session: DevSession, chunk: string, stream: 'stdout' | 'stderr'): void {
 		// Chunks split mid-line at the pipe's whim — a marker torn across two
 		// chunks would never match its regex, and a half line rendered now
 		// reads as garbage until its remainder arrives. Carry the incomplete
@@ -936,7 +936,7 @@ export class WatchManager {
 	 *
 	 * @param session - The session whose dev server has a fresh build.
 	 */
-	private async notifyDevEntry(session: WatchSession): Promise<void> {
+	private async notifyDevEntry(session: DevSession): Promise<void> {
 		if (!session.devOrigin) return;
 		// step: the dev server is a passthrough proxy — the entry lives under
 		// the app's own /dev/ namespace (published /v<N>/ still proxies), and
@@ -957,7 +957,7 @@ export class WatchManager {
 	 * @param session - The session whose app folder is read.
 	 * @returns The manifest payload, or undefined.
 	 */
-	private async readWorkspaceManifest(session: WatchSession): Promise<Record<string, unknown> | undefined> {
+	private async readWorkspaceManifest(session: DevSession): Promise<Record<string, unknown> | undefined> {
 		try {
 			const pkg = JSON.parse(await readFile(path.join(session.app.folder, 'package.json'), 'utf8')) as Record<string, unknown>;
 			const manifest = { ...(pkg.appManifest ?? {}) } as Record<string, unknown>;
@@ -986,7 +986,7 @@ export class WatchManager {
 	}
 
 	/** Debounced (300ms) preview reload after a successful rebuild. */
-	private scheduleReload(session: WatchSession): void {
+	private scheduleReload(session: DevSession): void {
 		if (session.reloadTimer) clearTimeout(session.reloadTimer);
 		session.reloadTimer = setTimeout(() => {
 			this.appScreen.notifyReload(session.app.id);
@@ -1054,21 +1054,21 @@ export function resolveRsbuildInvocation(appRoot: string): { cmd: string; args: 
 }
 
 /** Module-level accessor wiring (set once in extension activation). */
-let instance: WatchManager | null = null;
+let instance: DevSessionManager | null = null;
 
 /**
- * Installs the singleton WatchManager (called from extension activation).
+ * Installs the singleton DevSessionManager (called from extension activation).
  *
  * @param appScreen - The App Builder panel provider (status/console sink).
  * @param guardPath - Absolute path to the shipped devServerGuard.cjs.
  */
-export function initWatchManager(appScreen: AppScreenProvider, guardPath: string): WatchManager {
-	instance = new WatchManager(appScreen, guardPath);
+export function initDevSessionManager(appScreen: AppScreenProvider, guardPath: string): DevSessionManager {
+	instance = new DevSessionManager(appScreen, guardPath);
 	return instance;
 }
 
-/** Returns the active WatchManager, or null before activation wiring. */
-export function getWatchManager(): WatchManager | null {
+/** Returns the active DevSessionManager, or null before activation wiring. */
+export function getDevSessionManager(): DevSessionManager | null {
 	return instance;
 }
 
@@ -1080,7 +1080,7 @@ export function getWatchManager(): WatchManager | null {
  * @param app - The app to watch.
  * @param force - True to start regardless of the autoWatch setting (F5).
  */
-export async function ensureWatch(app: ScannedApp, force = false): Promise<void> {
+export async function ensureDevSession(app: ScannedApp, force = false): Promise<void> {
 	const manager = instance;
 	if (!manager) return;
 	const autoWatch = vscode.workspace.getConfiguration('rocketride.appdev').get<boolean>('autoWatch', true);

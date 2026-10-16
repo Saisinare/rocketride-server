@@ -33,7 +33,7 @@ import { useMessaging } from '../hooks/useMessaging';
 // TYPES — messages between extension host and webview
 // =============================================================================
 
-type OutgoingMessage = { type: 'view:ready' } | { type: 'appdev:debug' } | { type: 'appdev:login' } | { type: 'appdev:restart' } | { type: 'appdev:reveal' } | { type: 'appdev:stage'; stage: AppBuilderStage } | { type: 'appdev:pref'; key: string; value: unknown } | { type: 'appdev:call'; id: number; method: string; args?: unknown[] };
+type OutgoingMessage = { type: 'view:ready' } | { type: 'appdev:login' } | { type: 'appdev:restart' } | { type: 'appdev:reveal' } | { type: 'appdev:stage'; stage: AppBuilderStage } | { type: 'appdev:pref'; key: string; value: unknown } | { type: 'appdev:call'; id: number; method: string; args?: unknown[] };
 
 type IncomingMessage =
 	| {
@@ -456,7 +456,7 @@ const AppWebview: React.FC = () => {
 	const [previewUrl, setPreviewUrl] = useState('');
 	// hasReviewLadder defaults true (the gated flow) until init declares the
 	// server; an OSS server flips it off and @public publishes directly.
-	const [capabilities, setCapabilities] = useState({ hasNativeFiles: true, canDebug: true, hasReviewLadder: true });
+	const [capabilities, setCapabilities] = useState({ hasNativeFiles: true, canDebug: false, hasReviewLadder: true });
 	const [initialStage, setInitialStage] = useState<AppBuilderStage>('dashboard');
 	const [reloadSeq, setReloadSeq] = useState(0);
 	const [devEntry, setDevEntry] = useState('');
@@ -824,8 +824,9 @@ const AppWebview: React.FC = () => {
 				prefsRef.current[key] = value;
 				sendMessage({ type: 'appdev:pref', key, value });
 			},
-			// Host actions — ride the bridge to the extension host
-			debug: capabilities.canDebug ? () => sendMessage({ type: 'appdev:debug' }) : undefined,
+			// Host actions — ride the bridge to the extension host. No `debug`:
+			// the external-browser debug flow was removed (2026-10-16); the
+			// capability stays declared (shared contract) and stays false.
 			revealFiles: capabilities.hasNativeFiles ? () => sendMessage({ type: 'appdev:reveal' }) : undefined,
 
 			// ── Deploy (the publish ladder) — all data over the RPC lane ────

@@ -1013,6 +1013,9 @@ importers:
 
   apps/vscode:
     dependencies:
+      '@module-federation/runtime':
+        specifier: ^2.5.1
+        version: 2.5.1(node-fetch@2.7.0(encoding@0.1.13))
       '@octokit/rest':
         specifier: ^22.0.1
         version: 22.0.1
@@ -1047,6 +1050,9 @@ importers:
         specifier: ^7.5.21
         version: 7.5.21
     devDependencies:
+      '@module-federation/rsbuild-plugin':
+        specifier: ^2.5.1
+        version: 2.5.1(@rsbuild/core@2.2.12(@module-federation/runtime-tools@2.5.1(node-fetch@2.7.0(encoding@0.1.13)))(core-js@3.48.0))(@rspack/core@2.2.8(@module-federation/runtime-tools@2.5.1(node-fetch@2.7.0(encoding@0.1.13)))(@swc/helpers@0.5.23))(node-fetch@2.7.0(encoding@0.1.13))(typescript@5.9.3)(webpack@5.104.1(esbuild@0.28.1))
       '@rsbuild/core':
         specifier: ~2.2.12
         version: 2.2.12(@module-federation/runtime-tools@2.5.1(node-fetch@2.7.0(encoding@0.1.13)))(core-js@3.48.0)
