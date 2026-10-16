@@ -285,8 +285,8 @@ class TestLifecycle:
         assert "Every RocketRide database comes with the 'rocketride' graph" in text
         assert "SELECT create_graph('rr_graph_missing')" in text
 
-    def test_node_configuration_cannot_choose_the_database(self, rr_env, age_graph):
-        """The DSN comes from the task's tenant only; connection-shaped config keys are ignored."""
+    def test_connection_shaped_config_keys_are_ignored(self, rr_env, age_graph):
+        """Only the delivered DSN for the node's scope is used; host, DSN and tenant keys in the config are ignored."""
         unreachable = 'postgresql://other:other@unreachable.invalid:5432/other_db?sslmode=disable'
         glb = _begin(
             rr_env,
@@ -323,7 +323,7 @@ def _dsn_database(dsn: str) -> str:
 
 @pytest.mark.skipif(
     ADMIN_DSN != TEST_DSN,
-    reason='a backend pid names a server session only on a direct connection; through a '
+    reason='NOT RUN: a backend pid names a server session only on a direct connection; through a '
     'transaction-mode pooler each transaction may run on another one (the direct pass covers this)',
 )
 class TestSessionNeverIdleInTransaction:

@@ -11,7 +11,7 @@ first. What the app deliberately does not do is under [Limits](#limits).
 
 The supported nodes are
 [`rocketride_graph`](https://github.com/rocketride-org/rocketride-server/blob/develop/nodes/src/nodes/rocketride_graph/README.md)
-(Apache AGE in your organization's managed RocketRide database),
+(Apache AGE in a managed RocketRide database, chosen in the node's Database setting),
 [`graph_neo4j`](https://github.com/rocketride-org/rocketride-server/blob/develop/nodes/src/nodes/graph_neo4j/README.md)
 and
 [`graph_falkordb`](https://github.com/rocketride-org/rocketride-server/blob/develop/nodes/src/nodes/graph_falkordb/README.md).
@@ -32,7 +32,7 @@ speak Cypher and are not listed.
   when it has none, so two people importing the same template never share an
   identity. For Neo4j and FalkorDB, type the connection details into the node's
   form (they are stored encrypted). `rocketride_graph` has none to type: it uses
-  your organization's managed RocketRide database. Posting the raw file through
+  the managed RocketRide database its Database setting names. Posting the raw file through
   an SDK `use()` also works, but the engine then reports no project id for the
   task. Two raw copies started by the same user with the same node id then share
   one connection identity and appear as ONE card in the Connections list. Save
@@ -75,8 +75,8 @@ cannot tell whether nothing is running or something is wrong. A node that fails
 to start is never listed: for example, `rocketride_graph` checks its Apache AGE
 graph when the pipeline starts and does not create it, so a graph name that does
 not exist stops the pipeline, and the error is in the pipeline's log. On
-RocketRide's managed database the graph `rocketride` is created for your
-organization when the database is provisioned.
+RocketRide's managed databases (organization, team or personal) the graph
+`rocketride` is created with the database.
 
 The app never holds a connection string or a task token in anything it saves or
 shows. Task tokens are kept in memory only, per session. Signing out, or a
@@ -298,8 +298,8 @@ editor and an **Execute** button, and it always says what it is:
   the node with.** Use a user that can only read, and a statement the app should
   never send cannot do harm. On Neo4j the node reads in a read session, which is
   a routing hint, not access control; FalkorDB uses `GRAPH.RO_QUERY`.
-- **`rocketride_graph` has no account to choose.** It connects to your
-  organization's managed database as the role that owns that database, so a
+- **`rocketride_graph` has no account to choose.** It connects to the managed
+  database its Database setting names as the role that owns that database, so a
   read-only database role cannot be relied on there. Its reads are kept
   read-only by a read-only transaction and by the node's own check of each
   statement. Whether it can write at all is its **Allow direct query

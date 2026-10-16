@@ -1,8 +1,9 @@
 # rocketride_graph
 
 A RocketRide graph database node for natural-language Cypher queries against
-the Apache AGE graph in your organization's managed RocketRide database. Pick it
-over rocketride_sql when relationships and traversals are the data model.
+the Apache AGE graph in a managed RocketRide database: your organization's, your
+team's or your own (see Database). Pick it over rocketride_sql when
+relationships and traversals are the data model.
 
 ## What it does
 
@@ -122,20 +123,20 @@ them: with different values it creates a second node or edge.
 
 ## Configuration
 
-The single built-in profile supplies the default graph name. RocketRide
-provisions one database per organization for its managed database nodes (per
-user only where there is no organization), and the RocketRide server resolves
-the connection to it from the pipeline's organization instead of a host, user,
-password, or database name you enter; nothing in the node configuration or the
-pipeline can point it at another database. Start with the defaults, then tune the
-graph context and read limits around the size and shape of the graph your LLM
-must query.
+The single built-in profile supplies the default graph name. The node uses the
+managed database chosen under Database (Organization by default); the RocketRide
+server authorizes it for the run and delivers its connection at task start. There
+is no host, user, password, DSN or database name to enter, and no such key in the
+node configuration can point it at another database. Start with the defaults,
+then tune the graph context and read limits around the size and shape of the
+graph your LLM must query.
 
 ### Graph name and graph description
 
 Graph name defaults to rocketride, the graph every RocketRide database comes
-with (see Database), and must name an existing AGE graph; startup fails instead of creating a missing graph (the error says how
-to create one with `SELECT create_graph(...)`). Graph description is empty by
+with (see Database), and must name an existing AGE graph; startup fails instead
+of creating a missing graph (the error says how to create one with
+`SELECT create_graph(...)`). Graph description is empty by
 default and becomes LLM context, so describe labels, relationship meaning, and
 domain vocabulary when those are not obvious from reflected schema. Change the
 graph name when the tenant database contains multiple AGE graphs; update the
@@ -204,8 +205,8 @@ for.
 ## Limitations
 
 This node runs on the RocketRide engine host and does not support remote
-execution. The RocketRide server resolves the database connection for the
-pipeline's organization at task start; on a server without a RocketRide cloud
+execution. The RocketRide server resolves the connection to the node's chosen
+database at task start; on a server without a RocketRide cloud
 database (for example, a local or self-hosted engine with no database broker) the
 task fails at start with a message that says so; use a connection-configured
 node such as graph_neo4j or graph_falkordb there. On RocketRide Cloud, missing

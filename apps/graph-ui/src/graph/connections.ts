@@ -278,7 +278,7 @@ export function emptyState(status: 'idle' | 'loading' | 'ready' | 'error', endpo
 			kind: 'none-running',
 			title: 'No running graph node found',
 			description: 'Start a pipeline that has a tools source wired to a graph node (rocketride_graph, graph_neo4j or graph_falkordb), then refresh. A pipeline that is still starting does not appear yet.',
-			unknown: 'A graph node that fails to start does not appear in this list at all (for example a node pointed at a graph that does not exist), so an empty list does not tell whether a graph exists for your organization or why a node is missing. Check the pipeline’s log for a start-up error.',
+			unknown: 'A graph node that fails to start does not appear in this list at all (for example a node pointed at a graph that does not exist), and neither does a node whose run was not allowed to use its database, so an empty list does not tell whether a graph exists or why a node is missing. Check the pipeline’s log for a start-up error.',
 		};
 	}
 	// A node still being checked may yet be usable: its card says Checking, and the page claims nothing.
