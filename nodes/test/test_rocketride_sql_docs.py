@@ -25,10 +25,10 @@
 
 """Wording checks for the rocketride_sql node's description, README and docstrings.
 
-The node's text describes its database as the organization's (the user's only
-where there is no organization), the way the task engine resolves it. These
-checks read the node's files from disk; no engine, database or driver is
-needed.
+The node's text describes its database as the one chosen under Database
+(organization, team or personal), which the task engine authorizes and delivers
+at task start. These checks read the node's files from disk; no engine,
+database or driver is needed.
 """
 
 from __future__ import annotations
@@ -38,13 +38,18 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parents[2]
 _SQL_NODE_DIR = _REPO / 'nodes' / 'src' / 'nodes' / 'rocketride_sql'
 
-# How the docs used to describe the tenant: the signed-in user. The task engine
-# resolves the database by the task's organization (its user only where there
-# is no organization), so these phrases describe the wrong tenancy model.
+# How the docs used to describe the database: the signed-in user's, and later
+# always the organization's. The task engine resolves the database the node's
+# Database setting names (organization, team or personal), so these phrases
+# describe the wrong model.
 _STALE_TENANT_PHRASES = (
     'signed-in rocketride identity',
     'signed-in rocketride tenant',
     'authenticated client_id',
+    "your organization's database",
+    "your organization's managed rocketride database",
+    'per organization for its managed database nodes',
+    "for the pipeline's organization",
 )
 
 
@@ -61,7 +66,7 @@ def _prose(path: Path) -> str:
 
 
 class TestSqlTenancyWording:
-    """rocketride_sql describes its database as the organization's."""
+    """rocketride_sql describes its database as the one its Database setting names."""
 
     def test_no_text_describes_the_signed_in_user_as_the_tenant(self):
         stale = [
@@ -73,6 +78,6 @@ class TestSqlTenancyWording:
         ]
         assert stale == []
 
-    def test_description_and_readme_name_the_organization(self):
-        assert "the connection to your organization's database" in _prose(_SQL_NODE_DIR / 'services.json')
-        assert 'per organization' in _prose(_SQL_NODE_DIR / 'README.md')
+    def test_description_and_readme_point_at_the_database_choice(self):
+        assert 'the connection to the database you choose' in _prose(_SQL_NODE_DIR / 'services.json')
+        assert 'the managed database chosen under database' in _prose(_SQL_NODE_DIR / 'README.md')
