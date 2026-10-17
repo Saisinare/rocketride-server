@@ -171,6 +171,7 @@ _PROBE = textwrap.dedent(
         # What ai/node.py does on Linux before any JNI library can load.
         ctypes.CDLL('libstdc++.so.6', os.RTLD_NOW | os.RTLD_GLOBAL)
     ctypes.CDLL(lib, os.RTLD_NOW | os.RTLD_LOCAL)
+    print('BINDING_LOADED', flush=True)
     import torch  # noqa: F401  - prints operator schemas through std::ostream on import
 
     print('TORCH_IMPORT_OK', torch.__version__, flush=True)
@@ -194,6 +195,30 @@ def _probe(tmp_path: Path, mode: str, lib: Path) -> subprocess.CompletedProcess:
 
 def _survived(result: subprocess.CompletedProcess) -> bool:
     return result.returncode == 0 and 'TORCH_IMPORT_OK' in result.stdout
+
+
+# What the engine's crash handler prints before it aborts the process on SIGSEGV.
+_CRASH_MESSAGE = 'Received terminal system signal'
+
+
+def _crashed_in_native_code(result: subprocess.CompletedProcess) -> bool:
+    """
+    The probe loaded the library, then died in native code during ``import torch``.
+
+    Distinguishes the reported crash from a library that failed to load or an ordinary
+    Python exception: the load marker is there, no traceback was printed, and the process
+    ended by a signal (``-N``, or ``128+N`` when a shell relayed it) after the engine's
+    crash handler reported.
+    """
+    out = result.stdout + result.stderr
+    died_by_signal = result.returncode < 0 or result.returncode >= 128
+    return (
+        'BINDING_LOADED' in result.stdout
+        and 'TORCH_IMPORT_OK' not in result.stdout
+        and 'Traceback (most recent call last)' not in out
+        and died_by_signal
+        and _CRASH_MESSAGE in out
+    )
 
 
 _needs_torch = pytest.mark.skipif(
@@ -227,12 +252,16 @@ def test_control_jar_binding_then_torch_import_crashes(tmp_path, jar_prebuilt_bi
     """
     Control: the jar's prebuilt binding still kills the process in that sequence.
 
-    Documents why the port exists. If this starts passing, upstream fixed its build and the
-    port, the guard and this file can be revisited.
+    Requires the crash itself: the library loaded, no Python exception, the process died by
+    a signal after the engine's crash handler reported. A library that fails to load or an
+    import error would not prove anything and fails this test. If the control starts failing
+    because the probe survives, upstream fixed its build and the port and guard can be revisited.
     """
     result = _probe(tmp_path, 'local', jar_prebuilt_binding)
-    assert not _survived(result), (
-        "the jar's prebuilt binding no longer crashes torch; revisit the sevenzipjbinding port and this guard"
+    assert _crashed_in_native_code(result), (
+        "expected the jar's prebuilt binding to kill the probe in native code during 'import torch' "
+        f'(engine crash handler, death by signal); got exit {result.returncode}\n'
+        f'{result.stdout[-600:]}\n{result.stderr[-600:]}'
     )
 
 
