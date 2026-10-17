@@ -479,6 +479,39 @@ class TestHostedRefusesTorch:
         assert depends._hosted_refusal(['TorchVision', 'numpy']) is not None
         assert depends._hosted_refusal(['requests', 'numpy']) is None
 
+    def test_hosted_install_excludes_torch_even_if_the_plan_changed(self, plan, monkeypatch):
+        """The dry run is not the install: the real uv call excludes torch itself."""
+        monkeypatch.setattr(depends.sys, 'argv', ['engine', 'node.py', '--hosted'])
+        monkeypatch.setattr(depends, '_uv_abs_path', lambda: 'uv')
+        plan.pending[:] = ['numpy']
+        calls = []
+
+        class FakeInstall:
+            returncode = 0
+            stdout = iter(())
+
+            def __init__(self, args, **kwargs):
+                calls.append(args)
+
+            def wait(self):
+                return 0
+
+        monkeypatch.setattr(depends.subprocess, 'Popen', FakeInstall)
+
+        depends._install_requirements(str(plan.req), str(plan.constraints))
+
+        (args,) = calls
+        excludes = [args[i + 1] for i, a in enumerate(args) if a == '--excludes']
+        hosted = [x for x in excludes if x.endswith('hosted-excludes.txt')]
+        assert hosted, f'no hosted excludes in {args}'
+        path = os.path.join(depends._get_executable_dir(), hosted[0])
+        with open(path, encoding='utf-8') as f:
+            assert set(f.read().split()) == {'torch', 'torchvision', 'torchaudio'}
+
+    def test_local_install_has_no_hosted_excludes(self, monkeypatch):
+        monkeypatch.setattr(depends.sys, 'argv', ['engine', 'node.py'])
+        assert depends._hosted_exclude_args('.') == []
+
     def test_local_engine_may_install_torch(self, monkeypatch):
         monkeypatch.setattr(depends.sys, 'argv', ['engine', 'node.py'])
         assert depends._hosted_refusal(['torch']) is None

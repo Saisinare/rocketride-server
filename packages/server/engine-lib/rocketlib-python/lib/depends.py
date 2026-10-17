@@ -1036,6 +1036,23 @@ def _hosted_refusal(packages: list[str]) -> Optional[str]:
     )
 
 
+def _hosted_exclude_args(exe_dir: str) -> list[str]:
+    """Under --hosted, ``--excludes`` args that keep torch out of the install itself.
+
+    The dry-run check refuses with a clear message; this binds the real install,
+    whose resolution can differ from the dry run's (an index or metadata refresh in
+    between). Excluded, not constrained: a constraint no release meets makes uv fall
+    back to an old release of the requiring package, an exclusion just drops torch.
+    """
+    if _HOSTED_FLAG not in sys.argv:
+        return []
+    path = os.path.join(engine_cache_dir(create=True), 'hosted-excludes.txt')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(''.join(f'{name}\n' for name in sorted(_HOSTED_REFUSED)))
+    # Relative to cwd (exe_dir) — uv splits the value on whitespace (#1256).
+    return ['--excludes', os.path.relpath(path, exe_dir)]
+
+
 def _install_dry_run(requirements_path: str, constraints_path: str) -> list[str]:
     """
     Run uv pip install --dry-run and return list of packages that would be installed.
@@ -1183,6 +1200,7 @@ def _install_requirements_inner(requirements_path: str, constraints_path: str):
     uv_args.extend(['--excludes', os.path.relpath(_write_excludes_file(), exe_dir)])
 
     uv_args.extend(_constraints_args(constraints_path, exe_dir))
+    uv_args.extend(_hosted_exclude_args(exe_dir))
     uv_args.extend(_override_args(exe_dir))
 
     # Run uv and stream output (heartbeat is already running from the caller)

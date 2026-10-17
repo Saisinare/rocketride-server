@@ -188,6 +188,9 @@ def test_hosted_engine_refuses_torch_without_a_model_server(monkeypatch, depends
 
     with pytest.raises(ImportError, match='not available on RocketRide Cloud'):
         __import__(WRAPPER)
+    # sys.modules is consulted before sys.meta_path: drop a torch an earlier test loaded
+    for name in [m for m in sys.modules if m == 'torch' or m.startswith('torch.')]:
+        monkeypatch.delitem(sys.modules, name)
     with pytest.raises(ImportError, match='not available on RocketRide Cloud'):
         __import__('torch')
 
