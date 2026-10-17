@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — since 2026-10-16
 
+### Fixed
+
+- **parse**: a task running parse beside a node that imports torch (General Text does, through `transformers`; embedding nodes do when they load a model) died at start with SIGSEGV in libstdc++. Tika's RAR support loaded the prebuilt `lib7-Zip-JBinding.so`, whose statically linked GCC 7 libstdc++ exports the same GNU-unique locale ids as the system libstdc++ and renumbers its facet table. On Linux the engine build now compiles 7-Zip-JBinding 23.01-2.2 from source against the engine's own C++ runtime (vcpkg port `sevenzipjbinding`) and the parse node loads only that copy (RAR5 is disabled, not the jar's binding, when it is missing); `node.py` also loads the system libstdc++ globally before any JNI library can (#2676)
+
 ## [3.5.0] - 2026-10-16
 
 ### Added
