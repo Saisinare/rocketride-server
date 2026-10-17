@@ -21,8 +21,8 @@ import { getShellApi } from 'shell';
 import type { DesktopViewProps } from 'shell';
 
 // DesktopView postdates older shell contracts: `shell` is a shared module
-// with `import: null`, so against a pre-v7 host the member is simply
-// undefined — probe it guarded rather than crash the tab.
+// with `import: null`, so against a host whose shell predates the member
+// it is simply undefined — probe it guarded rather than crash the tab.
 const shellApi = getShellApi();
 const { useSubscriptions } = shellApi;
 const DesktopView: React.FC<DesktopViewProps> | null =

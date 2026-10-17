@@ -58,11 +58,6 @@ export interface ToolHostServices {
 	openPage: (key: string, title?: string) => void;
 	/** Opens a workspace FILE in the host's editor surface. */
 	openFile?: (path: string) => void;
-	/** @deprecated Confirmation is realm UI, not a host capability — use
-	 *  the shell's showConfirmDialog, which pops the stock dialog in the
-	 *  tool's own realm. Retained on the type for the frozen floors; hosts
-	 *  no longer provide it. */
-	confirm?: (title: string, message: string, confirmLabel?: string) => Promise<boolean>;
 	/** Workspace/store file access for tool discovery. */
 	workspaceFs?: ToolWorkspaceFs;
 	/** This tool's preference partition — PRE-SCOPED by the host (see
