@@ -562,16 +562,19 @@ def test_sweeper_reaps_an_abandoned_session_without_further_traffic():
 
 
 class _SlowRollback:
-    """Wraps a transaction so its rollback is slow and observable."""
+    """Wraps a transaction so its rollback blocks at a checkpoint the test releases."""
 
     def __init__(self, trans):
         self._trans = trans
         self.started = threading.Event()
+        self.release = threading.Event()
         self.done = []
 
     def rollback(self):
         self.started.set()
-        time.sleep(0.3)  # widen the window a loaded CI runner opens by chance
+        # Held until the test has seen close_all() still pending; the timeout only
+        # keeps a failing test from hanging the run.
+        self.release.wait(timeout=10.0)
         self._trans.rollback()
         self.done.append(True)
 
@@ -579,9 +582,24 @@ class _SlowRollback:
         return getattr(self._trans, name)
 
 
+def _close_all_waits_for(reg, slow):
+    """Run close_all() on another thread; it must stay pending until the rollback is released."""
+    closer = threading.Thread(target=reg.close_all)
+    closer.start()
+    closer.join(timeout=0.3)
+    assert closer.is_alive(), 'close_all() returned while the rollback was still in flight'
+    assert slow.done == []
+
+    slow.release.set()
+    closer.join(timeout=5.0)
+    assert not closer.is_alive(), 'close_all() did not return once the rollback finished'
+    assert slow.done == [True]
+
+
 def test_close_all_waits_for_an_in_flight_sweep_to_finish_its_rollback():
     """close_all() must not return while the sweeper is still rolling a reaped session back."""
     reg = TransactionRegistry(_engine_shared(), idle_timeout=0.05, max_rows=1000)
+    slow = None
     try:
         sid = reg.begin()
         reg.execute(sid, 'INSERT INTO t (v) VALUES ($1)', ['abandoned'])
@@ -590,10 +608,11 @@ def test_close_all_waits_for_an_in_flight_sweep_to_finish_its_rollback():
         # The sweeper is inside its rollback: the window close_all() must wait out.
         assert slow.started.wait(timeout=5.0), 'sweeper did not reap the idle session'
 
-        reg.close_all()
-        assert slow.done == [True]
+        _close_all_waits_for(reg, slow)
         assert sid not in reg._sessions
     finally:
+        if slow is not None:
+            slow.release.set()
         reg.close_all()
 
 
@@ -602,6 +621,8 @@ def test_close_all_waits_for_an_in_flight_rollback_on_another_thread():
     registered until its connection is closed, so close_all() waits on its lock.
     """
     reg = TransactionRegistry(_engine_shared(), max_rows=1000)
+    slow = None
+    caller = None
     try:
         sid = reg.begin()
         reg.execute(sid, 'INSERT INTO t (v) VALUES ($1)', ['in flight'])
@@ -610,14 +631,17 @@ def test_close_all_waits_for_an_in_flight_rollback_on_another_thread():
         caller = threading.Thread(target=reg.rollback, args=(sid,))
         caller.start()
         assert slow.started.wait(timeout=5.0), 'rollback() never reached the transaction'
-        assert sid in reg._sessions  # still registered mid-rollback
+        assert sid in reg._sessions  # still registered mid-rollback, and held there by the checkpoint
 
-        reg.close_all()
-        assert slow.done == [True]
+        _close_all_waits_for(reg, slow)
         assert sid not in reg._sessions
         caller.join(timeout=5.0)
         assert not caller.is_alive()
     finally:
+        if slow is not None:
+            slow.release.set()
+        if caller is not None:
+            caller.join(timeout=5.0)
         reg.close_all()
 
 
