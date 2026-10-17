@@ -88,10 +88,14 @@ async def test_parse_then_general_text_starts_and_processes_a_document(client):
     result = await client.use(pipeline=_pipeline())  # died here with the jar's binding + torch
     token = result['token']
     try:
-        pipe = await client.pipe(token, objinfo={'name': 'guard.txt'}, mime_type='text/plain')
+        # parse skips an object whose size is 0; the size travels in objinfo, not in the bytes
+        objinfo = {'name': 'guard.txt', 'size': len(_DOCUMENT)}
+        pipe = await client.pipe(token, objinfo=objinfo, mime_type='text/plain')
         await pipe.open()
         await pipe.write(_DOCUMENT)
         response = await pipe.close()
         assert isinstance(response, dict), f'unexpected pipe result: {response!r}'
+        # the document went through parse and General Text, not just the task start
+        assert response.get('objectId'), f'no object came back: {response!r}'
     finally:
         await client.terminate(token)
