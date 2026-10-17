@@ -37,23 +37,31 @@ import { useShellConnection, ConnectionManager, ConfirmDialog, useWorkspace } fr
 import type { ShellNotification } from 'shell';
 import { getDocs } from '../docs';
 import { SidebarChrome } from 'shared/tools/core/chrome/SidebarChrome';
-import { buildBuiltinSidebarItems } from './sidebarBuiltinTools';
+import type { SidebarToolItem } from 'shared/tools/core/chrome/SidebarChrome';
+import { getBuiltinTools, ToolHostProvider } from 'shared/tools/core';
+import { scopedPrefs } from 'shell';
+import { useWorkspacePrefsStore } from '../workspace/workspacePrefsStore';
+import type { BuiltinToolServices } from 'shared/tools/core';
+import { registerBuiltinTools } from 'shared/tools/builtins';
+import { appdevFrames } from '../appdev/appdevFrames';
 import { BxExport, useSidebarCollapsed, useSidebarActiveView } from 'shell';
-import { foldTaskEvent } from 'shared/modules/sidebar/taskFold';
-import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, SidebarMode, AgentSidebar, AppBuilderSidebar, AppListItem, ToolTabsSidebar } from 'shared/modules/sidebar/types';
+import type { ProjectEntry } from 'shared/tools/pipelines/types';
+import type { SidebarMode, ToolTabsSidebar } from 'shared/tools/core/chrome/types';
+import type { AppListItem } from 'shared/tools/appdev/sidebarTypes';
 import { useDevToolPins, toToolTab } from '../devtools/devToolPins';
-import { setToolFrameOpener } from '../devtools/peer';
+import { getSidebarPeer, getToolChannel, setToolFrameOpener } from '../devtools/peer';
 import DevToolMount from '../devtools/DevToolMount';
-import type { TaskLifecycleEvent } from 'shared/modules/sidebar/taskFold';
-import { AgentSession, AGENTS_DIR } from 'shared/agent/agent';
-import type { AgentSessionMeta } from 'shared/agent/agent';
 import { isPipelineFile, pipelineExtension } from '../utils/projectStore';
 import { createProjectVfs } from '../utils/projectVfs';
 import { getWorkspaceVfs, storePathToVirtual } from '../workspace/workspace';
 import { downloadJson } from '../utils/downloadFile';
 import { scanApps } from '../appdev/appStore';
-import { INTRO_PAGES } from 'shared/modules/intro/introPages';
-import type { IntroMode } from 'shared/modules/intro/introPages';
+import { INTRO_PAGES } from 'shared/tools/introCatalog';
+import type { IntroMode } from 'shared/tools/introCatalog';
+
+// A TOOL IS AN APP: the builtin tools register once per realm; this host's
+// sidebar renders them by iterating the registry.
+registerBuiltinTools();
 
 // =============================================================================
 // COLLAPSED GATE
@@ -191,99 +199,15 @@ const SidebarProvider: React.FC = () => {
 
 	// --- Active tasks (from server events) -----------------------------------
 
-	const [activeTasks, setActiveTasks] = useState<Map<string, ActiveTaskState>>(new Map());
-	const [unknownTasks, setUnknownTasks] = useState<UnknownTask[]>([]);
-
-	// Synchronously-updated mirrors: the shared foldTaskEvent needs BOTH
-	// collections atomically, and websocket events can burst faster than a
-	// render — refs are advanced in the handler itself so successive folds
-	// never read stale state. The effects below re-anchor them whenever any
-	// OTHER mutation site (disconnect reset, entries re-filter) lands.
-	const activeTasksRef = useRef(activeTasks);
-	const unknownTasksRef = useRef(unknownTasks);
+	// Task state, folding, and per-source status live in the PIPELINES TOOL
+	// now (shared tools/pipelines) — this host only feeds it the workspace
+	// VIEW's entry list through the pipelineEntries service below.
+	const entriesCurRef = useRef<ProjectEntry[]>([]);
+	const entrySubsRef = useRef(new Set<(e: ProjectEntry[]) => void>());
 	useEffect(() => {
-		activeTasksRef.current = activeTasks;
-	}, [activeTasks]);
-	useEffect(() => {
-		unknownTasksRef.current = unknownTasks;
-	}, [unknownTasks]);
-
-	// Keep a ref to entries so event handlers can check known tasks without
-	// re-registering the effect on every entries change
-	const entriesRef = useRef(entries);
-	useEffect(() => {
-		entriesRef.current = entries;
-		// Re-evaluate unknown tasks — some may now match newly-parsed entries
-		setUnknownTasks((prev) => prev.filter((ut) => !entries.some((e) => (!e.type || e.type === 'file') && e.projectId === ut.projectId && e.sources?.some((s: { id: string }) => s.id === ut.sourceId))));
+		entriesCurRef.current = entries;
+		entrySubsRef.current.forEach((cb) => cb(entries));
 	}, [entries]);
-
-	/** Check if a projectId+sourceId matches any known local pipeline file. */
-	const isKnownTask = useCallback((projectId: string, sourceId: string): boolean => {
-		return entriesRef.current.some((e) => (!e.type || e.type === 'file' ? e.projectId === projectId && e.sources?.some((s: { id: string }) => s.id === sourceId) : false));
-	}, []);
-
-	useEffect(() => {
-		if (!client || !isConnected) {
-			setActiveTasks(new Map());
-			setUnknownTasks([]);
-			return;
-		}
-
-		// Subscribe to server-side task lifecycle events so the server routes
-		// apaevt_task / apaevt_status_update to this connection.
-		// When TASK is first enabled the server immediately pushes an
-		// apaevt_task with action:'running' containing all active tasks.
-		client.addMonitor({ token: '*' }, ['task', 'output']).catch((err) => {
-			console.error('[SidebarProvider] Failed to subscribe to task events:', err);
-		});
-
-		const unsub = ConnectionManager.getInstance().on('shell:event', ({ event }: { event: any }) => {
-			if (event?.event === 'apaevt_task') {
-				const body = event.body as TaskLifecycleEvent | undefined;
-				if (!body) return;
-
-				// The dev-view classification and the whole lifecycle fold live
-				// in shared code (foldTaskEvent) — one implementation for this
-				// host and the VS Code sidebar. Deploy runs never enter the
-				// active/ad-hoc lists; the fold filters every path.
-				const folded = foldTaskEvent(body, activeTasksRef.current, unknownTasksRef.current, isKnownTask);
-				if (folded) {
-					activeTasksRef.current = folded.activeTasks;
-					unknownTasksRef.current = folded.unknownTasks;
-					setActiveTasks(folded.activeTasks);
-					setUnknownTasks(folded.unknownTasks);
-				}
-			} else if (event?.event === 'apaevt_status_update') {
-				// Incremental status update: merge errors/warnings into existing task.
-				// Deploy runs never touch the dev lists (same classification as
-				// the fold) — their status belongs to the deployment surfaces.
-				const body = event.body;
-				if (!body?.project_id || !body?.source) return;
-				if (body.runKind === 'deploy') return;
-				const key = `${body.project_id}.${body.source}`;
-				setActiveTasks((prev) => {
-					const next = new Map(prev);
-					const existing = next.get(key) ?? { running: false, errors: [], warnings: [] };
-					next.set(key, { ...existing, errors: body.errors ?? [], warnings: body.warnings ?? [] });
-					return next;
-				});
-			}
-		});
-
-		return () => {
-			unsub();
-			client.removeMonitor({ token: '*' }, ['task', 'output']).catch(() => {});
-		};
-	}, [client, isConnected, isKnownTask]);
-
-	// --- Connection info -----------------------------------------------------
-
-	const connection: ConnectionInfo = useMemo(
-		() => ({
-			state: isConnected ? 'connected' : 'disconnected',
-		}),
-		[isConnected]
-	);
 
 	// --- Active file path (highlights the currently open file in sidebar) ----
 	// getDocs() may be null on the first render before RocketApp creates it.
@@ -454,7 +378,7 @@ const SidebarProvider: React.FC = () => {
 			const docs = getDocs();
 			if (!docs || !client) return;
 
-			const uri = `status:${projectId}.${sourceId}`;
+			const uri = `pipeline:${projectId}.${sourceId}`;
 
 			// Fetch the real pipeline from the running task
 			let pipeline: any;
@@ -479,127 +403,46 @@ const SidebarProvider: React.FC = () => {
 
 	// --- App Builder (MY APPS) -----------------------------------------------
 
-	// The MY APPS list from the .appdev store scan — the web twin of the
-	// VSCode workspace scan (working copies only; no registry state).
-	const [apps, setApps] = useState<AppListItem[]>([]);
-	// step: every refresh takes a ticket — a slow scan that resolves after a
-	// disconnect or after a NEWER refresh must not land its stale rows
-	const appsReqRef = useRef(0);
-	const refreshApps = useCallback(async () => {
-		const req = ++appsReqRef.current;
-		if (!client || !isConnected) {
-			setApps([]);
-			return;
-		}
-		try {
-			const scanned = await scanApps();
-			if (req !== appsReqRef.current) return;
-			setApps(scanned.map((a) => ({ id: a.id, name: a.name })));
-		} catch {
-			if (req === appsReqRef.current) setApps([]);
-		}
-	}, [client, isConnected]);
-	useEffect(() => {
-		void refreshApps();
-	}, [refreshApps]);
-
-	// The App Builder sidebar contract: presence adds the Apps mode tab.
-	const appBuilder: AppBuilderSidebar = useMemo(
-		() => ({
-			apps,
-			// The open App Builder document is `app:<appId>`.
-			activeAppId: activeFilePath.startsWith('app:') ? activeFilePath.slice('app:'.length) : undefined,
-			onNewApp: () => {
-				getDocs()?.openStaticDocument('newapp', 'New App');
-			},
-			onOpenApp: (appId: string) => {
-				const name = apps.find((a) => a.id === appId)?.name ?? appId;
-				getDocs()?.openStaticDocument(`app:${appId}`, name);
-			},
-		}),
-		[apps, activeFilePath]
-	);
+	// The APPDEV TOOL owns the list; this host contributes only the
+	// host-variant STREAM: the .appdev store scan (the web twin of VS Code's
+	// workspace scan), re-run on the workspace view's change stream (staged
+	// writes included) and the shell bus's cross-page fs notifies.
+	const appdevApps = useMemo<NonNullable<BuiltinToolServices['appdevApps']>>(() => ({
+		subscribe: (cb: (apps: AppListItem[]) => void) => {
+			let seq = 0;
+			const rescan = (): void => {
+				const req = ++seq;
+				const cm = ConnectionManager.getInstance();
+				if (!cm.isConnected()) {
+					cb([]);
+					return;
+				}
+				scanApps()
+					.then((scanned) => { if (req === seq) cb(scanned.map((a): AppListItem => ({ id: a.id, name: a.name }))); })
+					.catch(() => { if (req === seq) cb([]); });
+			};
+			rescan();
+			const cm = ConnectionManager.getInstance();
+			const unsubView = getWorkspaceVfs().subscribe(rescan);
+			const unsubBus = cm.on('shell:notify', (notification: ShellNotification) => {
+				if (notification.kind !== 'onFsChange') return;
+				if (storePathToVirtual(notification.uri)?.startsWith('apps')) rescan();
+			});
+			const unsubConn = cm.on('shell:connected', rescan);
+			const unsubDisc = cm.on('shell:disconnected', rescan);
+			return () => {
+				seq++;
+				unsubView();
+				unsubBus();
+				unsubConn();
+				unsubDisc();
+			};
+		},
+	}), []);
 
 	// --- Agent (MY SESSIONS) ---------------------------------------------------
-
-	// The agent's session HISTORY is namespaced by this hosting app's id —
-	// the workspace supplies it (never hardcoded); AgentSession.configure
-	// stamps it once for the shared storage layer. Sessions themselves are
-	// operationally unrestricted (any app/node/pipeline).
-	const { activeAppId: hostAppId, prefs, updatePrefs } = useWorkspace();
-	useEffect(() => {
-		AgentSession.configure(hostAppId);
-	}, [hostAppId]);
-
-	// The MY SESSIONS list from the .agents catalog.
-	const [sessions, setSessions] = useState<AgentSessionMeta[]>([]);
-	// step: same ticket guard as refreshApps — only the newest listing lands
-	const sessionsReqRef = useRef(0);
-	const refreshSessions = useCallback(async () => {
-		const req = ++sessionsReqRef.current;
-		if (!client || !isConnected) {
-			setSessions([]);
-			return;
-		}
-		try {
-			const listed = await AgentSession.getSessions();
-			if (req !== sessionsReqRef.current) return;
-			setSessions(listed);
-		} catch {
-			if (req === sessionsReqRef.current) setSessions([]);
-		}
-	}, [client, isConnected]);
-	useEffect(() => {
-		void refreshSessions();
-	}, [refreshSessions]);
-
-	// Two change sources serve the list refreshes: the workspace view's
-	// change stream covers in-page writes (staged ones included — those
-	// never reach the server, so no bus event exists for them), and the
-	// shell bus covers CROSS-page writers, translated once by the workspace
-	// module. Agent history is a separate store tree (not a workspace
-	// mount), so it stays bus-only.
-	useEffect(() => {
-		const unsubView = getWorkspaceVfs().subscribe(() => void refreshApps());
-		const unsubBus = ConnectionManager.getInstance().on('shell:notify', (notification: ShellNotification) => {
-			if (notification.kind !== 'onFsChange') return;
-			if (storePathToVirtual(notification.uri)?.startsWith('apps')) void refreshApps();
-			else if (notification.uri.startsWith(`${AGENTS_DIR}/${hostAppId}/`)) void refreshSessions();
-		});
-		return () => {
-			unsubView();
-			unsubBus();
-		};
-	}, [refreshApps, refreshSessions, hostAppId]);
-
-	// The Agent sidebar contract: presence adds the Agent mode tab.
-	const agent: AgentSidebar = useMemo(
-		() => ({
-			sessions,
-			// The open conversation document is `agent:<sessionId>`.
-			activeSessionId: activeFilePath.startsWith('agent:') ? activeFilePath.slice('agent:'.length) : undefined,
-			onNewSession: () => {
-				// step: mint the GUID now; nothing hits disk until the first send
-				const session = AgentSession.newSession();
-				getDocs()?.openStaticDocument(`agent:${session.sessionId}`, session.title);
-			},
-			onOpenSession: (sessionId: string) => {
-				const title = sessions.find((s) => s.sessionId === sessionId)?.title ?? 'Agent session';
-				getDocs()?.openStaticDocument(`agent:${sessionId}`, title);
-			},
-			onDeleteSession: (sessionId: string) => {
-				void (async () => {
-					const title = sessions.find((s) => s.sessionId === sessionId)?.title ?? sessionId;
-					const confirmed = await showConfirm('Delete session', `Are you sure you want to delete "${title}"?`, 'Delete');
-					if (!confirmed) return;
-					await AgentSession.deleteSession(sessionId);
-					// Force-close the conversation tab regardless of state.
-					getDocs()?.discardDocument(`agent:${sessionId}`);
-				})();
-			},
-		}),
-		[sessions, activeFilePath, showConfirm]
-	);
+	// Fully owned by the AGENT TOOL (shared tools/agent) — nothing here.
+	const { prefs, updatePrefs } = useWorkspace();
 
 	// --- Dev tools (pinned tool tabs + catalog) --------------------------------
 
@@ -614,8 +457,11 @@ const SidebarProvider: React.FC = () => {
 	}, [toolCatalog]);
 
 	/** Strip tab selection: bring an OPEN document of the tool forward —
-	 *  never create one; selecting a sidebar tab must not spawn tabs. */
+	 *  never create one here; the TOOL's controller decides whether being
+	 *  activated opens its pane (single-pane tools do, per-document tools
+	 *  don't — see the shell:toolSidebarActivated event). */
 	const handleFocusTool = useCallback((id: string) => {
+		ConnectionManager.getInstance().emit('shell:toolSidebarActivated', { appId: id });
 		const docs = getDocs();
 		if (!docs) return;
 		const state = docs.getState();
@@ -642,6 +488,23 @@ const SidebarProvider: React.FC = () => {
 	// The dev-tool tabs contract: presence adds the pinned tool tabs and the
 	// Dev Tools catalog tab to the mode strip (classic mode); the workbench
 	// rail mirrors the same pins through RocketApp's sidebarViews.
+	// Builtin tools the user DISABLED (prefs-persisted; enable/disable only).
+	const disabledBuiltins = useMemo<string[]>(() => (prefs?.disabledBuiltins as string[] | undefined) ?? [], [prefs]);
+
+	/** Flips one builtin's enabled state. */
+	const handleToggleBuiltin = useCallback((id: string, enabled: boolean) => {
+		const next = enabled ? disabledBuiltins.filter((d) => d !== id) : [...disabledBuiltins.filter((d) => d !== id), id];
+		updatePrefs({ disabledBuiltins: next });
+	}, [disabledBuiltins, updatePrefs]);
+
+	/** Store rows for the builtin tools (enable/disable, never uninstall). */
+	const builtinStoreRows = useMemo(() =>
+		getBuiltinTools()
+			.filter((t) => !t.hosts || t.hosts.includes('rocket'))
+			.map((t) => ({ id: t.id, name: t.name, ...(t.description !== undefined ? { description: t.description } : {}), enabled: !disabledBuiltins.includes(t.id) })),
+	[disabledBuiltins]);
+
+
 	const toolTabs: ToolTabsSidebar = useMemo(() => ({
 		tools: pinnedTools,
 		available: toolCatalog.map(toToolTab),
@@ -662,17 +525,81 @@ const SidebarProvider: React.FC = () => {
 			}
 		},
 		renderToolPanel: (id: string) => <DevToolMount appId={id} name={pinnedTools.find((t) => t.id === id)?.name ?? id} slot="sidebar" />,
-	}), [pinnedTools, toolCatalog, handleOpenTool, handleFocusTool, unpinTool]);
+		builtins: builtinStoreRows,
+		onToggleBuiltin: handleToggleBuiltin,
+	}), [pinnedTools, toolCatalog, handleOpenTool, handleFocusTool, unpinTool, builtinStoreRows, handleToggleBuiltin]);
 
-	/** Opens a mode's embedded "Introduction to ..." page as a document tab. */
-	const handleShowIntro = useCallback((mode: IntroMode) => {
-		getDocs()?.openStaticDocument(`intro:${mode}`, INTRO_PAGES[mode].title);
+	/** Opens an embedded page by key — the tools' generic page surface.
+	 *  Intro keys derive their title from the page table; everything else
+	 *  ('desktop', 'newapp', 'app:<id>', 'agent:<id>') opens at the key. */
+	const openPage = useCallback((key: string, title?: string) => {
+		const docs = getDocs();
+		if (!docs) return;
+		if (key.startsWith('intro:')) {
+			const mode = key.slice('intro:'.length) as IntroMode;
+			docs.openStaticDocument(key, INTRO_PAGES[mode]?.title ?? title ?? key);
+			return;
+		}
+		docs.openStaticDocument(key, title ?? key);
 	}, []);
 
-	/** Opens the shared Desktop page (shell's DesktopView) as a document tab. */
-	const handleShowDesktop = useCallback(() => {
-		getDocs()?.openStaticDocument('desktop', 'Desktop');
-	}, []);
+	// This realm's prefs backend — per-tool partitions are carved off it in
+	// the builtin render wrappers below.
+	const prefsStore = useWorkspacePrefsStore();
+
+	// The ONE services object the builtin tools read (ToolContext). Tools own
+	// their state; this host contributes generic verbs + two host-variant
+	// data sources (appdevScan, pipelineEntries).
+	const toolServices = useMemo<BuiltinToolServices>(() => ({
+		openPage,
+		openFile: handleOpenFile,
+		manageFile: handleFileManage,
+		fileActions: [{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }],
+		pipelineAction: handleSourceAction,
+		newPipeline: () => handleNavigate('new'),
+		openUnknownTask: handleOpenUnknownTask,
+		confirm: showConfirm,
+		activeDocKey: activeFilePath,
+		appdevApps,
+		appdevFrames,
+		pipelineEntries: {
+			subscribe: (cb: (e: ProjectEntry[]) => void) => {
+				entrySubsRef.current.add(cb);
+				cb(entriesCurRef.current);
+				return () => { entrySubsRef.current.delete(cb); };
+			},
+			refresh,
+		},
+	}), [openPage, handleOpenFile, handleFileManage, handleExportPipeline, handleSourceAction, handleNavigate, handleOpenUnknownTask, showConfirm, activeFilePath, appdevApps, refresh]);
+
+	// The builtin tool tabs, straight off the registry — ordinary DevTool
+	// mounts over this realm's per-tool peer/channel.
+	const builtinItems = useMemo<SidebarToolItem[]>(() =>
+		getBuiltinTools()
+			.filter((t) => (!t.hosts || t.hosts.includes('rocket')) && !disabledBuiltins.includes(t.id))
+			.map((t) => {
+				const Sidebar = t.sidebar;
+				const documents = {
+					open: (key: string, title: string) => getDocs()?.openStaticDocument(key ? `tool:${t.id}/${key}` : `tool:${t.id}`, title),
+					close: (key: string) => getDocs()?.discardDocument(key ? `tool:${t.id}/${key}` : `tool:${t.id}`),
+				};
+				return {
+					id: t.id,
+					label: t.name,
+					...(t.icon !== undefined ? { icon: t.icon } : {}),
+					// Nested provider: this tool's services carry ITS prefs
+					// partition — a tool's handle cannot address another
+					// app's keys (isolation by construction).
+					render: () => (
+						<ToolHostProvider value={{ ...toolServices, prefs: scopedPrefs(prefsStore, `app:${t.id}`) }}>
+							<Sidebar peer={getSidebarPeer(t.id)} channel={getToolChannel(t.id, 'sidebar')} documents={documents} />
+						</ToolHostProvider>
+					),
+				};
+			}),
+	[disabledBuiltins, toolServices, prefsStore]);
+
+
 
 	// --- Render ----------------------------------------------------------------
 
@@ -681,8 +608,20 @@ const SidebarProvider: React.FC = () => {
 	// default when no stored choice exists (requirement: default tab unless
 	// workspace state says otherwise).
 	const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => (prefs?.sidebarMode as SidebarMode | undefined) ?? 'agent');
+	// The TRUE previous mode, mirrored from state — only a strip selection
+	// below emits the deactivation for the tab it replaces.
+	const prevSidebarModeRef = useRef<SidebarMode>(sidebarMode);
+	useEffect(() => { prevSidebarModeRef.current = sidebarMode; }, [sidebarMode]);
+
 	const handleSidebarModeChange = useCallback(
 		(mode: SidebarMode) => {
+			// Deactivation for a deselected tool tab FIRST (the successor's
+			// activation follows from handleFocusTool); same-tab reselects
+			// deactivate nothing.
+			const prev = prevSidebarModeRef.current;
+			if (prev !== mode && prev.startsWith('tool:')) {
+				ConnectionManager.getInstance().emit('shell:toolSidebarDeactivated', { appId: prev.slice('tool:'.length) });
+			}
 			setSidebarMode(mode);
 			updatePrefs({ sidebarMode: mode });
 		},
@@ -700,18 +639,25 @@ const SidebarProvider: React.FC = () => {
 		id === 'agent' || id === 'apps' || id === 'nodes' || id === 'pipelines' || id === 'toolStore' || !!id?.startsWith('tool:');
 	const effectiveMode = shellView && isKnownMode(shellView.activeViewId) ? shellView.activeViewId : sidebarMode;
 
-	// Rail → frame: SELECTING a tool's rail/strip container opens its document
-	// (the classic strip gets this from SidebarView's own tab handler; the
-	// workbench rail only reports the selection). Transitions only — a page
-	// boot restoring a remembered tool selection must not force the document
-	// open.
+	// Rail → frame: SELECTING a tool's rail/strip container is REVEAL-ONLY —
+	// bring an already-open document of the tool forward, never create one.
+	// The tool's own sidebar panel decides what documents open (a connection
+	// row, a pipeline entry); the generic landing frame is never summoned by
+	// a mere tab selection. Transitions only — a page boot restoring a
+	// remembered tool selection must not reshuffle tabs either.
 	const prevShellViewRef = useRef<string | undefined>(shellView?.activeViewId);
 	useEffect(() => {
 		const id = shellView?.activeViewId;
 		const prev = prevShellViewRef.current;
 		prevShellViewRef.current = id;
-		if (id && id !== prev && prev !== undefined && id.startsWith('tool:')) handleOpenTool(id.slice('tool:'.length));
-	}, [shellView?.activeViewId, handleOpenTool]);
+		if (!id || id === prev) return;
+		// Deactivation for the rail container a tool tab just lost, FIRST —
+		// then the successor's activation (inside handleFocusTool).
+		if (prev?.startsWith('tool:')) {
+			ConnectionManager.getInstance().emit('shell:toolSidebarDeactivated', { appId: prev.slice('tool:'.length) });
+		}
+		if (prev !== undefined && id.startsWith('tool:')) handleFocusTool(id.slice('tool:'.length));
+	}, [shellView?.activeViewId, handleFocusTool]);
 
 	// Frame → rail: focusing a tool's document highlights its rail container
 	// (the VS Code host's onPanelFocused → setModeExternal, in-tree). The
@@ -734,36 +680,19 @@ const SidebarProvider: React.FC = () => {
 	return (
 		<>
 			<SidebarCollapsedGate>
-				<SidebarChrome
-					items={buildBuiltinSidebarItems({
-						agent: { agent, onShowIntro: handleShowIntro },
-						appdev: { appBuilder, onShowIntro: handleShowIntro, onShowDesktop: handleShowDesktop },
-						nodes: { onShowIntro: handleShowIntro },
-						pipelines: {
-							isConnected: connection.state === 'connected',
-							entries,
-							activeTasks,
-							unknownTasks,
-							activeFilePath,
-							onNavigate: handleNavigate,
-							onOpenFile: handleOpenFile,
-							onFileManage: handleFileManage,
-							fileActions: [{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }],
-							onSourceAction: handleSourceAction,
-							onOpenUnknownTask: handleOpenUnknownTask,
-							onRefresh: refresh,
-							onShowIntro: handleShowIntro,
-						},
-					})}
-					fallbackId="pipelines"
-					showModeStrip
-					hideModeStrip={!!shellView}
-					sidebarMode={effectiveMode}
-					onSidebarModeChange={handleSidebarModeChange}
-					toolTabs={toolTabs}
-					tabOrder={tabOrder}
-					onReorderTabs={setTabOrder}
-				/>
+				<ToolHostProvider value={toolServices}>
+					<SidebarChrome
+						items={builtinItems}
+						fallbackId="pipelines"
+						showModeStrip
+						hideModeStrip={!!shellView}
+						sidebarMode={effectiveMode}
+						onSidebarModeChange={handleSidebarModeChange}
+						toolTabs={toolTabs}
+						tabOrder={tabOrder}
+						onReorderTabs={setTabOrder}
+					/>
+				</ToolHostProvider>
 			</SidebarCollapsedGate>
 			{confirmState && <ConfirmDialog title={confirmState.title} message={confirmState.message} confirmLabel={confirmState.confirmLabel} cancelLabel="Cancel" onConfirm={() => handleConfirmResult(true)} onCancel={() => handleConfirmResult(false)} />}
 			{actionError && <ConfirmDialog title="Pipeline Error" message={actionError} confirmLabel="OK" onConfirm={() => setActionError(null)} onCancel={() => setActionError(null)} />}

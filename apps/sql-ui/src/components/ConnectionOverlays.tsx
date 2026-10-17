@@ -31,8 +31,9 @@
 // =============================================================================
 
 import React, { useCallback } from 'react';
-import { ConfirmDialog, useShellConnection } from 'shell';
-import { deleteSavedConnection, endpointKeyForConnection, releaseDirectEndpoint } from '../connect';
+import { ConfirmDialog } from 'shell';
+import { deleteSavedConnection, endpointKeyForConnection } from '../connect';
+import { useSqlEnv } from '../sqlEnv';
 import { requestConnectionOverlay, useConnectionOverlay } from '../navigation';
 import NewConnectionModal from './NewConnectionModal';
 
@@ -41,7 +42,7 @@ import NewConnectionModal from './NewConnectionModal';
  * Mounted once by SqlApp / SqlDevTool at the app root.
  */
 const ConnectionOverlays: React.FC = () => {
-	const { client } = useShellConnection();
+	const env = useSqlEnv();
 	const request = useConnectionOverlay();
 
 	const close = useCallback(() => requestConnectionOverlay(null), []);
@@ -51,12 +52,12 @@ const ConnectionOverlays: React.FC = () => {
 	const confirmDelete = useCallback(() => {
 		if (request?.kind !== 'delete') return;
 		const conn = request.conn;
-		if (conn.mode === 'direct' && client) {
-			void releaseDirectEndpoint(client, endpointKeyForConnection(conn));
+		if (conn.mode === 'direct') {
+			env.releaseEndpoint(endpointKeyForConnection(conn));
 		}
 		deleteSavedConnection(conn.id);
 		close();
-	}, [request, client, close]);
+	}, [request, env, close]);
 
 	if (!request) return null;
 

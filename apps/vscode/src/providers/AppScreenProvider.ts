@@ -28,10 +28,10 @@ import type { AppListing } from '../appdev/appMarker';
 // Deep file imports (never the barrel — it drags the React view layer
 // into the extension-host bundle): the SHARED preflight bar, dependency
 // probe, and history walk, so this host can never drift from the web one.
-import { runListingPreflight } from 'shared/modules/appdev/preflight';
-import { probePackage } from 'shared/modules/appdev/compatProbe';
-import { walkDeploymentHistory } from 'shared/modules/appdev/wire';
-import type { WireHistoryRow } from 'shared/modules/appdev/wire';
+import { runListingPreflight } from 'shared/tools/appdev/preflight';
+import { probePackage } from 'shared/tools/appdev/compatProbe';
+import { walkDeploymentHistory } from 'shared/tools/appdev/wire';
+import type { WireHistoryRow } from 'shared/tools/appdev/wire';
 import { ensureDevSession, getDevSessionManager } from '../appdev/devSessionManager';
 import { deployApp } from '../appdev/publish';
 import { vendorAppTypes } from '../appdev/appTypes';

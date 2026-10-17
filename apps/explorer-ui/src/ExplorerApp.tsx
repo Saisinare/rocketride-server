@@ -38,8 +38,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { ShellAppProps, DevToolProps } from 'shell';
 import { commonStyles } from 'shell';
-import { useShellConnection, useWorkspace, DocTabs, DocSplitLayout, AppLayout, EmptyState, BxFolderOpen } from 'shell';
+import { createToolChannel, createToolController, useConnectionReady, useShellConnection, useWorkspace, DocTabs, DocSplitLayout, AppLayout, EmptyState, BxFolderOpen } from 'shell';
 import type { Documents } from 'shell';
+import type { ExplorerOps } from './ops';
+import { createLocalExplorerFs, createRemoteExplorerFs } from './fs';
+import type { IExplorerFs } from './fs';
 import { createDocs, destroyDocs, getDocs } from './docs';
 import { createStoreVfs, isFileLoadError, isLiveBlobUrl, forgetBlobUrl } from './store';
 import { getMediaInfo } from './mediaTypes';
@@ -133,14 +136,18 @@ const styles = {
 // =============================================================================
 
 const ExplorerApp: React.FC<ShellAppProps> = () => {
-	const { client } = useShellConnection();
+	const { client, isConnected } = useShellConnection();
 	const { loaded, appState, updateAppState } = useWorkspace();
 	const [ready, setReady] = useState(false);
+
+	// The FULL APP's store surface: the realm legitimately owns a client, so
+	// the viewers get the LOCAL fs (dev-tool frames get the remote one).
+	const fs = useMemo(() => createLocalExplorerFs(client, isConnected), [client, isConnected]);
 
 	useEffect(() => {
 		if (!client || !loaded) return;
 
-		const vfs = createStoreVfs(client);
+		const vfs = createStoreVfs(createLocalExplorerFs(client, true));
 		createDocs(vfs, { appState, updateAppState });
 		setReady(true);
 
@@ -156,7 +163,7 @@ const ExplorerApp: React.FC<ShellAppProps> = () => {
 	if (!ready) return <AppLayout showStatus><div style={styles.welcome}>Initialising...</div></AppLayout>;
 	return (
 		<AppLayout sidebar={sidebar} showStatus>
-			<ExplorerAppReady docs={getDocs()!} />
+			<ExplorerAppReady docs={getDocs()!} fs={fs} />
 		</AppLayout>
 	);
 };
@@ -173,16 +180,22 @@ const ExplorerApp: React.FC<ShellAppProps> = () => {
  * this document's Documents singleton. No workspace binding: tab layout is
  * session-local here.
  */
-export const ExplorerDevTool: React.FC<DevToolProps> = ({ peer }) => {
-	const { client } = useShellConnection();
+export const ExplorerDevTool: React.FC<DevToolProps> = ({ peer, channel }) => {
+	// THIS FRAME HOLDS NO ROCKETRIDE CLIENT: every store interaction is a
+	// controller op, and readiness is the host-published `host:connection`
+	// system topic replicated over the tool channel.
+	const toolChannel = useMemo(() => channel ?? createToolChannel(peer), [channel, peer]);
+	const engineReady = useConnectionReady(toolChannel);
+	const call = useMemo(() => createToolController<ExplorerOps>(peer), [peer]);
+	const fs = useMemo(() => createRemoteExplorerFs(call, engineReady), [call, engineReady]);
 	const [ready, setReady] = useState(false);
 
 	useEffect(() => {
-		if (!client) return;
-		createDocs(createStoreVfs(client));
+		if (!engineReady) return;
+		createDocs(createStoreVfs(createRemoteExplorerFs(call, true)));
 		setReady(true);
 		return () => { destroyDocs(); setReady(false); };
-	}, [client]);
+	}, [engineReady, call]);
 
 	// Frame side of the tree's peer protocol — apply incoming document
 	// actions, publish the active path for the tree highlight.
@@ -192,14 +205,14 @@ export const ExplorerDevTool: React.FC<DevToolProps> = ({ peer }) => {
 	}, [ready, peer]);
 
 	if (!ready) return <div style={styles.welcome}>Initialising...</div>;
-	return <ExplorerAppReady docs={getDocs()!} />;
+	return <ExplorerAppReady docs={getDocs()!} fs={fs} />;
 };
 
 // =============================================================================
 // INNER COMPONENT — renders once Documents is ready
 // =============================================================================
 
-const ExplorerAppReady: React.FC<{ docs: Documents }> = ({ docs }) => {
+const ExplorerAppReady: React.FC<{ docs: Documents; fs: IExplorerFs }> = ({ docs, fs }) => {
 	const state = docs.useStore();
 	const canCloseGroups = state.rootNode.type === 'split';
 
@@ -263,6 +276,7 @@ const ExplorerAppReady: React.FC<{ docs: Documents }> = ({ docs }) => {
 											>
 												<FilePane
 													docs={docs}
+													fs={fs}
 													uri={editor.documentUri}
 													editorId={editorId}
 												/>
@@ -283,8 +297,7 @@ const ExplorerAppReady: React.FC<{ docs: Documents }> = ({ docs }) => {
 // FILE PANE — dispatches to the correct viewer based on file type
 // =============================================================================
 
-const FilePane: React.FC<{ docs: Documents; uri: string; editorId: string }> = ({ docs, uri, editorId }) => {
-	const { client } = useShellConnection();
+const FilePane: React.FC<{ docs: Documents; fs: IExplorerFs; uri: string; editorId: string }> = ({ docs, fs, uri, editorId }) => {
 	const state = docs.useStore();
 	const doc = state.documents[uri];
 	const editor = state.editors[editorId];
@@ -351,22 +364,22 @@ const FilePane: React.FC<{ docs: Documents; uri: string; editorId: string }> = (
 			case 'text':        return <TextViewer docs={docs} uri={uri} content={content} />;
 			case 'json':        return <JsonViewer content={content} />;
 			case 'markdown':    return <MarkdownViewer content={content} />;
-			case 'hex':         return client ? <HexViewer client={client} uri={uri} /> : null;
+			case 'hex':         return fs.ready ? <HexViewer fs={fs} uri={uri} /> : null;
 			case 'image':       return <ImageViewer content={content} uri={uri} error={loadError} />;
 			case 'pdf':         return <PdfViewer content={content} uri={uri} error={loadError} />;
 			case 'docx':        return <DocxViewer content={content} loadError={loadError} />;
 			case 'spreadsheet': return <SpreadsheetViewer content={content} loadError={loadError} />;
-			case 'video':       return client ? <VideoViewer client={client} uri={uri} /> : null;
-			case 'audio':       return client ? <AudioViewer client={client} uri={uri} /> : null;
+			case 'video':       return fs.ready ? <VideoViewer fs={fs} uri={uri} /> : null;
+			case 'audio':       return fs.ready ? <AudioViewer fs={fs} uri={uri} /> : null;
 			case 'binary':      return <BinaryViewer />;
 		}
 	}
 
 	// --- Default dispatch based on file category ---
 
-	// Link viewers: video/audio get the client and fetch their own URL
-	if (category === 'video' && client) return <VideoViewer client={client} uri={uri} />;
-	if (category === 'audio' && client) return <AudioViewer client={client} uri={uri} />;
+	// Link viewers: video/audio fetch their own presigned URL through the seam
+	if (category === 'video' && fs.ready) return <VideoViewer fs={fs} uri={uri} />;
+	if (category === 'audio' && fs.ready) return <AudioViewer fs={fs} uri={uri} />;
 
 	// Blob viewers: content is a blob: URL loaded by the store
 	if (category === 'image') return <ImageViewer content={content} uri={uri} error={loadError} />;
@@ -376,7 +389,7 @@ const FilePane: React.FC<{ docs: Documents; uri: string; editorId: string }> = (
 
 	// Inline viewers: content is the file text
 	if (category === 'markdown') return <MarkdownViewer content={content} />;
-	if (category === 'binary') return client ? <HexViewer client={client} uri={uri} /> : <BinaryViewer />;
+	if (category === 'binary') return fs.ready ? <HexViewer fs={fs} uri={uri} /> : <BinaryViewer />;
 
 	// Code, JSON, and plain text all use the Monaco editor
 	return <MonacoViewer docs={docs} uri={uri} content={content} />;

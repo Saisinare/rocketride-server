@@ -1,2 +1,2 @@
-export { default as Tokens, SourceTokensContent } from './Tokens';
-export type { TokensProps, TokenData, SourceTokensContentProps } from './Tokens';
+export { SourceTokensContent } from './Tokens';
+export type { TokenData, SourceTokensContentProps } from './Tokens';

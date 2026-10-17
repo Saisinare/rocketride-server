@@ -199,6 +199,32 @@ export interface ShellConnectionEventMap {
 	 */
 	'shell:notify': ShellNotification;
 
+	// ── Dev tools ────────────────────────────────────────────────────────
+
+	/**
+	 * A dev tool's sidebar tab was selected in the host's sidebar chrome.
+	 *
+	 * Fired on EVERY selection (no deduplication). What activation means is
+	 * the TOOL's decision, made in its devToolSidebar code: a single-pane
+	 * tool opens its pane (`documents.open('', name)`); a per-document tool
+	 * ignores the event. The FIRST selection is also what lazily mounts the
+	 * tool's sidebar, so it arrives before the subscription exists — a tool
+	 * that opens on activation therefore also opens on MOUNT (mounting IS
+	 * the first activation) and uses this event for re-activations only.
+	 */
+	'shell:toolSidebarActivated': { appId: string };
+
+	/**
+	 * A dev tool's sidebar tab stopped being the selected one — the user
+	 * selected a different tab (another tool's, or a fixed mode). Fired
+	 * before the successor's `shell:toolSidebarActivated`, and only on a
+	 * real change: re-selecting the same tab deactivates nothing, and a
+	 * sidebar reload or an externally synced highlight emits neither event.
+	 * Typical use: a controller pauses discretionary work (polling,
+	 * watchers) while its panel is out of view.
+	 */
+	'shell:toolSidebarDeactivated': { appId: string };
+
 	// ── Auth ─────────────────────────────────────────────────────────────
 
 	/**

@@ -28,3 +28,40 @@
 export { scanWorkspaceApps, appIconDataUri, buildWorkspaceAppRows, APP_MARKER_GLOB, APP_SCAN_EXCLUDE, APP_BINDING_WATCH_GLOBS, APP_RESCAN_DEBOUNCE_MS, MAX_README_IMAGE_BYTES } from './scan';
 export type { IScannedWorkspaceApp, IWorkspaceAppRow } from './scan';
 export { startWorkspaceAppDiscovery } from './controller';
+
+// ── Host-safe logic + contracts (no JSX anywhere below) ─────────────────────
+export { renderTemplate, TEMPLATE_NAMES } from './templates';
+export type { FrameOptions, TemplateFile, TemplateName, TemplateVars } from './templates';
+export { toHistoryEntries, toRungPins, toVersionInfos, walkDeploymentHistory } from './wire';
+export type { WireHistoryRow, WirePin, WireRailEntry } from './wire';
+export { runListingPreflight } from './preflight';
+export type { PreflightIO } from './preflight';
+export { applyListing, projectListing } from './listing';
+export type { PackageJsonLike } from './listing';
+export { probePackage } from './compatProbe';
+export type { CompatVerdict, ProbeOptions } from './compatProbe';
+export type {
+	AppBuilderCapabilities,
+	AppBuilderStage,
+	AppErrorRow,
+	AppEventRow,
+	AppHistoryEntry,
+	AppStatus,
+	AppSummary,
+	AppVersionInfo,
+	BuildStatusTick,
+	ConsoleRow,
+	DesignPane,
+	IAppBuilderHost,
+	ListingDraft,
+	PreflightCheck,
+	BillingPlan,
+	RungKind,
+	RungPin,
+	WatchStatus,
+} from './types';
+export type { AppListItem, AppBuilderSidebar } from './sidebarTypes';
+
+// The VIEW LAYER (JSX) lives behind the deep entry './views' — this barrel
+// stays host-safe: the VS Code extension host compiles it without JSX, so
+// nothing exported here may pull a .tsx module.

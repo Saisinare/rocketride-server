@@ -38,20 +38,28 @@
 // already agree on.
 // =============================================================================
 
-import type { ReactNode } from 'react';
-import type { AppDescriptor } from 'shell';
+import type { ComponentType, ReactNode } from 'react';
+import type { DevToolProps } from 'shell';
 
-/** One builtin tool: the descriptor plus the strip metadata a manifest would
- *  otherwise carry. */
+/** One builtin tool: the tool surface plus the strip metadata a store
+ *  tool's manifest row would otherwise carry (the "fake appManifest"). */
 export interface BuiltinTool {
-	/** Stable tool id ('builtin.pipelines', …) — the strip tab id suffix. */
+	/** Stable tool id — the strip tab id AND the tool's channel key. */
 	id: string;
-	/** Display name (tab tooltip, panel headings). */
+	/** Display name (tab tooltip, store rows, panel headings). */
 	name: string;
-	/** Strip tab glyph. */
-	icon: ReactNode;
-	/** The tool's descriptor — the SAME shape a store tool MF-exports. */
-	descriptor: AppDescriptor;
+	/** Strip tab glyph (undefined = text label). */
+	icon?: ReactNode;
+	/** One-line description for the Dev Tools store rows. */
+	description?: string;
+	/** The tool's CONTROLLER — same contract a store tool MF-exports as
+	 *  devToolSidebar; host capabilities arrive via ToolContext. */
+	sidebar: ComponentType<DevToolProps>;
+	/** The tool's document view, where one exists. */
+	frame?: ComponentType<DevToolProps>;
+	/** Host ids this tool is served on (undefined = every host). The agent
+	 *  tool, for example, has no VS Code surface yet. */
+	hosts?: readonly ('rocket' | 'vscode')[];
 }
 
 const builtins: BuiltinTool[] = [];

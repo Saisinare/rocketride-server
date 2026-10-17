@@ -35,7 +35,7 @@
 import { useCallback, useMemo } from 'react';
 import { useWorkspace } from 'shell';
 import type { AppManifestEntry } from 'shell';
-import type { ToolTab } from 'shared/modules/sidebar/types';
+import type { ToolTab } from 'shared/tools/core/chrome/types';
 
 /** Workspace-prefs key: pinned tool app ids, in pin order. */
 const PINS_KEY = 'devToolPins';

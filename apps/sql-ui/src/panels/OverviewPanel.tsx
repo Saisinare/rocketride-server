@@ -29,13 +29,13 @@ import type { CSSProperties } from 'react';
 import { Banner, Button, Card, CardDataGrid, EmptyState, MiniCard, MiniContainer, monoEl, mutedEl } from 'shell';
 import type { GridCellComponent } from 'shell';
 import type { GridColumnDefinition } from 'shell';
-import type { RocketRideClient } from 'shell';
-import type { ISqlEndpoint, ISqlSchemaTable } from '../connect';
-import type { ISchemaState } from '../schema/schemaStore';
+import type { SqlEndpoint, SqlSchemaTable } from '../connect';
+import type { SchemaState } from '../schema/schemaStore';
 import { refreshSchema } from '../schema/schemaStore';
+import { useSqlEnv } from '../sqlEnv';
 import { useTableRecordRequest } from '../navigation';
 import { designUri, getDocs, nextQueryDoc, tableDataUri } from '../docs';
-import type { IQueryDocPayload } from '../docs';
+import type { QueryDocPayload } from '../docs';
 import { useSqlPageNav } from '../pageNav';
 import TableRecordPanel from '../components/TableRecordPanel';
 import { buildRelationGraph } from '../schema/relations';
@@ -46,17 +46,16 @@ import { DatabaseIcon } from '../icons';
 // =============================================================================
 
 /** Props for the {@link OverviewPanel} component. */
-export interface IOverviewPanelProps {
+export interface OverviewPanelProps {
 	/** The connection's endpoint. */
-	endpoint: ISqlEndpoint;
+	endpoint: SqlEndpoint;
 	/** The connection's schema snapshot. */
-	snapshot: ISchemaState;
-	/** The shell's RocketRide client (null while disconnected). */
-	client: RocketRideClient | null;
+	snapshot: SchemaState;
+
 }
 
 /** One row of the tables grid, derived from the schema snapshot. */
-interface ITableRow extends Record<string, unknown> {
+interface TableRow extends Record<string, unknown> {
 	/** Table name (row identity). */
 	name: string;
 	/** Column count. */
@@ -103,8 +102,9 @@ const styles = {
  * click routed through the table-record request store) opens the table's
  * record drawer.
  */
-export const OverviewPanel: React.FC<IOverviewPanelProps> = ({ endpoint, snapshot, client }) => {
-	// In-workbench page navigation (null in legacy standalone documents).
+export const OverviewPanel: React.FC<OverviewPanelProps> = ({ endpoint, snapshot }) => {
+	const env = useSqlEnv();
+	// In-workbench page navigation.
 	const pageNav = useSqlPageNav();
 
 	// Open record drawers, outermost first. A drawer opened FROM a drawer
@@ -122,7 +122,7 @@ export const OverviewPanel: React.FC<IOverviewPanelProps> = ({ endpoint, snapsho
 
 	// Derive metric values + grid rows from the snapshot.
 	const tables = snapshot.schema?.tables ?? {};
-	const rows = useMemo<ITableRow[]>(
+	const rows = useMemo<TableRow[]>(
 		() =>
 			Object.entries(tables).map(([name, def]) => ({
 				name,
@@ -203,8 +203,8 @@ export const OverviewPanel: React.FC<IOverviewPanelProps> = ({ endpoint, snapsho
 				<div>
 					<Button
 						variant="primary"
-						onClick={() => { if (client) void refreshSchema(client, endpoint, { fresh: true }); }}
-						disabled={!client}
+						onClick={() => { if (env.ready) void refreshSchema(env.getSession(endpoint), { fresh: true }); }}
+						disabled={!env.ready}
 					>
 						Retry
 					</Button>
@@ -241,17 +241,15 @@ export const OverviewPanel: React.FC<IOverviewPanelProps> = ({ endpoint, snapsho
 			{/* Tables grid — fills the remaining height; row click inspects. */}
 			<div style={styles.gridFill}>
 				<Card noBodyPadding fill>
-					<CardDataGrid<ITableRow>
+					<CardDataGrid<TableRow>
 						title="Tables"
 						actions={
 							<Button
 								variant="ghost"
 								small
 								onClick={() => {
-									// Fresh create-table draft — the DESIGN page in a
-									// connection workbench, a document standalone.
-									if (pageNav) pageNav.openDesign(null);
-									else getDocs()?.openStaticDocument(designUri(endpoint.key, null), 'New table', { endpoint, table: null });
+									// Fresh create-table draft — the DESIGN page.
+									pageNav.openDesign(null);
 								}}
 							>
 								+ Create Table
@@ -279,36 +277,25 @@ export const OverviewPanel: React.FC<IOverviewPanelProps> = ({ endpoint, snapsho
 					onClose={() => setStack((current) => current.slice(0, depth))}
 					database={snapshot.schema?.database ?? ''}
 					table={name}
-					def={(tables[name] as ISqlSchemaTable | undefined) ?? null}
+					def={(tables[name] as SqlSchemaTable | undefined) ?? null}
 					dialect={snapshot.dialect}
 					graph={graph}
 					refreshedAt={snapshot.refreshedAt}
 					onOpenTable={(next) => setStack((current) => [...current.slice(0, depth + 1), next])}
 					onOpenQuery={(sql, label) => {
 						// Generated SQL never runs by itself; `origin` lets the
-						// query surface say so on screen. Inside a connection
-						// workbench this is the QUERY page; standalone, a doc.
-						if (pageNav) {
-							pageNav.openQuery({ sql, label, origin: 'generated' });
-						} else {
-							const { uri } = nextQueryDoc(endpoint.key);
-							const payload: IQueryDocPayload = { endpoint, label, initialSql: sql, origin: 'generated' };
-							getDocs()?.openStaticDocument(uri, label, payload);
-						}
+						// query surface say so on screen.
+						pageNav.openQuery({ sql, label, origin: 'generated' });
 						setStack([]);
 					}}
 					onBrowseData={() => {
-						// The table's data browser — the DATA page in-workbench,
-						// a document standalone.
-						if (pageNav) pageNav.openTableData(name);
-						else getDocs()?.openStaticDocument(tableDataUri(endpoint.key, name), `${name} - data`, { endpoint, table: name });
+						// The table's data browser — the DATA page.
+						pageNav.openTableData(name);
 						setStack([]);
 					}}
 					onDesign={() => {
-						// The table's designer — the DESIGN page in-workbench,
-						// a document standalone.
-						if (pageNav) pageNav.openDesign(name);
-						else getDocs()?.openStaticDocument(designUri(endpoint.key, name), `${name} - design`, { endpoint, table: name });
+						// The table's designer — the DESIGN page.
+						pageNav.openDesign(name);
 						setStack([]);
 					}}
 				/>

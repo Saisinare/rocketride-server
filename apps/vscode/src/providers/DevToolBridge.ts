@@ -1,100 +1,124 @@
 // =============================================================================
 // MIT License
 // Copyright (c) 2026 Aparavi Software AG
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 // =============================================================================
 
-/**
- * DevToolBridge — the peer-message relay between a dev tool's two mounts.
- *
- * A tool's frame (editor-area webview) and sidebar panel (the RocketRide
- * sidebar webview) are ISOLATED documents; their `DevToolProps.peer` channel
- * is relayed here, keyed by app id. Payloads are opaque to the host.
- *
- * Buffering: a sidebar click that OPENS the tool's panel can post its first
- * message before the panel webview has mounted — messages to an unregistered
- * panel are buffered (bounded) and flushed when the panel registers. The
- * sidebar webview is long-lived, so the sidebar direction buffers the same
- * way only while it has not resolved yet.
- */
+// =============================================================================
+// DEV-TOOL BRIDGE — webview transport for the shell's tool relay
+// =============================================================================
+//
+// The extension host's transport between a tool's sidebar mount (the one
+// sidebar webview) and its frame panels (one webview per document). WHAT is
+// retained, buffered, or summoned is the shell's ONE relay policy
+// (createToolRelay, deep-imported — its import chain is plain .ts, so the
+// extension host types against it without the shell's React barrel); this
+// class only supplies the per-app sinks and the host-published
+// `host:connection` seed every registering panel receives FIRST.
+// =============================================================================
 
-/** Most buffered messages kept per direction per tool. */
-const BUFFER_LIMIT = 64;
+// Deep leaf imports: the extension host must not pull the shell's React
+// barrel; the relay policy and wire shapes live in dependency-light modules.
+import { createToolRelay, hostConnectionPayload } from 'shell/src/components/workspace/toolRelay';
+import type { ToolRelay } from 'shell/src/components/workspace/toolRelay';
 
 type Deliver = (payload: unknown) => void;
 
-/**
- * Minimal mirror of the shell's tool-channel STATE envelope
- * (packages/shell/src/components/workspace/toolChannel.ts). The extension
- * host never imports the shell browser bundle, and the envelope is a stable
- * wire contract: `{ __rrtool: 'state', topic, snapshot }`.
- *
- * @param payload - Any relayed peer payload.
- * @returns The topic when the payload is a channel state message, else null.
- */
-function toolStateTopic(payload: unknown): string | null {
-	const m = payload as { __rrtool?: string; topic?: unknown } | null;
-	return m && typeof m === 'object' && m.__rrtool === 'state' && typeof m.topic === 'string' ? m.topic : null;
+/** One tool's transport state. */
+interface AppEntry {
+	relay: ToolRelay;
+	/** Live panel delivery functions (one per open document of the tool —
+	 *  sidebar→panel payloads broadcast to all; payloads carry whatever the
+	 *  tool needs to route). */
+	sinks: Set<Deliver>;
 }
 
 export class DevToolBridge {
 	/**
 	 * Called when a sidebar mount posts to a tool whose panel is NOT open —
 	 * the host wires this to reopen the panel (the message waits in the
-	 * buffer and flushes once the reopened panel registers). The sidebar
-	 * outlives the panel, so a click there is an implicit "open the tool".
+	 * relay's buffer and flushes once the reopened panel registers). The
+	 * sidebar outlives the panel, so a click there is an implicit "open".
 	 */
 	public onPanelNeeded?: (appId: string) => void;
 
-	/** Live panel delivery functions, by tool app id. A tool may hold SEVERAL
-	    panels (one per document key) — sidebar→panel messages broadcast to
-	    all of them; the payload carries whatever the tool needs to route. */
-	private panelSinks = new Map<string, Set<Deliver>>();
-	/** Buffered sidebar→panel messages awaiting a panel, by tool app id. */
-	private panelBuffers = new Map<string, unknown[]>();
-	/**
-	 * Channel STATE snapshots toward panels, retained per (tool, topic) —
-	 * every newly registered panel replays them before anything else, so a
-	 * document opening minutes after the controller published still renders
-	 * from current state. Unlike events, a state publish with no open panel
-	 * retains silently: it must never summon a window.
-	 */
-	private panelRetainedState = new Map<string, Map<string, unknown>>();
+	private apps = new Map<string, AppEntry>();
 
 	/** The (single) sidebar delivery function, once the sidebar resolves. */
 	private sidebarSink: ((appId: string, payload: unknown) => void) | null = null;
-	/** Buffered panel→sidebar messages awaiting the sidebar. */
-	private sidebarBuffer: Array<{ appId: string; payload: unknown }> = [];
+
+	/** The host's server reachability — the `host:connection` topic's source
+	 *  of truth (the HOST owns this topic; no tool publishes it). */
+	private hostConnected = false;
+
+	/** The (lazily created) entry for one tool. */
+	private app(appId: string): AppEntry {
+		let entry = this.apps.get(appId);
+		if (!entry) {
+			const sinks = new Set<Deliver>();
+			entry = {
+				sinks,
+				relay: createToolRelay({
+					toFrame: (payload) => { for (const sink of sinks) sink(payload); },
+					toSidebar: (payload) => this.sidebarSink?.(appId, payload),
+					frameLive: () => sinks.size > 0,
+					sidebarLive: () => this.sidebarSink !== null,
+					summonFrame: () => this.onPanelNeeded?.(appId),
+				}),
+			};
+			this.apps.set(appId, entry);
+		}
+		return entry;
+	}
+
 	/**
-	 * The LAST panel→sidebar message per tool, retained across sidebar
-	 * reloads. Frames push full state snapshots whenever state changes (the
-	 * peer contract), so replaying the latest one to a freshly (re)loaded
-	 * sidebar re-renders its mounts without any ask-the-frame handshake.
+	 * Updates the host's server reachability and broadcasts the
+	 * `host:connection` state topic to every open tool panel.
+	 *
+	 * @param connected - Whether the server connection is up.
 	 */
-	private sidebarRetained = new Map<string, unknown>();
+	public setHostConnected(connected: boolean): void {
+		if (this.hostConnected === connected) return;
+		this.hostConnected = connected;
+		const payload = hostConnectionPayload(connected);
+		for (const entry of this.apps.values()) {
+			for (const sink of entry.sinks) sink(payload);
+		}
+	}
 
 	// ── Panel side ───────────────────────────────────────────────────────────
 
 	/**
-	 * Registers a tool panel's delivery function and flushes the buffer.
+	 * Registers a tool panel's delivery function and replays what a fresh
+	 * frame must see: the host's `host:connection` FIRST (a restored editor
+	 * panel must read correctly before the tool's sidebar ever runs), then
+	 * the relay's canonical replay (retained state, then buffered events).
 	 *
 	 * @param appId - The tool's app id.
 	 * @param deliver - Posts one peer payload into the panel webview.
 	 */
 	public registerPanel(appId: string, deliver: Deliver): void {
-		const sinks = this.panelSinks.get(appId) ?? new Set<Deliver>();
-		sinks.add(deliver);
-		this.panelSinks.set(appId, sinks);
-		// Retained channel state FIRST — the fresh document renders from
-		// current snapshots before any queued events act on it.
-		const retained = this.panelRetainedState.get(appId);
-		if (retained) {
-			for (const payload of retained.values()) deliver(payload);
-		}
-		const buffered = this.panelBuffers.get(appId);
-		if (buffered) {
-			this.panelBuffers.delete(appId);
-			for (const payload of buffered) deliver(payload);
-		}
+		const entry = this.app(appId);
+		entry.sinks.add(deliver);
+		deliver(hostConnectionPayload(this.hostConnected));
+		entry.relay.replayToFrame(deliver);
 	}
 
 	/**
@@ -105,90 +129,54 @@ export class DevToolBridge {
 	 * @param deliver - The sink registerPanel was given.
 	 */
 	public unregisterPanel(appId: string, deliver: Deliver): void {
-		const sinks = this.panelSinks.get(appId);
-		if (!sinks) return;
-		sinks.delete(deliver);
-		if (sinks.size === 0) {
-			this.panelSinks.delete(appId);
-			this.panelBuffers.delete(appId);
-		}
+		this.apps.get(appId)?.sinks.delete(deliver);
 	}
 
 	/**
-	 * Delivers a sidebar→panel peer message to every open panel of the tool
-	 * (buffered while none is open). By the peer contract these are USER
-	 * actions, so a message with no panel at all summons one.
+	 * Routes a sidebar→panel peer message per the relay policy (live
+	 * delivery, state retention, bounded buffering + summon).
 	 *
 	 * @param appId - The tool's app id.
 	 * @param payload - Opaque message payload.
 	 */
 	public toPanel(appId: string, payload: unknown): void {
-		// Channel STATE: retain per topic (replayed to every panel that
-		// registers later) and deliver to whoever is open. Never buffer,
-		// never summon — publishing state must not pop windows.
-		const stateTopic = toolStateTopic(payload);
-		if (stateTopic !== null) {
-			const topics = this.panelRetainedState.get(appId) ?? new Map<string, unknown>();
-			topics.set(stateTopic, payload);
-			this.panelRetainedState.set(appId, topics);
-			const stateSinks = this.panelSinks.get(appId);
-			if (stateSinks) for (const sink of stateSinks) sink(payload);
-			return;
-		}
-
-		const sinks = this.panelSinks.get(appId);
-		if (sinks && sinks.size > 0) {
-			for (const sink of sinks) sink(payload);
-			return;
-		}
-		const buffer = this.panelBuffers.get(appId) ?? [];
-		if (buffer.length < BUFFER_LIMIT) buffer.push(payload);
-		this.panelBuffers.set(appId, buffer);
-		// No live panel: summon it — the buffered message delivers on its
-		// view:ready registration. (Reopening an already-opening panel is a
-		// no-op reveal, so bursts are safe.) Events and legacy raw peer
-		// messages only — state returned above.
-		this.onPanelNeeded?.(appId);
+		this.app(appId).relay.fromSidebar(payload);
 	}
 
 	// ── Sidebar side ─────────────────────────────────────────────────────────
 
 	/**
-	 * Registers the sidebar's delivery function and flushes the buffer.
+	 * Registers the sidebar's delivery function. Replay of retained/buffered
+	 * payloads waits for {@link replayRetainedToSidebar} — registration
+	 * happens before the webview's document loads, when posts can be lost.
 	 *
 	 * @param deliver - Posts one peer payload (with its tool id) into the sidebar webview.
 	 */
 	public registerSidebar(deliver: (appId: string, payload: unknown) => void): void {
 		this.sidebarSink = deliver;
-		const buffered = this.sidebarBuffer;
-		this.sidebarBuffer = [];
-		for (const { appId, payload } of buffered) deliver(appId, payload);
 	}
 
 	/**
-	 * Delivers a panel→sidebar peer message (buffered until the sidebar resolves).
-	 * The latest message per tool is also RETAINED for replay to a reloaded
-	 * sidebar (see {@link replayRetainedToSidebar}).
+	 * Routes a panel→sidebar peer message per the relay policy (live-only
+	 * calls, retained last push, bounded buffering).
 	 *
 	 * @param appId - The tool's app id.
 	 * @param payload - Opaque message payload.
 	 */
 	public toSidebar(appId: string, payload: unknown): void {
-		this.sidebarRetained.set(appId, payload);
-		if (this.sidebarSink) {
-			this.sidebarSink(appId, payload);
-			return;
-		}
-		if (this.sidebarBuffer.length < BUFFER_LIMIT) this.sidebarBuffer.push({ appId, payload });
+		this.app(appId).relay.fromFrame(payload);
 	}
 
 	/**
-	 * Replays each tool's retained last message into the sidebar. The host
-	 * calls this on the sidebar webview's `view:ready` — registration alone
-	 * happens before the webview's document loads, when posts can be lost.
+	 * Replays each tool's retained last frame push (plus anything buffered
+	 * while the sidebar was away) into the sidebar. The host calls this on
+	 * the sidebar webview's `view:ready`.
 	 */
 	public replayRetainedToSidebar(): void {
-		if (!this.sidebarSink) return;
-		for (const [appId, payload] of this.sidebarRetained) this.sidebarSink(appId, payload);
+		const sink = this.sidebarSink;
+		if (!sink) return;
+		for (const [appId, entry] of this.apps) {
+			entry.relay.replayToSidebar((payload) => sink(appId, payload));
+		}
 	}
 }

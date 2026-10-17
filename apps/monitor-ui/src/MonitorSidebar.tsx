@@ -36,9 +36,10 @@
 //  - devToolSidebar: the menu lives in the HOST's sidebar, an isolated
 //    document — selections ride the DevToolProps peer channel to the frame.
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { SidebarMenu, useDashboardData } from 'shell';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { SidebarMenu, createToolChannel, createToolOpServer, getClient, typedToolChannel, useDashboardData, useShellEvent } from 'shell';
 import type { DevToolProps, MonitorPageId, ViewMenu } from 'shell';
+import type { IDashboardSnapshot, MonitorOps, MonitorStateMap } from './ops';
 
 // =============================================================================
 // PEER PROTOCOL — sidebar mount ↔ frame (app-internal)
@@ -103,8 +104,17 @@ export const MonitorSidebar: React.FC<IMonitorSidebarProps> = ({ activeId, onSel
  * the same way (seeded by a `hello` on mount, since the frame may already be
  * on a page when this mount attaches).
  */
-export const MonitorDevToolSidebar: React.FC<DevToolProps> = ({ peer }) => {
+export const MonitorDevToolSidebar: React.FC<DevToolProps> = ({ peer, channel, documents }) => {
 	const [page, setPage] = useState<MonitorPageId>('overview');
+
+	// SINGLE-PANE UX: the monitor is one surface, so activating its sidebar
+	// tab opens (or reveals) the pane — the tool's choice, made here. This
+	// mount only exists because the tab was selected, so mounting IS the
+	// first activation; the shell event covers re-selections.
+	useEffect(() => { documents?.open('', 'Server Monitor'); }, [documents]);
+	useShellEvent('shell:toolSidebarActivated', ({ appId }) => {
+		if (appId === 'rocketride.monitor') documents?.open('', 'Server Monitor');
+	});
 
 	// The frame pushes its page on mount and on change (the host retains the
 	// last push across sidebar reloads) — this mount only listens, and posts
@@ -117,6 +127,34 @@ export const MonitorDevToolSidebar: React.FC<DevToolProps> = ({ peer }) => {
 			}),
 		[peer]
 	);
+
+	// ── CONTROLLER duties: the frame holds no RocketRide client ──────────────
+
+	const toolChannel = useMemo(() => typedToolChannel<MonitorStateMap>(channel ?? createToolChannel(peer)), [channel, peer]);
+
+	// This mount's own dashboard poll (the badge source below shares the same
+	// module singleton) doubles as the frame's data feed: publish every tick
+	// as retained state so a frame opening later renders immediately.
+	const { data, events, refresh } = useDashboardData();
+	useEffect(() => {
+		toolChannel.publishState('dashboard', { data, events } satisfies IDashboardSnapshot);
+	}, [toolChannel, data, events]);
+
+	// The frame's grid pages + manual refresh, served on this connection.
+	const refreshRef = useRef(refresh);
+	refreshRef.current = refresh;
+	useEffect(() => {
+		const ops = createToolOpServer<MonitorOps>(peer);
+		const needClient = () => {
+			const live = getClient();
+			if (!live || !live.isConnected()) throw new Error('Not connected to a server.');
+			return live;
+		};
+		ops.serve('monitor.listConnections', async (req) => needClient().listConnections(req));
+		ops.serve('monitor.listTasks', async (req) => needClient().listTasks(req));
+		ops.serve('monitor.refresh', async () => { refreshRef.current(); });
+		return () => ops.dispose();
+	}, [peer]);
 
 	return (
 		<MonitorSidebar

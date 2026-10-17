@@ -13,9 +13,10 @@
  */
 
 import * as vscode from 'vscode';
+import { readPref, writePref } from './PrefsBag';
 
-/** The one workspaceState key holding the pinned tool ids. */
-const STORAGE_KEY = 'rr.devTools';
+/** The system prefs key holding the pinned tool ids (ShellPrefsMap). */
+const PINS_KEY = 'devToolPins';
 
 export class DevToolStore {
 	/** Fires after every successful add/remove. */
@@ -26,7 +27,7 @@ export class DevToolStore {
 
 	/** The pinned tool app ids, in pin order. */
 	public getAll(): string[] {
-		return this.context.workspaceState.get<string[]>(STORAGE_KEY, []);
+		return readPref<string[]>(this.context, PINS_KEY) ?? [];
 	}
 
 	/**
@@ -37,7 +38,7 @@ export class DevToolStore {
 	public add(appId: string): void {
 		const current = this.getAll();
 		if (current.includes(appId)) return;
-		this.context.workspaceState.update(STORAGE_KEY, [...current, appId]).then(
+		writePref(this.context, PINS_KEY, [...current, appId], 'workspace').then(
 			() => this.changeEmitter.fire(),
 			(err: unknown) => console.error(`[DevToolStore] Failed to persist add: ${err}`),
 		);
@@ -51,7 +52,7 @@ export class DevToolStore {
 	public remove(appId: string): void {
 		const current = this.getAll();
 		if (!current.includes(appId)) return;
-		this.context.workspaceState.update(STORAGE_KEY, current.filter((id) => id !== appId)).then(
+		writePref(this.context, PINS_KEY, current.filter((id) => id !== appId), 'workspace').then(
 			() => this.changeEmitter.fire(),
 			(err: unknown) => console.error(`[DevToolStore] Failed to persist remove: ${err}`),
 		);

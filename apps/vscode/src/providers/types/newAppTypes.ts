@@ -12,10 +12,10 @@
  * (it must stay free of vscode imports).
  */
 
-import type { FrameOptions } from 'shared/modules/appdev/templates';
+import type { FrameOptions } from 'shared/tools/appdev/templates';
 // Deep .ts import (never the barrel — it drags the .tsx view layer into
 // the jsx-less extension-host program).
-import type { NewAppIdentity } from 'shared/modules/appdev/types';
+import type { NewAppIdentity } from 'shared/tools/appdev/types';
 
 // =============================================================================
 // NEW APP WIZARD PROTOCOL
@@ -25,7 +25,7 @@ import type { NewAppIdentity } from 'shared/modules/appdev/types';
 // pushes it on init and whenever the connection/account changes, so the
 // wizard's developer id chip and linkage name always reflect the live
 // connection.
-export type { NewAppIdentity } from 'shared/modules/appdev/types';
+export type { NewAppIdentity } from 'shared/tools/appdev/types';
 
 /** All messages the extension host can send to the NewAppWebview. */
 export type NewAppHostToWebview =

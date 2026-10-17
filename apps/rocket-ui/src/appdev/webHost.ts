@@ -41,8 +41,8 @@
 
 import { ConnectionManager } from 'shell';
 import type { RocketRideClient } from 'shell';
-import { projectListing, applyListing, probePackage, runListingPreflight, toRungPins, toVersionInfos, walkDeploymentHistory } from 'shared/modules/appdev';
-import type { BuildStatusTick, IAppBuilderHost, WireHistoryRow, WirePin, WireRailEntry } from 'shared/modules/appdev';
+import { projectListing, applyListing, probePackage, runListingPreflight, toRungPins, toVersionInfos, walkDeploymentHistory } from 'shared/tools/appdev';
+import type { BuildStatusTick, IAppBuilderHost, WireHistoryRow, WirePin, WireRailEntry } from 'shared/tools/appdev';
 import { appFileExists, readAppImageDataUri, readAppPackage, readAppText, writeAppPackage } from './appStore';
 import { packAppSource } from './pack';
 import type { WebDevSession } from './devSession';

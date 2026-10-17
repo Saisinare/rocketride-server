@@ -40,8 +40,9 @@ import type { CSSProperties } from 'react';
 import { useShellConnection } from 'shell';
 // Deep import matching the VSCode wizard page: the form alone, never the
 // whole appdev view layer.
-import { NewAppForm } from 'shared/modules/appdev/NewAppForm';
-import type { FrameOptions, NewAppIdentity } from 'shared/modules/appdev';
+import { NewAppForm } from 'shared/tools/appdev/NewAppForm';
+import type { FrameOptions } from 'shared/tools/appdev';
+import type { NewAppIdentity } from 'shared/tools/appdev/views';
 import { getDocs } from '../docs';
 import { APPDEV_DIR, listAppFolders, scaffoldApp } from '../appdev/appStore';
 
@@ -122,10 +123,11 @@ const NewAppProvider: React.FC = () => {
 				// The sidebar re-scans off the scaffold's own onFsChange bus
 				// notifications (emitFsChange inside scaffoldApp) — no extra
 				// announcement needed here.
-				// step: close the wizard and open the new app's builder
+				// step: close the wizard and open the new app's builder — both
+				// under their tool-document identities (tool:apps/...)
 				const docs = getDocs();
-				docs?.discardDocument('newapp');
-				docs?.openStaticDocument(`app:${appId}`, displayName);
+				docs?.discardDocument('tool:apps/newapp');
+				docs?.openStaticDocument(`tool:apps/${appId}`, displayName);
 			} catch (err) {
 				setError(err instanceof Error ? err.message : String(err));
 				setCreating(false);
@@ -136,7 +138,7 @@ const NewAppProvider: React.FC = () => {
 
 	/** Closes the wizard without creating anything. */
 	const handleCancel = useCallback(() => {
-		getDocs()?.discardDocument('newapp');
+		getDocs()?.discardDocument('tool:apps/newapp');
 	}, []);
 
 	// ── Render ───────────────────────────────────────────────────────────

@@ -44,7 +44,7 @@
  */
 
 import { init as initLexer, parse as parseModule } from 'es-module-lexer';
-import type { PackageJsonLike } from 'shared/modules/appdev';
+import type { PackageJsonLike } from 'shared/tools/appdev';
 import { getWorkspaceVfs } from '../workspace/workspace';
 import { cacheGet, cachePut } from './idbCache';
 import { mintBlob, mintShareShim } from './linker';
@@ -75,7 +75,7 @@ const MAX_MODULES_PER_DEP = 200;
 // =============================================================================
 
 /** The lock file's VFS path (inside the app folder — user truth). */
-export const LOCK_FILE = 'rr-lock.json';
+const LOCK_FILE = 'rr-lock.json';
 
 /**
  * Reads the app's lock map ({} when absent) — through the workspace view,
@@ -83,7 +83,7 @@ export const LOCK_FILE = 'rr-lock.json';
  *
  * @param folder - The app's .appdev folder name.
  */
-export async function readLockMap(folder: string): Promise<Record<string, string>> {
+async function readLockMap(folder: string): Promise<Record<string, string>> {
 	try {
 		return JSON.parse(String(await getWorkspaceVfs().read(`apps/${folder}/${LOCK_FILE}`))) as Record<string, string>;
 	} catch {

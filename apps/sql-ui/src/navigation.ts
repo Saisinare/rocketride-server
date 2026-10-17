@@ -89,7 +89,7 @@ export function useActiveConnection(): string | null {
 // =============================================================================
 
 /** A request to open one table's record drawer in a connection's overview. */
-export interface ITableRecordRequest {
+export interface TableRecordRequest {
 	/** The connection's endpoint key. */
 	key: string;
 	/** The table to inspect. */
@@ -98,7 +98,7 @@ export interface ITableRecordRequest {
 	seq: number;
 }
 
-let tableRequest: ITableRecordRequest | null = null;
+let tableRequest: TableRecordRequest | null = null;
 let tableRequestSeq = 0;
 const tableListeners = new Set<() => void>();
 
@@ -119,7 +119,7 @@ export function requestTableRecord(key: string, table: string): void {
  *
  * @returns The latest request, or null when none has been made.
  */
-export function useTableRecordRequest(): ITableRecordRequest | null {
+export function useTableRecordRequest(): TableRecordRequest | null {
 	return useSyncExternalStore(
 		(cb) => { tableListeners.add(cb); return () => tableListeners.delete(cb); },
 		() => tableRequest,

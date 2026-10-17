@@ -33,7 +33,6 @@ export type AccountHostToWebview =
 	| { type: 'account:teams'; teams: TeamRecord[] }
 	| { type: 'account:teamDetail'; teamDetail: TeamDetail | null }
 	| { type: 'account:keyCreated'; key: string }
-	| { type: 'account:accountUpdate' }
 	| { type: 'account:error'; error: string }
 	// Combined billing snapshot: loading/error envelope plus the parallel
 	// SDK fetches (details, balance, plans, transactions, usage rollups).

@@ -48,7 +48,7 @@ import * as shellNS from 'shell';
 import * as rocketrideNS from 'rocketride';
 import { ConnectionManager, createToolChannel } from 'shell';
 import type { AppDescriptor, DevToolProps } from 'shell';
-import type { ToolTab } from 'shared/modules/sidebar/types';
+import type { ToolTab } from 'shared/tools/core/chrome/types';
 
 // =============================================================================
 // MANUAL MF HOST (one per sidebar document, created on first tool mount)
@@ -183,15 +183,12 @@ export const DevToolSidebarMount: React.FC<DevToolSidebarMountProps> = ({ tool, 
 	}, [tool.id, tool.moduleId, tool.registryVersion, host]);
 
 	if (phase.kind === 'ready') {
-		const client = ConnectionManager.getInstance().getClient();
-		if (client) {
-			const Sidebar = phase.Sidebar;
-			return (
-				<div style={styles.fill}>
-					<Sidebar client={client} peer={peer} channel={channel} {...(documents ? { documents } : {})} {...(activeDocKey !== undefined ? { activeDocKey } : {})} />
-				</div>
-			);
-		}
+		const Sidebar = phase.Sidebar;
+		return (
+			<div style={styles.fill}>
+				<Sidebar peer={peer} channel={channel} {...(documents ? { documents } : {})} {...(activeDocKey !== undefined ? { activeDocKey } : {})} />
+			</div>
+		);
 	}
 
 	if (phase.kind === 'loading') return <div style={styles.status}>Loading {tool.name}…</div>;

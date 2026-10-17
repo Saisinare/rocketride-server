@@ -32,7 +32,7 @@
 
 import { Documents } from 'shell';
 import { NOOP_VFS } from 'shell';
-import type { ISqlEndpoint } from './connect';
+import type { SqlEndpoint } from './connect';
 
 /** The app's Documents instance. Set by SqlApp on mount. */
 let _docs: Documents | null = null;
@@ -94,9 +94,9 @@ export function closeDocumentByUri(uri: string): void {
  * the call site is what stops a generated query from quietly shipping a
  * misspelled field that the reader would never see.
  */
-export interface IQueryDocPayload {
+export interface QueryDocPayload {
 	/** The connection the document is pinned to for life. */
-	endpoint: ISqlEndpoint;
+	endpoint: SqlEndpoint;
 	/** Tab label ("Query 3"). */
 	label: string;
 	/** Text to seed the editor with. */

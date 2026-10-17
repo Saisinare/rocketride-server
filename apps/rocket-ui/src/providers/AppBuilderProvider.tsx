@@ -49,8 +49,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { useShellConnection, ConnectionManager } from 'shell';
-import { AppBuilderScreen } from 'shared/modules/appdev';
-import type { AppBuilderStage, AppSummary } from 'shared/modules/appdev';
+import { AppBuilderScreen } from 'shared/tools/appdev/views';
+import type { AppBuilderStage, AppSummary } from 'shared/tools/appdev';
 import { readAppPackage, scanApps } from '../appdev/appStore';
 import { getWorkspaceVfs } from '../workspace/workspace';
 import type { StoredApp } from '../appdev/appStore';
@@ -151,19 +151,11 @@ const PreviewSurface: React.FC<{
  * Resolves the app's working copy, runs the dev session, and mounts the
  * shared AppBuilderScreen with the web host adapter.
  *
- * @param props.uri - The document URI (`app:<appId>`).
- * @param props.initialViewState - This EDITOR INSTANCE's persisted view
- *        state (the workspace file's per-editor row) — two panels of one
- *        app restore independently; the per-app pref bag cannot express
- *        that (last writer won across every panel).
- * @param props.onViewStateChange - Persists view-state changes back to the
- *        editor instance.
+ * @param props.uri - The document URI (`app:<appId>` or `tool:apps/<appId>`).
  */
 const AppBuilderProvider: React.FC<{
 	uri: string;
-	initialViewState?: Record<string, unknown>;
-	onViewStateChange?: (viewState: Record<string, unknown>) => void;
-}> = ({ uri, initialViewState, onViewStateChange }) => {
+}> = ({ uri }) => {
 	const { client, isConnected } = useShellConnection();
 	const appId = uri.slice('app:'.length);
 
@@ -312,22 +304,14 @@ const AppBuilderProvider: React.FC<{
 		};
 	}, [stored, liveMeta]);
 
-	// ── Stage persistence (per EDITOR INSTANCE, via the workspace file) ──
-	// The editor's view-state row is the per-panel slot (editor-1/editor-2
-	// each keep their own); the host pref bag is read only as a LEGACY
-	// fallback for workspaces saved before the stage moved here — the bag is
-	// keyed per app, so two panels of one app fought over it (last writer
-	// won across every panel on reload).
+	// ── Stage persistence (the per-app host pref bag) ────────────────────
 	const initialStage = useMemo(() => {
-		const persisted = initialViewState?.stage ?? host?.getPref?.('stage');
+		const persisted = host?.getPref?.('stage');
 		// 'code' is deliberately NOT accepted: the web host dropped the CODE
 		// tab (the Explorer's file tabs are the code surface), and restoring
 		// a pre-drop persisted 'code' stage would land on a tab that no
 		// longer exists — those fall through to the default landing view.
 		return persisted === 'dashboard' || persisted === 'design' || persisted === 'package' || persisted === 'store' || persisted === 'deploy' ? (persisted as AppBuilderStage) : undefined;
-		// initialViewState is INITIAL state by contract (frozen at mount by
-		// the pane) — live changes persist via onViewStateChange below.
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [host]);
 
 	// ── Render ───────────────────────────────────────────────────────────
@@ -350,11 +334,8 @@ const AppBuilderProvider: React.FC<{
 					/>
 				}
 				initialStage={initialStage}
-				// Per-panel persistence: the editor view-state row when the pane
-				// provides one; the per-app pref bag only as the legacy path.
 				onStageChange={(stage) => {
-					if (onViewStateChange) onViewStateChange({ stage });
-					else host.setPref?.('stage', stage);
+					host.setPref?.('stage', stage);
 				}}
 			/>
 		</div>

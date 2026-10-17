@@ -4,7 +4,7 @@
 // =============================================================================
 
 import React, { CSSProperties } from 'react';
-import type { TaskStatus } from '../../modules/project/types';
+import type { TaskStatus } from 'shared/tools/pipelines/project/types';
 import { commonStyles } from 'shell';
 import { EmptyState } from 'shell';
 

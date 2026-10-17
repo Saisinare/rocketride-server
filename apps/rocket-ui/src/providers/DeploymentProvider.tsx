@@ -41,10 +41,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShellConnection, getClient, ConnectionManager } from 'shell';
 import { DeploymentRecordPanel, TeamDeploymentRecordPanel } from 'shared/components/deploy-panel';
 import type { DeployHistoryRow, DeployScheduleRow, DeployVersionCard, DeploymentInfo } from 'shared/components/deploy-panel';
-import { foldDeployRunState } from 'shared/modules/sidebar/taskFold';
-import { isTeamLiveEvent } from 'shared/modules/project';
-import { registerServiceIcons } from 'shared/components/canvas/util/Icon';
-import type { TaskEventMessage } from 'shared/modules/project';
+import { foldDeployRunState } from 'shared/tools/pipelines/taskFold';
+import { isTeamLiveEvent } from 'shared/tools/pipelines/project';
+import { registerServiceIcons } from 'shared/tools/pipelines/canvas/util/Icon';
+import type { TaskEventMessage } from 'shared/tools/pipelines/project';
 import type { Deployment, DeployHistoryEntry, DeployArtifact } from 'shell';
 import { useDeployments } from '../hooks/useDeployments';
 

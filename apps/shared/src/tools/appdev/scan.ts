@@ -34,7 +34,9 @@
 // `.rrapp` binding is.
 // =============================================================================
 
-import type { IToolWorkspaceFs } from '../core/workspaceFs';
+// Leaf import: these modules also compile in the VS Code EXTENSION HOST
+// program, which must not resolve the shell's React barrel.
+import type { ToolWorkspaceFs } from 'shell/src/components/workspace/toolWorkspaceFs';
 
 /** One app project found in the workspace. */
 export interface IScannedWorkspaceApp {
@@ -123,7 +125,7 @@ function segmentCount(path: string): number {
  * @param folder - Absolute folder path to probe.
  * @returns The scanned app, or null when this folder is not an app project.
  */
-async function probeFolder(fs: IToolWorkspaceFs, folder: string): Promise<IScannedWorkspaceApp | null> {
+async function probeFolder(fs: ToolWorkspaceFs, folder: string): Promise<IScannedWorkspaceApp | null> {
 	try {
 		const raw = await fs.readTextFile(joinPath(folder, 'package.json'));
 		const pkg = JSON.parse(raw) as {
@@ -157,7 +159,7 @@ async function probeFolder(fs: IToolWorkspaceFs, folder: string): Promise<IScann
  * @param fs - The workspace-FS capability.
  * @returns All bound app projects in the workspace.
  */
-export async function scanWorkspaceApps(fs: IToolWorkspaceFs): Promise<IScannedWorkspaceApp[]> {
+export async function scanWorkspaceApps(fs: ToolWorkspaceFs): Promise<IScannedWorkspaceApp[]> {
 	const markers = await fs.findFiles(APP_MARKER_GLOB, APP_SCAN_EXCLUDE);
 	// Shallowest first: find order is not guaranteed, and the dedup below
 	// keeps the FIRST hit per app id.
@@ -195,7 +197,7 @@ export async function scanWorkspaceApps(fs: IToolWorkspaceFs): Promise<IScannedW
  *                   to the icon budget (README previews pass their own).
  * @returns The data: URI, or undefined.
  */
-export async function appIconDataUri(fs: IToolWorkspaceFs, iconPath: string | undefined, maxBytes: number = MAX_ICON_BYTES): Promise<string | undefined> {
+export async function appIconDataUri(fs: ToolWorkspaceFs, iconPath: string | undefined, maxBytes: number = MAX_ICON_BYTES): Promise<string | undefined> {
 	if (!iconPath) return undefined;
 	const ext = iconPath.slice(iconPath.lastIndexOf('.')).toLowerCase();
 	const mediaType = ICON_MEDIA_TYPES[ext];
@@ -214,7 +216,7 @@ export async function appIconDataUri(fs: IToolWorkspaceFs, iconPath: string | un
  * @param fs - The workspace-FS capability.
  * @returns The rows for the sidebar list.
  */
-export async function buildWorkspaceAppRows(fs: IToolWorkspaceFs): Promise<IWorkspaceAppRow[]> {
+export async function buildWorkspaceAppRows(fs: ToolWorkspaceFs): Promise<IWorkspaceAppRow[]> {
 	const scanned = await scanWorkspaceApps(fs);
 	const rows = await Promise.all(scanned.map(async (app): Promise<IWorkspaceAppRow> => {
 		const iconUrl = await appIconDataUri(fs, app.iconPath);

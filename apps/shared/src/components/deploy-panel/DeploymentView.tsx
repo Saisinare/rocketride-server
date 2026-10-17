@@ -34,14 +34,14 @@ import { CardDataGrid } from 'shell';
 import { ContentHeader } from 'shell';
 import { TabControl } from 'shell';
 import { TabPanel } from 'shell';
-import CanvasPanel from '../canvas';
-import { SourcePanel } from '../../modules/project/components/SourcePanel';
+import CanvasPanel from 'shared/tools/pipelines/canvas';
+import { SourcePanel } from 'shared/tools/pipelines/project/components/SourcePanel';
 import { describeCron } from './SchedulePanel';
 import { OAUTH_ROOT_URL } from 'shell';
 import { formatDayTime, formatTime } from 'shell';
 import type { GridColumnDefinition } from 'shell';
 import type { ViewMenu } from 'shell';
-import type { TaskEventMessage, TaskEventSession, TaskTimeline } from '../../modules/project/hooks/useTaskEvents';
+import type { TaskEventMessage, TaskEventSession, TaskTimeline } from 'shared/tools/pipelines/project/hooks/useTaskEvents';
 import { DEPLOY_STATE_COLOR, createDeployHistoryColumns } from './types';
 import type { DeployHistoryRow } from './types';
 

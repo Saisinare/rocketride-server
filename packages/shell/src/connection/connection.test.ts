@@ -359,8 +359,6 @@ test('clearToken removes the stored token from localStorage only', () => {
 	try {
 		createTestManager().manager.clearToken();
 		assert.deepEqual(removedLocalKeys, ['rr:user_token']);
-		// The legacy sessionStorage slot is gone — clearing must not touch it.
-		assert.deepEqual(removedSessionKeys, []);
 	} finally {
 		if (originalLocalStorage) Object.defineProperty(globalThis, 'localStorage', originalLocalStorage);
 		else delete (globalThis as { localStorage?: Storage }).localStorage;
@@ -389,8 +387,6 @@ test('auth providers sign out by removing the stored token from localStorage onl
 			await provider.signOut();
 
 			assert.deepEqual(removedLocalKeys, [LS_TOKEN]);
-			// The legacy sessionStorage slot is gone — sign-out must not touch it.
-			assert.deepEqual(removedSessionKeys, []);
 		}
 	} finally {
 		if (originalLocalStorage) Object.defineProperty(globalThis, 'localStorage', originalLocalStorage);

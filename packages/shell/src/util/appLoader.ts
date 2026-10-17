@@ -55,8 +55,6 @@ export interface ServerAppEntry {
 	categories?: string[];
 	/** Settings contribution (VSCode contributes.configuration shape). */
 	configuration?: unknown;
-	/** @deprecated Legacy flat settings list from pre-configuration servers. */
-	settings?: unknown[];
 	/** Registry version number the entry resolves to (the scope-walk winner). */
 	registryVersion?: number;
 	/** Whether the app UI requires auth to render. */
@@ -199,10 +197,6 @@ let localAppsListener: (() => void) | null = null;
 // registration of its session-locked app (see registerAndMapApps), so the
 // injection is the container's first registration without any stored state.
 const devRemoteModules = new Set<string>();
-
-// One-time migration: drop the legacy persisted ownership set so windows
-// poisoned by the old accumulate-forever behavior heal on their next boot.
-try { sessionStorage.removeItem('rr:devOwnedModules'); } catch { /* storage unavailable */ }
 
 /**
  * Whether an MF container is currently dev-owned (see devRemoteModules).
@@ -730,9 +724,7 @@ export function registerAndMapApps(serverApps: ServerAppEntry[]): AppManifestEnt
 		description:   a.description,
 		icon:          a.icon,
 		categories:    a.categories,
-		// Settings contribution — validated structurally by the registry builder,
-		// so legacy array-shaped `settings` rows from an un-reseeded server are
-		// simply ignored rather than crashing the shell.
+		// Settings contribution — validated structurally by the registry builder.
 		configuration: a.configuration as AppConfiguration | undefined,
 		authenticated: a.authenticated,
 		public:        a.public,

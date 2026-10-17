@@ -445,12 +445,12 @@ export class ConnectionManager implements IConnectionManager {
 			},
 		});
 
-		// Store auth provider (preferred) or legacy OAuth config
+		// Store the auth provider. (The deprecated zitadelUrl/zitadelClientId
+		// InitOptions keys remain declared on the frozen contract but are
+		// ignored — every OAuth flow goes through the auth provider.)
 		if (options?.authProvider) {
 			this.authProvider = options.authProvider;
 		}
-		this.zitadelUrl = options?.zitadelUrl ?? '';
-		this.zitadelClientId = options?.zitadelClientId ?? '';
 
 		// Attach immediately so public APIs (rrext_public_*) work before login.
 		// The promise is stored so bootstrap() can await it before login().
@@ -536,11 +536,6 @@ export class ConnectionManager implements IConnectionManager {
 	/** Auth provider for OAuth sign-in (set via init options). */
 	private authProvider: IAuthProvider | null = null;
 
-	/** @deprecated Legacy Zitadel config — use authProvider instead. */
-	private zitadelUrl = '';
-	/** @deprecated Legacy Zitadel config — use authProvider instead. */
-	private zitadelClientId = '';
-
 	/** Cached in-flight/settled bootstrap promise — dedupes repeat bootstrap() calls
 	 *  (StrictMode double-invoke in dev, a Shell remount, MF host re-init) so every caller
 	 *  gets the SAME result instead of a null that the shell would misread as "logged out". */
@@ -554,8 +549,7 @@ export class ConnectionManager implements IConnectionManager {
 	/**
 	 * Redirect the browser to the OAuth provider for authorization.
 	 *
-	 * Delegates to the auth provider's ``signIn()`` method. Falls back to
-	 * the legacy PKCE flow if no auth provider is configured.
+	 * Delegates to the auth provider's ``signIn()`` method.
 	 *
 	 * @param register - Retained for compatibility; no longer changes the
 	 *                   destination. All flows land on Zitadel's login page
@@ -569,23 +563,13 @@ export class ConnectionManager implements IConnectionManager {
 		if (this.oauthStarted) return;
 		this.oauthStarted = true;
 		try {
-			if (this.authProvider) {
-				await this.authProvider.signIn(undefined, register);
-				return;
-			}
-			// Legacy fallback — remove once all callers pass authProvider
-			if (!this.zitadelUrl || !this.zitadelClientId) {
-				console.error('[ConnectionManager] Zitadel not configured');
-				this.emit('shell:error', { error: new Error('Zitadel not configured') });
+			if (!this.authProvider) {
+				console.error('[ConnectionManager] No auth provider configured');
+				this.emit('shell:error', { error: new Error('No auth provider configured') });
 				this.oauthStarted = false; // no redirect happened — allow a retry
 				return;
 			}
-			const { generatePkce, buildAuthUrl } = await import('../util/pkce');
-			const { challenge } = await generatePkce();
-			const url = buildAuthUrl(this.zitadelUrl, this.zitadelClientId, window.location.origin, challenge, register);
-			// assign() (not replace()) keeps the landing page reachable via the
-			// browser back button — matches CloudAuthProvider.signIn().
-			window.location.assign(url);
+			await this.authProvider.signIn(undefined, register);
 		} catch (err) {
 			// Initiation threw before any redirect (signIn rejected, PKCE/crypto
 			// failure, etc.) — release the guard so a later attempt can retry.

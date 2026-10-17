@@ -26,16 +26,16 @@
 //
 // Initialises the Documents singleton with a content adapter for pipeline
 // files, renders DocTabs per editor group, and routes document content to
-// the appropriate view component (ProjectProvider, MonitorProvider).
+// the appropriate view component (ProjectProvider, tool documents, pages).
 // =============================================================================
 
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import type { CSSProperties } from 'react';
 import type { ShellAppProps } from 'shell';
 import type { IVirtualFileSystem } from 'shell';
-import { commonStyles } from 'shell';
+import { commonStyles , parseToolDocUri } from 'shell';
 import { useShellConnection, useAuthUser, useWorkspace, DocTabs, DocSplitLayout, AppLayout, ConfirmDialog } from 'shell';
-import { AgentIcon } from './components/AgentIcon';
+import { AgentIcon } from 'shared/tools/agent/AgentIcon';
 import type { SidebarViewContainer } from 'shell';
 import { CodiconFiles, CodiconSourceControl, CodiconCircuitBoard, CodiconTypeHierarchy } from 'shared/components/icons/Codicon';
 import { AppsIcon } from 'shared/components/icons/AppsIcon';
@@ -44,17 +44,16 @@ import { createWorkspace, getWorkspace, resolveWorkspaceScope } from './workspac
 import { ModeSwitchBlockedError } from 'shared/workspace/commitPolicy';
 import { createProjectVfs } from './utils/projectVfs';
 import ProjectProvider from './providers/ProjectProvider';
-import MonitorProvider from './providers/MonitorProvider';
 import WebviewProvider from './providers/WebviewProvider';
 import SidebarProvider from './providers/SidebarProvider';
 import WorkspaceExplorerProvider from './providers/WorkspaceExplorerProvider';
 import ScmProvider from './providers/ScmProvider';
 import FileProvider from './providers/FileProvider';
 import DiffProvider from './providers/DiffProvider';
-import AppBuilderProvider from './providers/AppBuilderProvider';
-import NewAppProvider from './providers/NewAppProvider';
-import AgentProvider from './providers/AgentProvider';
-import IntroProvider from './providers/IntroProvider';
+import { ToolHostProvider } from 'shared/tools/core';
+import type { BuiltinToolServices } from 'shared/tools/core';
+import { appdevFrames } from './appdev/appdevFrames';
+import HtmlPageProvider from './providers/HtmlPageProvider';
 import DesktopProvider from './providers/DesktopProvider';
 import DevToolReadmeProvider from './providers/DevToolReadmeProvider';
 import DevToolMount from './devtools/DevToolMount';
@@ -310,7 +309,7 @@ const RocketApp: React.FC<ShellAppProps> = (_props) => {
 		const restored = docs.getState();
 		if (Object.keys(restored.editors).length === 0) {
 			const session = AgentSession.newSession();
-			docs.openStaticDocument(`agent:${session.sessionId}`, session.title);
+			docs.openStaticDocument(`tool:agent/${session.sessionId}`, session.title);
 		}
 
 		setReady(true);
@@ -587,6 +586,34 @@ const GroupEditorPane: React.FC<{ uri: string; editorId: string }> = ({ uri, edi
 };
 
 // =============================================================================
+// TOOL DOCUMENTS — frame mounts get the host services the tools read
+// =============================================================================
+
+/** The DOCUMENT surface's host services (module-stable; no hooks needed):
+ *  generic page opening plus this host's appdev frame bodies. The sidebar
+ *  realm provides its own richer services object. */
+const frameToolServices: BuiltinToolServices = {
+	openPage: (key: string, title?: string) => getDocs()?.openStaticDocument(key, title ?? key),
+	appdevFrames,
+};
+
+/**
+ * Renders one tool document (`tool:<appId>` or `tool:<appId>/<docKey>`),
+ * with the ToolContext the builtin frames consume.
+ *
+ * @param appId - The tool's id (builtin or store).
+ * @param docKey - The per-document key, when the URI carries one.
+ * @returns The mounted frame.
+ */
+function renderToolDocument(appId: string, docKey?: string): React.ReactElement {
+	return (
+		<ToolHostProvider value={frameToolServices}>
+			<DevToolMount appId={appId} slot="frame" {...(docKey !== undefined ? { docKey } : {})} />
+		</ToolHostProvider>
+	);
+}
+
+// =============================================================================
 // EDITOR CONTENT ROUTER
 // =============================================================================
 
@@ -617,26 +644,20 @@ const RocketEditorContent: React.FC<{
 	// ("Maximum update depth exceeded").
 	const handleProjectContentChanged = useCallback((updatedPipeline: any) => onContentChanged(uri, updatedPipeline), [onContentChanged, uri]);
 
-	// Static document routes — not backed by VFS
-	if (uri === 'monitor') return <MonitorProvider />;
-	if (uri === 'newapp') return <NewAppProvider />;
+	// Static document routes — not backed by VFS.
 	// The shared desktop page (shell's DesktopView) as a document tab.
 	if (uri === 'desktop') return <DesktopProvider />;
-	// Agent conversation tabs carry only the session GUID in the URI — the
-	// transcript lives in the fs store, never in workspace state.
-	if (uri.startsWith('agent:')) return <AgentProvider sessionId={uri.slice('agent:'.length)} />;
-	// Embedded "Introduction to ..." pages from the sidebar modes.
-	if (uri.startsWith('intro:')) return <IntroProvider mode={uri.slice('intro:'.length)} />;
+	// Static HTML content pages — the framework's generic loader. 'intro:'
+	// is the builtin tools' catalog-resolved page key; 'html:' carries its
+	// own content.
+	if (uri.startsWith('intro:') || uri.startsWith('html:')) return <HtmlPageProvider uri={uri} content={content} />;
 	// A pinned dev tool's main surface (descriptor.devToolFrame). The URI is
 	// `tool:<appId>` for the tool's single frame, or `tool:<appId>/<docKey>`
 	// for a per-document frame (e.g. one tab per database connection — the
 	// tool opened it through DevToolProps.documents).
-	if (uri.startsWith('tool:')) {
-		const rest = uri.slice('tool:'.length);
-		const slash = rest.indexOf('/');
-		const appId = slash < 0 ? rest : rest.slice(0, slash);
-		const docKey = slash < 0 ? undefined : rest.slice(slash + 1);
-		return <DevToolMount appId={appId} slot="frame" {...(docKey !== undefined ? { docKey } : {})} />;
+	{
+		const tool = parseToolDocUri(uri);
+		if (tool) return renderToolDocument(tool.appId, tool.docKey || undefined);
 	}
 	// A dev tool's details page (README + Install/Remove).
 	if (uri.startsWith('toolreadme:')) return <DevToolReadmeProvider appId={uri.slice('toolreadme:'.length)} />;
@@ -644,10 +665,6 @@ const RocketEditorContent: React.FC<{
 	if (uri.startsWith('file:')) return <FileProvider path={uri.slice('file:'.length)} />;
 	// Source Control's unified diff of one pending change.
 	if (uri.startsWith('diff:')) return <DiffProvider path={uri.slice('diff:'.length)} />;
-	// App Builder panels persist per-panel view state (the active stage)
-	// through the editor's view-state row — the same channel the pipeline
-	// editor uses — so two panels of one app restore independently.
-	if (uri.startsWith('app:')) return <AppBuilderProvider uri={uri} {...(initialViewState ? { initialViewState } : {})} {...(onViewStateChange ? { onViewStateChange } : {})} />;
 	if (uri.startsWith('webview:')) return <WebviewProvider uri={uri} />;
 
 	// Content is the pipeline object directly — no parsing needed
@@ -661,8 +678,8 @@ const RocketEditorContent: React.FC<{
 		);
 	}
 
-	// status: URIs are read-only views for running tasks with no local .pipe file
-	const isReadonly = uri.startsWith('status:');
+	// pipeline: URIs are read-only views for running tasks with no local .pipe file
+	const isReadonly = uri.startsWith('pipeline:');
 
 	// Route pipeline files to ProjectProvider
 	return <ProjectProvider uri={uri} pipeline={pipeline} isDirty={dirty} isNew={isNew} isReadonly={isReadonly} {...(initialViewState ? { initialViewState } : {})} onContentChanged={handleProjectContentChanged} {...(onViewStateChange ? { onViewStateChange } : {})} />;

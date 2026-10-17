@@ -21,6 +21,7 @@ import { CheckoutModal } from 'shell';
 import type { ApiKeyRecord, OrgDetail, MemberRecord, TeamRecord, TeamDetail, AccountSection, ProfileUpdate } from 'shell';
 import type { CheckoutPlan, PromoRedemption, PromoValidation } from 'shell';
 import type { ConnectResult } from 'shell';
+import { createBridgedPrefsStore, useGridConfigAnswering } from 'shell';
 import { useMessaging } from '../hooks/useMessaging';
 import { useStripeKey } from '../hooks/useStripeKey';
 import { CheckoutUnavailableNotice } from '../components';
@@ -94,6 +95,15 @@ const AccountWebview: React.FC = () => {
 
 	const sendMessageRef = useRef<(msg: AccountWebviewToHost) => void>(() => {});
 
+	// This realm's prefs store (hydrate-once, host-seeded via prefs:init);
+	// grid layouts answer synchronously from it, so DataGrid persistence
+	// works in this webview exactly as in the web shell.
+	const prefsBridgeRef = useRef<ReturnType<typeof createBridgedPrefsStore> | null>(null);
+	if (!prefsBridgeRef.current) {
+		prefsBridgeRef.current = createBridgedPrefsStore((key, value, scope) => sendMessageRef.current({ type: 'prefs:set', key, value, scope }));
+	}
+	useGridConfigAnswering(prefsBridgeRef.current.store);
+
 	// Env resolvers and refreshSignal removed — env management moved to EnvironmentWebview.
 
 	// =========================================================================
@@ -119,6 +129,9 @@ const AccountWebview: React.FC = () => {
 				break;
 
 			// -- Connection -------------------------------------------------------
+			case 'prefs:init':
+				prefsBridgeRef.current?.seed(message.values);
+				break;
 			case 'shell:connectionChange':
 				setIsConnected(message.isConnected);
 				break;

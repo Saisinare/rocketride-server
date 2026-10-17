@@ -31,13 +31,14 @@
 // MonitorPage.tsx.
 // =============================================================================
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { DevToolProps, ShellAppProps } from 'shell';
-import { useShellConnection, useDashboardData, usePolling, AppLayout } from 'shell';
+import { useShellConnection, useDashboardData, usePolling, AppLayout, createToolChannel, createToolController, typedToolChannel, useConnectionReady, useToolState } from 'shell';
 import { commonStyles } from 'shell';
 import { MonitorView } from 'shell';
 import type { DashboardConnection, DashboardTask, ListPageRequest, ListPageResponse, MonitorPageId } from 'shell';
+import type { IDashboardSnapshot, MonitorOps, MonitorStateMap } from './ops';
 import { MonitorSidebar } from './MonitorSidebar';
 import type { MonitorPeerMessage } from './MonitorSidebar';
 
@@ -179,7 +180,7 @@ const MonitorApp: React.FC<ShellAppProps> = (_props) => {
  * on mount and on every change; the host retains the last push so a
  * reloaded sidebar highlights correctly without asking.
  */
-export const MonitorDevToolFrame: React.FC<DevToolProps> = ({ peer }) => {
+export const MonitorDevToolFrame: React.FC<DevToolProps> = ({ peer, channel }) => {
 	const [page, setPage] = useState<MonitorPageId>('overview');
 
 	// Apply sidebar selections.
@@ -197,7 +198,49 @@ export const MonitorDevToolFrame: React.FC<DevToolProps> = ({ peer }) => {
 		peer.post({ op: 'page', page } satisfies MonitorPeerMessage);
 	}, [peer, page]);
 
-	return <MonitorSurface page={page} />;
+	// THIS FRAME HOLDS NO ROCKETRIDE CLIENT. The controller (the tool's
+	// sidebar mount) polls the dashboard on its own connection and publishes
+	// the snapshot as the retained 'dashboard' topic; the two remote grids
+	// page through correlated controller ops; enablement is the host's
+	// `host:connection` system topic.
+	const toolChannel = useMemo(() => typedToolChannel<MonitorStateMap>(channel ?? createToolChannel(peer)), [channel, peer]);
+	const ready = useConnectionReady(toolChannel);
+	const dash = useToolState(toolChannel, 'dashboard') ?? { data: null, events: [] };
+
+	const call = useMemo(() => createToolController<MonitorOps>(peer), [peer]);
+	const listConnections = useCallback(async (req: ListPageRequest): Promise<ListPageResponse<DashboardConnection>> => {
+		if (!ready) return { rows: [], total: 0, page: 1, pageSize: req.page_size ?? 0 };
+		return call('monitor.listConnections', req);
+	}, [call, ready]);
+	const listTasks = useCallback(async (req: ListPageRequest): Promise<ListPageResponse<DashboardTask>> => {
+		if (!ready) return { rows: [], total: 0, page: 1, pageSize: req.page_size ?? 0 };
+		return call('monitor.listTasks', req);
+	}, [call, ready]);
+	const refresh = useCallback(() => {
+		void call('monitor.refresh', {}).catch(() => undefined);
+	}, [call]);
+
+	// Same silent 3s page re-request the in-app surface runs.
+	const refetchRef = useRef<() => void>(() => {});
+	const handleRefetchReady = useCallback((refetch: () => void) => { refetchRef.current = refetch; }, []);
+	const pollGrids = useCallback(() => { refetchRef.current(); }, []);
+	usePolling(pollGrids, GRID_POLL_INTERVAL_MS);
+
+	return (
+		<div style={styles.container}>
+			<MonitorView
+				data={dash.data}
+				events={dash.events}
+				isConnected={ready}
+				onRefresh={refresh}
+				listConnections={listConnections}
+				listTasks={listTasks}
+				onRefetchReady={handleRefetchReady}
+				activePage={page}
+				hideTabs
+			/>
+		</div>
+	);
 };
 
 export default MonitorApp;

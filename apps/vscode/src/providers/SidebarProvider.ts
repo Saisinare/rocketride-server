@@ -39,13 +39,16 @@ import { getLogger } from '../shared/util/output';
 import { getProjectProvider } from '../extension';
 import { DevToolStore } from './DevToolStore';
 import { DevToolBridge } from './DevToolBridge';
+import { readPref, readPrefsSnapshot, writePref } from './PrefsBag';
 import { WorkspaceFsService } from './toolhost/workspaceFsService';
 
 /** workspaceState key for the persisted sidebar mode. */
-const SIDEBAR_MODE_KEY = 'rr.sidebarMode';
+const SIDEBAR_MODE_KEY = 'sidebarMode';
 
 /** workspaceState key for the persisted strip tab order. */
-const TAB_ORDER_KEY = 'rr.sidebarTabOrder';
+const TAB_ORDER_KEY = 'sidebarTabOrder';
+/** workspaceState key: builtin tools the user has DISABLED (default: none). */
+const DISABLED_BUILTINS_KEY = 'disabledBuiltins';
 
 /** workspaceState key for the last-known pinned tool rows (name + inlined
  *  icon), keyed by app id — the strip seed renders from this cache before
@@ -96,6 +99,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 	/** Persisted strip tab order (mode ids + `tool:<appId>` ids). */
 	private tabOrder: string[] = [];
 
+	/** Persisted set of DISABLED builtin tools (enable/disable, no uninstall). */
+	private disabledBuiltins: string[] = [];
+
 	private logger = getLogger();
 
 	/** Generic workspace-FS capability for the webview's tool controllers. */
@@ -115,8 +121,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 	constructor(private readonly extensionUri: vscode.Uri, private readonly context?: vscode.ExtensionContext, private readonly devTools?: DevToolStore, private readonly devToolBridge?: DevToolBridge) {
 		// Restore the last mode (previously session-only — it died on reload)
 		// and the persisted strip order.
-		this.sidebarMode = this.context?.workspaceState.get<string>(SIDEBAR_MODE_KEY) ?? 'apps';
-		this.tabOrder = this.context?.workspaceState.get<string[]>(TAB_ORDER_KEY) ?? [];
+		this.sidebarMode = (this.context ? readPref<string>(this.context, SIDEBAR_MODE_KEY) : undefined) ?? 'apps';
+		this.tabOrder = (this.context ? readPref<string[]>(this.context, TAB_ORDER_KEY) : undefined) ?? [];
+		this.disabledBuiltins = (this.context ? readPref<string[]>(this.context, DISABLED_BUILTINS_KEY) : undefined) ?? [];
 		this.setupFileWatching();
 		this.setupEventListeners();
 		this.disposables.push({ dispose: () => this.workspaceFs.dispose() });
@@ -178,23 +185,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 						// reloaded sidebar re-renders its mounts without any
 						// ask-the-frame handshake (peer direction discipline).
 						this.devToolBridge?.replayRetainedToSidebar();
-						if (this.connectionManager.isConnected()) {
-							try {
-								const client = this.connectionManager.getClient();
-								const dashboard = client ? await client.getDashboard() : null;
-								if (dashboard?.tasks) {
-									this._view?.webview.postMessage({ type: 'dashboardSnapshot', tasks: dashboard.tasks });
-								}
-							} catch {
-								/* ignore */
-							}
-						}
-						break;
-					case 'connect':
-						await this.connectionManager.connect();
-						break;
-					case 'disconnect':
-						await this.connectionManager.disconnect();
 						break;
 					case 'command':
 						vscode.commands.executeCommand(message.command, ...(message.args ?? []));
@@ -218,7 +208,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 						// Persisted per workspace and included in every full update
 						// so a reloaded webview restores the user's last mode.
 						this.sidebarMode = message.mode;
-						void this.context?.workspaceState.update(SIDEBAR_MODE_KEY, message.mode);
+						if (this.context) void writePref(this.context, SIDEBAR_MODE_KEY, message.mode, 'workspace');
 						break;
 					case 'openTool':
 						vscode.commands.executeCommand('rocketride.devtool.open', message.toolId);
@@ -228,17 +218,30 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 						// forward; never create one for a mere tab switch.
 						vscode.commands.executeCommand('rocketride.devtool.reveal', message.toolId);
 						break;
+					case 'refreshTools':
+						// The Dev Tools panel's RESET — see refreshDevTools.
+						void this.refreshDevTools();
+						break;
 					case 'removeTool':
 						this.devTools?.remove(message.toolId);
+						break;
+					case 'setDisabledBuiltins':
+						// Builtins are enabled/disabled, never uninstalled —
+						// persisted per workspace like the tab order.
+						this.disabledBuiltins = message.ids;
+						if (this.context) void writePref(this.context, DISABLED_BUILTINS_KEY, message.ids, 'workspace');
 						break;
 					case 'reorderTabs':
 						// Full strip order (modes + tools) — persisted per
 						// workspace; the webview already reordered optimistically.
 						this.tabOrder = message.order;
-						void this.context?.workspaceState.update(TAB_ORDER_KEY, message.order);
+						if (this.context) void writePref(this.context, TAB_ORDER_KEY, message.order, 'workspace');
 						break;
 					case 'showToolReadme':
 						vscode.commands.executeCommand('rocketride.devtool.readme', message.toolId);
+						break;
+					case 'prefs:set':
+						this.handlePrefsSet(message.key, message.value, message.scope);
 						break;
 					case 'devtool:peer':
 						// Sidebar mount → the tool's frame panel (buffered while
@@ -254,17 +257,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 						break;
 					case 'closeToolDocument':
 						vscode.commands.executeCommand('rocketride.devtool.close', message.appId, message.docKey);
-						break;
-					case 'setDevelopmentMode':
-						await this.configManager.updateConnectionMode('development', message.mode);
-						this.sendFullUpdate();
-						break;
-					case 'setDeployTargetMode':
-						await this.configManager.updateConnectionMode('deployment', message.mode);
-						// Reconnect the DEPLOY manager (not dev) when deploy mode changes
-						await this.deployManager.disconnect();
-						await this.deployManager.initialize();
-						this.sendFullUpdate();
 						break;
 				}
 			} catch (error) {
@@ -390,7 +382,23 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		const pinned = this.devTools?.getAll() ?? [];
 		const cached = this.readToolMeta();
 		const tools = pinned.map((id): ToolRowDTO => cached[id] ?? { id, name: id });
-		void this._view?.webview.postMessage({ type: 'stripSeed', tools, tabOrder: this.tabOrder, sidebarMode: this.sidebarMode });
+		void this._view?.webview.postMessage({ type: 'stripSeed', tools, tabOrder: this.tabOrder, sidebarMode: this.sidebarMode, disabledBuiltins: this.disabledBuiltins });
+		this.sendPrefsInit();
+	}
+
+	/**
+	 * Seeds the webview's prefs store from the shared PrefsBag. Sent once
+	 * per view:ready, BEFORE any tool mounts, so synchronous reads never
+	 * observe a pre-hydration snapshot.
+	 */
+	private sendPrefsInit(): void {
+		if (!this.context) return;
+		void this._view?.webview.postMessage({ type: 'prefs:init', values: readPrefsSnapshot(this.context) });
+	}
+
+	/** Persists one prefs-store write (fire-and-forget). */
+	private handlePrefsSet(key: string, value: unknown, scope: 'workspace' | 'global'): void {
+		if (this.context) writePref(this.context, key, value, scope);
 	}
 
 	/**
@@ -426,7 +434,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 	 */
 	public setModeExternal(mode: string): void {
 		this.sidebarMode = mode;
-		void this.context?.workspaceState.update(SIDEBAR_MODE_KEY, mode);
+		if (this.context) void writePref(this.context, SIDEBAR_MODE_KEY, mode, 'workspace');
 		// Reveal the RocketRide sidebar (keeping keyboard focus where it is)
 		// so the tool's sidebar body is actually on screen, then switch its
 		// strip to the tool's tab.
@@ -689,6 +697,31 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 	 * post. The slow fields (user identity, tool rows, catalog, devToolHost)
 	 * follow out-of-band via {@link sendUpdateExtras}.
 	 */
+	/**
+	 * The Dev Tools panel's RESET after a publish: re-authenticates to pull
+	 * a fresh app registry (manifests, versions) from the server, recreates
+	 * any open tool panel whose mounted version went stale, and reboots THIS
+	 * sidebar webview so its loaded devToolSidebar containers are dropped —
+	 * a loaded MF remote cannot be repointed in a live realm. The reboot is
+	 * cheap by design: retained bridge state replays into the fresh realm.
+	 */
+	private async refreshDevTools(): Promise<void> {
+		try {
+			await this.connectionManager.disconnect();
+			await this.connectionManager.connect();
+		} catch {
+			// A failed reconnect surfaces through the normal status pipeline
+			// (status bar, connection rows) — nothing extra to report here.
+		}
+		// Open frame panels first (each is its own webview realm; stale ones
+		// are disposed and recreated against the fresh catalog) ...
+		await vscode.commands.executeCommand('rocketride.devtool.refreshStale');
+		// ... then this sidebar's own realm.
+		if (this._view) {
+			this._view.webview.html = this.getHtmlForWebview(this._view.webview);
+		}
+	}
+
 	private sendFullUpdate(): void {
 		if (!this._view) return;
 

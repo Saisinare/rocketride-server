@@ -29,10 +29,10 @@ import type { CSSProperties } from 'react';
 import { Background, Controls, MiniMap, ReactFlow, ReactFlowProvider, useEdgesState, useNodesState, useReactFlow } from '@xyflow/react';
 import type { Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useShellConnection } from 'shell';
 import { Banner, Button, EmptyState } from 'shell';
-import type { ISqlEndpoint } from '../connect';
+import type { SqlEndpoint } from '../connect';
 import { refreshSchema, useSchema } from '../schema/schemaStore';
+import { useSqlEnv } from '../sqlEnv';
 import type { ErNode } from '../canvas/erModel';
 import { buildErModel } from '../canvas/erModel';
 import { layoutErNodes } from '../canvas/useErLayout';
@@ -44,9 +44,9 @@ import { DatabaseIcon } from '../icons';
 // =============================================================================
 
 /** Props for the {@link DiagramView} component. */
-export interface IDiagramViewProps {
+export interface DiagramViewProps {
 	/** The connection whose schema the diagram shows. */
-	endpoint: ISqlEndpoint;
+	endpoint: SqlEndpoint;
 }
 
 // =============================================================================
@@ -113,8 +113,8 @@ const NODE_TYPES = { table: TableNode };
  * schema snapshot, runs the elk layout, and renders the flow with the stock
  * Background / MiniMap / Controls plus the floating toolbar.
  */
-const DiagramCanvas: React.FC<IDiagramViewProps> = ({ endpoint }) => {
-	const { client } = useShellConnection();
+const DiagramCanvas: React.FC<DiagramViewProps> = ({ endpoint }) => {
+	const env = useSqlEnv();
 	const snapshot = useSchema(endpoint.key);
 	const { fitView } = useReactFlow();
 
@@ -180,7 +180,7 @@ const DiagramCanvas: React.FC<IDiagramViewProps> = ({ endpoint }) => {
 					icon={<DatabaseIcon />}
 					title="Reverse engineering failed"
 					description={snapshot.error ?? 'Schema reflection failed.'}
-					action={<Button variant="primary" onClick={() => { if (client) void refreshSchema(client, endpoint, { fresh: true }); }}>Retry</Button>}
+					action={<Button variant="primary" onClick={() => { if (env.ready) void refreshSchema(env.getSession(endpoint), { fresh: true }); }}>Retry</Button>}
 				/>
 			</div>
 		);
@@ -244,8 +244,8 @@ const DiagramCanvas: React.FC<IDiagramViewProps> = ({ endpoint }) => {
  * as table nodes with per-column FK edges, elk auto-layout, and the stock
  * xyflow minimap/controls.
  */
-export const DiagramView: React.FC<IDiagramViewProps> = ({ endpoint }) => {
-	const { client, isConnected } = useShellConnection();
+export const DiagramView: React.FC<DiagramViewProps> = ({ endpoint }) => {
+	const env = useSqlEnv();
 
 	// First open reverse-engineers automatically: one fresh re-read of the
 	// database (not the task-start reflection), so the diagram always draws
@@ -253,10 +253,10 @@ export const DiagramView: React.FC<IDiagramViewProps> = ({ endpoint }) => {
 	// header's Refresh Schema re-runs the reflection later if needed.
 	const engineeredRef = useRef(false);
 	useEffect(() => {
-		if (!client || !isConnected || engineeredRef.current) return;
+		if (!env.ready || engineeredRef.current) return;
 		engineeredRef.current = true;
-		void refreshSchema(client, endpoint, { fresh: true });
-	}, [client, isConnected, endpoint]);
+		void refreshSchema(env.getSession(endpoint), { fresh: true });
+	}, [env, endpoint]);
 
 	return (
 		<div style={styles.root}>

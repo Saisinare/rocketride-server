@@ -879,8 +879,37 @@ Both components receive `DevToolProps`:
 
 | Prop | Purpose |
 |---|---|
-| `client` | A live, authenticated RocketRide client owned by the host |
-| `peer` | Ephemeral channel to the tool's other mount (`post` / `subscribe`) — frame and sidebar may live in isolated documents, so durable state belongs on the server via `client`; `peer` is for UI coordination only |
+| `peer` | Raw ephemeral channel to the tool's other mount (`post` / `subscribe`) — frame and sidebar may live in isolated documents (VS Code webviews) |
+| `channel` | The typed state/event channel over `peer` (retained state topics, buffered events) — prefer it over raw `peer` |
+| `documents` | On multi-document hosts: `open(docKey, title)` / `close(docKey)` |
+| `docKey` / `activeDocKey` | The document key a frame serves / the fronted document a sidebar follows |
+
+There is NO client prop: the sidebar mount (the tool's **controller**) owns the tool's single server connection, and frames reach the server only through correlated ops served by the controller. The shell ships the whole protocol layer:
+
+```ts
+// ops.ts — the tool's protocol, declared ONCE as maps extending the shell's
+// base maps (the ShellEventMap pattern, per tool; `host:*` keys are reserved):
+import type { ToolOpMap, ToolOpSpec, ToolStateMap, ToolEventMap } from 'shell';
+
+interface MyOps extends ToolOpMap {
+	'myTool.fetch': ToolOpSpec<{ id: string }, MyRecord>;
+}
+interface MyStateMap extends ToolStateMap { records: MyRecord[] }
+interface MyEventMap extends ToolEventMap { save: MyRecord }
+
+// Sidebar (controller): serve ops on the realm's client, publish state.
+const ops = createToolOpServer<MyOps>(peer);
+ops.serve('myTool.fetch', async ({ id }) => load(getClient(), id));
+typedToolChannel<MyStateMap, MyEventMap>(channel).publishState('records', list);
+
+// Frame: call ops, read state — never a client.
+const call = createToolController<MyOps>(peer);
+const record = await call('myTool.fetch', { id });
+const ready = useConnectionReady(channel);   // the host-published
+                                             // 'host:connection' system topic
+```
+
+`useConnectionReady` reads the `host:connection` system topic — the controller realm's server-connection status, published by the **host** (never by a tool) and retained on the channel, so a frame restored before its controller ever ran still reads correctly. Gate run/apply affordances on it instead of probing the connection.
 
 There is no theme prop: dev-tool components are themed by the ambient `--rr-*` CSS custom properties of the document they mount into (the active shell theme in a browser; the editor-variable mapping in VS Code) — style exclusively with `var(--rr-*)` tokens. The tab icon hosts show comes from the manifest `icon`; the descriptor is loaded only when the tool is opened.
 

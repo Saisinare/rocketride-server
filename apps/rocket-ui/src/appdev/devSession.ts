@@ -62,7 +62,7 @@ import type { IWorkspaceFileSystem } from 'shared/workspace/vfsTypes';
 import { scopedFileSystem } from 'shared/workspace/scopedFileSystem';
 import { getWorkspaceVfs, storePathToVirtual } from '../workspace/workspace';
 import type { RocketRideClient, ShellNotification } from 'shell';
-import type { ConsoleRow, AppErrorRow, WatchStatus } from 'shared/modules/appdev';
+import type { ConsoleRow, AppErrorRow, WatchStatus } from 'shared/tools/appdev';
 import { loadMonaco, setupAppTypescript, emitModel, detectLanguage } from 'shared/modules/monaco';
 import type { Monaco, TypescriptSetupHandle } from 'shared/modules/monaco';
 import { isTextFile } from './appFiles';
@@ -242,11 +242,8 @@ export class WebDevSession {
 	/** Unsubscribes the shell:notify listener; null until open(). */
 	private unsubscribeNotify: (() => void) | null = null;
 
-	// ── Models + dirty state ─────────────────────────────────────────────
+	// ── Models ───────────────────────────────────────────────────────────
 	private readonly models = new Map<string, MonacoEditorNs.ITextModel>();
-	private readonly dirty = new Set<string>();
-	/** Unregister functions for the models' VFS overlays. */
-	private readonly overlayDisposers: Array<() => void> = [];
 	/** THIS session's content listeners — an adopted model outlives the session. */
 	private readonly modelListeners: Array<{ dispose: () => void }> = [];
 
@@ -412,8 +409,6 @@ export class WebDevSession {
 		if (this.lastLink) revokeLink(this.lastLink.blobUrls);
 		this.ata?.dispose();
 		this.ata = null;
-		for (const disposeOverlay of this.overlayDisposers) disposeOverlay();
-		this.overlayDisposers.length = 0;
 		for (const listener of this.modelListeners) listener.dispose();
 		this.modelListeners.length = 0;
 		// step: release — not dispose — the shared state; a model (and the TS
@@ -466,16 +461,6 @@ export class WebDevSession {
 		this.modelListeners.push(model.onDidChangeContent(() => {
 			// step: acquisition follows the keystrokes (debounced in the engine)
 			if (isSource) this.ata?.enqueue(path, () => model.getValue());
-			if (!this.dirty.has(path)) {
-				this.dirty.add(path);
-				// step: dirty flips live in this session's set — the VFS cannot
-				// see them, so announce on its bus (the Explorer subscribes there)
-				this.vfs.notify();
-			}
-		}));
-		this.overlayDisposers.push(this.vfs.registerOverlay(path, {
-			getContent: () => model.getValue(),
-			isDirty: () => this.dirty.has(path),
 		}));
 		return model;
 	}
@@ -537,22 +522,11 @@ export class WebDevSession {
 				// step: a NEW file — wire it exactly like open() does
 				this.wireModel(path, text);
 				this.vfs.notify();
-			} else if (model.getValue() === text) {
-				// step: model already matches the store. Split panels share
-				// Monaco models, so the writer's keystrokes marked THIS
-				// session's dirty flag too — the store now agrees, so nothing
-				// here is unsaved: clear the mark.
-				if (this.dirty.delete(path)) this.vfs.notify();
-			} else if (this.dirty.has(path)) {
-				// step: genuine divergence against unsaved local edits — the
-				// user's work is never clobbered
-				this.pushConsole('warn', `[vfs] ${path} changed in the store but has unsaved edits here — keeping the local version`);
-			} else {
-				// step: refresh the clean model; the content listener marks it
-				// dirty on ANY change, so clear that mark — the store is the
-				// source of this content, nothing here is unsaved
+			} else if (model.getValue() !== text) {
+				// step: refresh the model — the store is the source of truth
+				// (no editor binds these models; unsaved-work divergence died
+				// with the Code pane)
 				model.setValue(text);
-				this.dirty.delete(path);
 				this.vfs.notify();
 			}
 		} catch {

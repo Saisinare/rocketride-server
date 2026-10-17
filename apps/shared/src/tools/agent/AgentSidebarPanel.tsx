@@ -37,8 +37,8 @@ import { BxNote, BxPlus, BxTrash } from 'shell';
 import { SidebarMenu } from 'shell';
 import type { ViewMenu } from 'shell';
 import { PANEL_HOVER_BG, panelStyles } from '../core/chrome/panelStyles';
-import type { AgentSidebar } from '../../modules/sidebar/types';
-import type { IntroMode } from '../../modules/intro/introPages';
+import type { AgentSidebar } from './types';
+import type { IntroMode } from '../introCatalog';
 
 /**
  * Formats a session stamp for the MY SESSIONS meta line: minutes/hours for

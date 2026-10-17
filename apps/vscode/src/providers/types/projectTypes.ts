@@ -12,11 +12,11 @@
  * Project-only and declared here.
  *
  * Pure types only — imported by both the extension host and the webview
- * (ViewState/TaskStatus come from the pure `shared/modules/project/types`
+ * (ViewState/TaskStatus come from the pure `shared/tools/pipelines/project/types`
  * leaf, never the tsx barrel).
  */
 
-import type { ViewState, TaskStatus } from 'shared/modules/project/types';
+import type { ViewState, TaskStatus } from 'shared/tools/pipelines/project/types';
 import type { ShellHostToWebview, ShellWebviewToHost } from './shellTypes';
 import type { CheckoutResultHostToWebview, CheckoutRequestWebviewToHost } from './checkoutTypes';
 import type { DeployLifecycleHostToWebview, DeployLifecycleWebviewToHost, DeploymentHostToWebview, DeploymentWebviewToHost } from './deployTypes';
@@ -32,7 +32,6 @@ export type ProjectHostToWebview =
 	| { type: 'project:validateResponse'; requestId: number; result: any; error?: string }
 	| { type: 'project:nodeSchemaResponse'; requestId: number; service?: Record<string, any>; error?: string }
 	| { type: 'project:dirtyState'; isDirty: boolean; isNew: boolean }
-	| { type: 'project:initialState'; state: ViewState }
 	| { type: 'project:initialPrefs'; prefs: Record<string, unknown> }
 	| { type: 'project:cloudConnectionConfigured'; cloudConnectionConfigured: boolean }
 	| { type: 'project:envKeysUpdate'; envKeys: string[] }
@@ -61,7 +60,6 @@ export type ProjectWebviewToHost =
 	| { type: 'project:openCloudSetup' }
 	| { type: 'status:pipelineAction'; action: 'run' | 'stop' | 'restart'; source?: string }
 	| { type: 'status:missingEnvVars'; keys: string[] }
-	| { type: 'trace:clear' }
 	// Embedded checkout requests (the Subscribe overlay).
 	| CheckoutRequestWebviewToHost
 	// Deploy lifecycle requests from the DEPLOY page (see deployTypes.ts).

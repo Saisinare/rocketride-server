@@ -25,12 +25,10 @@
 // =============================================================================
 //
 // The connection workbench hosts query / data / design surfaces as PAGES of
-// one document (no inner tab strip). Everything that used to open an inner
-// document for them (the record drawer's buttons, the history panel's "open
-// in new query") consults this context first: inside a connection workbench
-// it switches the page; outside one (a legacy standalone query/table/design
-// document) the context is absent and the caller falls back to the old
-// document-opening path.
+// one document (no inner tab strip). Everything that opens one of them (the
+// record drawer's buttons, the history panel's "open in new query") goes
+// through this context — every surface renders inside a connection
+// workbench, which always provides it.
 // =============================================================================
 
 import { createContext, useContext } from 'react';
@@ -61,9 +59,12 @@ const SqlPageNavContext = createContext<SqlPageNav | null>(null);
 export const SqlPageNavProvider = SqlPageNavContext.Provider;
 
 /**
- * The enclosing connection workbench's page navigation, or null outside one
- * (legacy standalone documents — callers fall back to opening documents).
+ * The enclosing connection workbench's page navigation.
+ *
+ * @throws When no workbench provider is mounted above the caller.
  */
-export function useSqlPageNav(): SqlPageNav | null {
-	return useContext(SqlPageNavContext);
+export function useSqlPageNav(): SqlPageNav {
+	const nav = useContext(SqlPageNavContext);
+	if (!nav) throw new Error('useSqlPageNav requires a connection workbench (SqlPageNavProvider).');
+	return nav;
 }

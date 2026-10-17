@@ -22,7 +22,7 @@
 // =============================================================================
 
 // =============================================================================
-// TOOLHOST — the extension host's own IToolWorkspaceFs
+// TOOLHOST — the extension host's own ToolWorkspaceFs
 // =============================================================================
 //
 // The GENERIC workspace-FS capability, implemented over direct
@@ -36,10 +36,12 @@ import * as vscode from 'vscode';
 // Deep import on purpose: the tools/core BARREL exports the builtin
 // registry, which carries React/shell types the extension host's no-DOM
 // compile must never see. workspaceFs is the pure capability contract.
-import type { IToolWorkspaceFs } from 'shared/tools/core/workspaceFs';
+// Deep leaf import: the extension host must not pull the shell's React
+// barrel; the capability interface lives in a dependency-free module.
+import type { ToolWorkspaceFs } from 'shell/src/components/workspace/toolWorkspaceFs';
 
 /** The extension host's workspace-FS capability (direct access, no RPC). */
-export const hostWorkspaceFs: IToolWorkspaceFs = {
+export const hostWorkspaceFs: ToolWorkspaceFs = {
 	async findFiles(include, exclude) {
 		const uris = await vscode.workspace.findFiles(include, exclude ?? null);
 		return uris.map((uri) => uri.fsPath);

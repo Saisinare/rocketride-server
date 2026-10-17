@@ -91,7 +91,7 @@ export async function openWorkspaceFile(path: string): Promise<boolean> {
 				return false;
 			}
 			const name = typeof m.name === 'string' && m.name ? m.name : (pkg.name ?? m.id);
-			docs.openStaticDocument(`app:${m.id}`, name);
+			docs.openStaticDocument(`tool:apps/${m.id}`, name);
 			return true;
 		} catch (err) {
 			console.log('[openWorkspaceFile] could not read the app package for', path, err);

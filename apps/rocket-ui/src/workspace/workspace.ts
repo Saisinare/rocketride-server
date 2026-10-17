@@ -51,59 +51,11 @@
 import { CachedVfs, getClient } from 'shell';
 import type { IVirtualFileSystem, RocketRideClient } from 'shell';
 import { emitFsChange } from 'shared/utils/fsNotify';
-import { AgentTool, AgentToolkit } from 'shared/agent/tools';
 import { StagedFileSystem } from 'shared/workspace/stagedFileSystem';
 import { StagingStore } from 'shared/workspace/staging';
 import { CommitPolicy } from 'shared/workspace/commitPolicy';
 import type { IWorkspaceFileSystem } from 'shared/workspace/vfsTypes';
 
-// =============================================================================
-// THE GUIDE — what rocket-ui tells the LLM about its tree
-// =============================================================================
-
-/**
- * The workspace map passed into FilesystemTools. Deep format references
- * (component catalog, full .pipe rules, app SDK) are fetched on demand from
- * the server's agent docs bundle — this is the always-loaded map.
- */
-export const WORKSPACE_GUIDE = `The workspace has exactly three top-level directories:
-
-apps/       - platform apps. Each apps/<folder>/ is a React + TypeScript project.
-              package.json carries the control-plane "appManifest" block: id
-              ("<developerId>.<name>"), projectId (GUID), publisher, name,
-              description, icon, categories, mode (free|subscription|paywall),
-              and contributes.configuration (user-visible settings). App code
-              imports ONLY from 'shell' (plus React) - never from another app.
-              NEVER hand-create a new app folder: new apps are born through the
-              platform scaffold (the New App wizard / createApp), which bakes in
-              the correct build configuration. You may freely edit existing apps.
-
-nodes/      - custom pipeline components. Each nodes/<folder>/ is a Python
-              package: one or more services.<name>.json manifests (identity,
-              icon, configuration fields, invoke requirements such as "needs an
-              LLM"), IGlobal.py (task lifecycle + shared state), IInstance.py
-              (the lane handlers - a filter implements one write<Lane>() per
-              input lane; a source implements scanObjects()/renderObject()),
-              requirements.txt, an .svg icon, and README.md. A node is a source
-              or a filter - fixed at creation. Output lanes are INFERRED from
-              what the handler code emits, never declared.
-
-pipelines/  - pipeline definitions. Each pipelines/<name>.pipe is one JSON
-              document: { "components": [ { "id", "provider", "config",
-              "input": [ { "lane", "from" } ], optional "control" } ],
-              "project_id": "<GUID - permanent identity, never change it>",
-              "viewport", "version" }. Providers come from the platform
-              component catalog; lanes are typed (text, documents, questions,
-              answers, tags, ...) and a connection is valid only when the lane
-              types match. Control connections (LLM/tool/memory serving an
-              agent component) go in the CONTROLLED node's "control" array.
-              Secrets are NEVER literal: use \${ROCKETRIDE_*} placeholders -
-              the server substitutes real values at run time.
-
-Workspace rules:
-- There is nothing outside apps/, nodes/, and pipelines/.
-- Do not create or touch node_modules, dist, or build - the platform owns them.
-- After editing a pipeline or manifest, validate before reporting success.`;
 
 // =============================================================================
 // CONSTANTS — physical layout (mirrors appdev/appStore.ts)
@@ -167,15 +119,6 @@ function scopePrefix(): string {
 	return activeScope.kind === 'team' ? `@/Team/=${activeScope.teamId}/` : '';
 }
 
-/**
- * The active workspace scope (for consumers that namespace per-scope state,
- * e.g. the staging store).
- *
- * @returns The scope createWorkspace() was built with.
- */
-export function getWorkspaceScope(): WorkspaceScope {
-	return activeScope;
-}
 
 /**
  * Maps a scope-relative physical path (e.g. '.projects/.appdev/foo') to the
@@ -591,94 +534,4 @@ export function getWorkspaceVfs(): IWorkspaceFileSystem {
  */
 export function getStagedWorkspace(): StagedFileSystem {
 	return getWorkspace().view;
-}
-
-// =============================================================================
-// WORKSPACE TOOLKIT — rocket-ui's own agent tools
-// =============================================================================
-
-/**
- * Rocket Builder's workspace toolkit: the entity-level view the file tools
- * cannot provide. Mounted alongside FilesystemTools at agent creation.
- */
-export class WorkspaceTools extends AgentToolkit {
-	readonly name = 'rocket-workspace';
-	readonly instructions = 'Call list_workspace FIRST in a session to learn what exists before touching files.';
-
-	/**
-	 * list_workspace: the structured inventory — every app with its
-	 * manifest identity, every node package with its service manifests,
-	 * every pipeline file.
-	 *
-	 * @returns JSON {apps:[], nodes:[], pipelines:[]}.
-	 */
-	private async listWorkspace(): Promise<string> {
-		// step: through the VIEW, so staged (uncommitted) entities list too
-		const view = getWorkspaceVfs();
-
-		// step: apps — each apps/ folder, identified by its package.json appManifest
-		const apps: Array<{ folder: string; id?: string; name?: string; description?: string; mode?: string }> = [];
-		try {
-			const entries = await view.list('apps');
-			for (const entry of entries.filter((e) => e.type === 'dir')) {
-				const row: (typeof apps)[number] = { folder: `apps/${entry.name}` };
-				try {
-					const manifest = (JSON.parse(String(await view.read(`apps/${entry.name}/package.json`))) as { appManifest?: Record<string, unknown> }).appManifest ?? {};
-					row.id = manifest.id as string | undefined;
-					row.name = manifest.name as string | undefined;
-					row.description = manifest.description as string | undefined;
-					row.mode = manifest.mode as string | undefined;
-				} catch {
-					/* unreadable manifest — the folder row still lists */
-				}
-				apps.push(row);
-			}
-		} catch {
-			/* no apps tree yet */
-		}
-
-		// step: nodes — each nodes/ folder, identified by its services.*.json manifests
-		const nodes: Array<{ folder: string; services: string[] }> = [];
-		try {
-			const entries = await view.list('nodes');
-			for (const entry of entries.filter((e) => e.type === 'dir')) {
-				const inner = await view.list(`nodes/${entry.name}`);
-				const services = inner
-					.filter((e) => e.type === 'file' && /^services\..+\.json$/.test(e.name))
-					.map((e) => e.name);
-				nodes.push({ folder: `nodes/${entry.name}`, services });
-			}
-		} catch {
-			/* no nodes tree yet */
-		}
-
-		// step: pipelines — the .pipe files on the pipelines mount
-		const pipelines: Array<{ file: string }> = [];
-		try {
-			const entries = await view.list('pipelines');
-			for (const entry of entries.filter((e) => e.type === 'file' && e.name.endsWith('.pipe'))) {
-				pipelines.push({ file: `pipelines/${entry.name}` });
-			}
-		} catch {
-			/* no workspace at all yet */
-		}
-
-		return JSON.stringify({ apps, nodes, pipelines }, null, 1);
-	}
-
-	/**
-	 * The toolkit's tools.
-	 *
-	 * @returns The group's tools.
-	 */
-	tools(): AgentTool[] {
-		return [
-			new AgentTool({
-				name: 'list_workspace',
-				description: 'Inventory the whole workspace in one call: every app (with its appManifest id, name, description, mode), every node package (with its service manifests), and every pipeline file. Call this FIRST in a session before touching files.',
-				parameters: { type: 'object', properties: {}, additionalProperties: false },
-				execute: () => this.listWorkspace(),
-			}),
-		];
-	}
 }

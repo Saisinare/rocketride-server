@@ -23,8 +23,8 @@
 // =============================================================================
 // FROZEN shell-api contract — ShellApiV8 — never edit by hand
 // =============================================================================
-// Generated:     2026-10-16T18:42:21.274Z
-// Source commit: 6a70df0af5d9c7a079408b1c97cb4b1321b9e42c
+// Generated:     2026-10-17T16:44:11.612Z
+// Source commit: 9096bf41985daecf153066c2556acfc3393b923f
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder shell:freeze
 // =============================================================================
@@ -6385,41 +6385,29 @@ export interface AppDescriptor {
      */
     devToolFrame?: React$1.ComponentType<DevToolProps>;
     /**
-     * Dev-tool sidebar — mounted by the host workbench in ITS sidebar (behind
-     * the tool's tab) while `devToolFrame` runs in the main surface. The two
-     * mounts may live in isolated documents (VS Code webviews): durable state
-     * flows through the server via each mount's own `client`; ephemeral UI
-     * coordination rides `peer`.
+     * Dev-tool sidebar — the tool's CONTROLLER, mounted by the host workbench
+     * in ITS sidebar (behind the tool's tab) while `devToolFrame` runs in the
+     * main surface. The two mounts may live in isolated documents (VS Code
+     * webviews). The controller realm owns the tool's single engine
+     * connection; frames hold none — every frame↔engine interaction is a
+     * correlated operation to the controller over the tool channel, and
+     * ephemeral UI coordination rides `peer`.
      */
     devToolSidebar?: React$1.ComponentType<DevToolProps>;
 }
 /**
- * The structural face of the host's live client handed to a dev tool.
- *
- * Deliberately NOT the RocketRideClient class: the frozen contract rolls
- * classes up (privates stripped), and a class in component props breaks the
- * per-version floors. The real object IS the host's RocketRideClient — cast
- * to it (import the type from 'rocketride') for the full typed surface; the
- * shell connection singleton is also live, so in-shell hooks
- * (useShellConnection, useDashboardData, …) work as usual.
- */
-export interface DevToolClient {
-    /** Raw DAP command against the connected engine. */
-    call<T = unknown>(command: string, args?: Record<string, unknown>, options?: {
-        token?: string;
-        timeout?: number;
-    }): Promise<T>;
-}
-/**
  * Props every dev-tool component receives from its host workbench.
+ *
+ * NO client member: dev-tool mounts never receive an engine connection.
+ * The tool's sidebar CONTROLLER realm owns one (established by that realm
+ * itself, not through these props), and frames reach the engine solely via
+ * correlated operations over the tool channel (tools/core opCall).
  *
  * No theme member: tools are themed by the ambient `--rr-*` CSS custom
  * properties of the document they mount into (the shell's active theme
  * in-browser; the VS Code webview's editor-variable mapping in the editor).
  */
 export interface DevToolProps {
-    /** Live, authenticated client owned by the host (see {@link DevToolClient}). */
-    client: DevToolClient;
     /**
      * Ephemeral coordination channel to this tool's OTHER mount (frame ↔
      * sidebar). Message payloads are opaque to the host. In-shell hosts relay
@@ -7054,6 +7042,32 @@ interface ShellConnectionEventMap {
      */
     "shell:notify": ShellNotification;
     /**
+     * A dev tool's sidebar tab was selected in the host's sidebar chrome.
+     *
+     * Fired on EVERY selection (no deduplication). What activation means is
+     * the TOOL's decision, made in its devToolSidebar code: a single-pane
+     * tool opens its pane (`documents.open('', name)`); a per-document tool
+     * ignores the event. The FIRST selection is also what lazily mounts the
+     * tool's sidebar, so it arrives before the subscription exists — a tool
+     * that opens on activation therefore also opens on MOUNT (mounting IS
+     * the first activation) and uses this event for re-activations only.
+     */
+    "shell:toolSidebarActivated": {
+        appId: string;
+    };
+    /**
+     * A dev tool's sidebar tab stopped being the selected one — the user
+     * selected a different tab (another tool's, or a fixed mode). Fired
+     * before the successor's `shell:toolSidebarActivated`, and only on a
+     * real change: re-selecting the same tab deactivates nothing, and a
+     * sidebar reload or an externally synced highlight emits neither event.
+     * Typical use: a controller pauses discretionary work (polling,
+     * watchers) while its panel is out of view.
+     */
+    "shell:toolSidebarDeactivated": {
+        appId: string;
+    };
+    /**
      * Successful authentication — identity is now available.
      *
      * Emitted after `connect()` resolves with valid credentials.
@@ -7338,6 +7352,22 @@ on(event: 'shell:notify', handler: (payload: ShellConnectionEventMap['shell:noti
  * @param handler - Callback invoked when the event fires.
  * @returns An unsubscribe function — call it to remove the handler.
  */
+on(event: 'shell:toolSidebarActivated', handler: (payload: ShellConnectionEventMap['shell:toolSidebarActivated']) => void): () => void;
+/**
+ * Registers a handler for a typed shell event.
+ *
+ * @param event   - The event name from `ShellConnectionEventMap`.
+ * @param handler - Callback invoked when the event fires.
+ * @returns An unsubscribe function — call it to remove the handler.
+ */
+on(event: 'shell:toolSidebarDeactivated', handler: (payload: ShellConnectionEventMap['shell:toolSidebarDeactivated']) => void): () => void;
+/**
+ * Registers a handler for a typed shell event.
+ *
+ * @param event   - The event name from `ShellConnectionEventMap`.
+ * @param handler - Callback invoked when the event fires.
+ * @returns An unsubscribe function — call it to remove the handler.
+ */
 on(event: 'shell:login', handler: (payload: ShellConnectionEventMap['shell:login']) => void): () => void;
 /**
  * Registers a handler for a typed shell event.
@@ -7578,6 +7608,26 @@ emit(event: 'shell:appsUpdated', payload: ShellConnectionEventMap['shell:appsUpd
  * @param payload - The payload matching the event's type.
  */
 emit(event: 'shell:notify', payload: ShellConnectionEventMap['shell:notify']): void;
+/**
+ * Emits a typed shell event, dispatching to all registered handlers.
+ *
+ * Public so that any code (sidebar, home app, plugins) can fire UI
+ * coordination events through the connection manager.
+ *
+ * @param event   - The event name from `ShellConnectionEventMap`.
+ * @param payload - The payload matching the event's type.
+ */
+emit(event: 'shell:toolSidebarActivated', payload: ShellConnectionEventMap['shell:toolSidebarActivated']): void;
+/**
+ * Emits a typed shell event, dispatching to all registered handlers.
+ *
+ * Public so that any code (sidebar, home app, plugins) can fire UI
+ * coordination events through the connection manager.
+ *
+ * @param event   - The event name from `ShellConnectionEventMap`.
+ * @param payload - The payload matching the event's type.
+ */
+emit(event: 'shell:toolSidebarDeactivated', payload: ShellConnectionEventMap['shell:toolSidebarDeactivated']): void;
 /**
  * Emits a typed shell event, dispatching to all registered handlers.
  *
@@ -7828,7 +7878,7 @@ export interface IWorkspaceContext {
     }) => void;
     /** Emit a named event to all subscribers. Does NOT mutate workspace state. */
     /** Emit a named event to all subscribers. Does NOT mutate workspace state. */
-emit: ((event: 'shell:connected', payload: ShellConnectionEventMap['shell:connected']) => void) & ((event: 'shell:disconnected', payload: ShellConnectionEventMap['shell:disconnected']) => void) & ((event: 'shell:statusMessage', payload: ShellConnectionEventMap['shell:statusMessage']) => void) & ((event: 'shell:statusChange', payload: ShellConnectionEventMap['shell:statusChange']) => void) & ((event: 'shell:error', payload: ShellConnectionEventMap['shell:error']) => void) & ((event: 'shell:event', payload: ShellConnectionEventMap['shell:event']) => void) & ((event: 'shell:accountUpdate', payload: ShellConnectionEventMap['shell:accountUpdate']) => void) & ((event: 'shell:orgChanged', payload: ShellConnectionEventMap['shell:orgChanged']) => void) & ((event: 'shell:servicesUpdated', payload: ShellConnectionEventMap['shell:servicesUpdated']) => void) & ((event: 'shell:appsUpdated', payload: ShellConnectionEventMap['shell:appsUpdated']) => void) & ((event: 'shell:notify', payload: ShellConnectionEventMap['shell:notify']) => void) & ((event: 'shell:login', payload: ShellConnectionEventMap['shell:login']) => void) & ((event: 'shell:logout', payload: ShellConnectionEventMap['shell:logout']) => void) & ((event: 'shell:loginRequest', payload: ShellConnectionEventMap['shell:loginRequest']) => void) & ((event: 'shell:logoutRequest', payload: ShellConnectionEventMap['shell:logoutRequest']) => void) & ((event: 'shell:switchApp', payload: ShellConnectionEventMap['shell:switchApp']) => void) & ((event: 'shell:subscribe', payload: ShellConnectionEventMap['shell:subscribe']) => void) & ((event: 'shell:unsubscribe', payload: ShellConnectionEventMap['shell:unsubscribe']) => void) & ((event: 'shell:myApps', payload: ShellConnectionEventMap['shell:myApps']) => void) & ((event: 'shell:openOverlay', payload: ShellConnectionEventMap['shell:openOverlay']) => void) & ((event: 'shell:sidebarCollapsing', payload: ShellConnectionEventMap['shell:sidebarCollapsing']) => void) & ((event: 'shell:setSidebarCollapsed', payload: ShellConnectionEventMap['shell:setSidebarCollapsed']) => void) & ((event: 'shell:themeChange', payload: ShellConnectionEventMap['shell:themeChange']) => void) & ((event: 'shell:viewActivated', payload: ShellConnectionEventMap['shell:viewActivated']) => void) & ((event: 'shell:manifestRefresh', payload: ShellConnectionEventMap['shell:manifestRefresh']) => void) & ((event: 'app:statusChanged', payload: ShellConnectionEventMap['app:statusChanged']) => void) & ((event: 'store:changed', payload: ShellConnectionEventMap['store:changed']) => void);
+emit: ((event: 'shell:connected', payload: ShellConnectionEventMap['shell:connected']) => void) & ((event: 'shell:disconnected', payload: ShellConnectionEventMap['shell:disconnected']) => void) & ((event: 'shell:statusMessage', payload: ShellConnectionEventMap['shell:statusMessage']) => void) & ((event: 'shell:statusChange', payload: ShellConnectionEventMap['shell:statusChange']) => void) & ((event: 'shell:error', payload: ShellConnectionEventMap['shell:error']) => void) & ((event: 'shell:event', payload: ShellConnectionEventMap['shell:event']) => void) & ((event: 'shell:accountUpdate', payload: ShellConnectionEventMap['shell:accountUpdate']) => void) & ((event: 'shell:orgChanged', payload: ShellConnectionEventMap['shell:orgChanged']) => void) & ((event: 'shell:servicesUpdated', payload: ShellConnectionEventMap['shell:servicesUpdated']) => void) & ((event: 'shell:appsUpdated', payload: ShellConnectionEventMap['shell:appsUpdated']) => void) & ((event: 'shell:notify', payload: ShellConnectionEventMap['shell:notify']) => void) & ((event: 'shell:toolSidebarActivated', payload: ShellConnectionEventMap['shell:toolSidebarActivated']) => void) & ((event: 'shell:toolSidebarDeactivated', payload: ShellConnectionEventMap['shell:toolSidebarDeactivated']) => void) & ((event: 'shell:login', payload: ShellConnectionEventMap['shell:login']) => void) & ((event: 'shell:logout', payload: ShellConnectionEventMap['shell:logout']) => void) & ((event: 'shell:loginRequest', payload: ShellConnectionEventMap['shell:loginRequest']) => void) & ((event: 'shell:logoutRequest', payload: ShellConnectionEventMap['shell:logoutRequest']) => void) & ((event: 'shell:switchApp', payload: ShellConnectionEventMap['shell:switchApp']) => void) & ((event: 'shell:subscribe', payload: ShellConnectionEventMap['shell:subscribe']) => void) & ((event: 'shell:unsubscribe', payload: ShellConnectionEventMap['shell:unsubscribe']) => void) & ((event: 'shell:myApps', payload: ShellConnectionEventMap['shell:myApps']) => void) & ((event: 'shell:openOverlay', payload: ShellConnectionEventMap['shell:openOverlay']) => void) & ((event: 'shell:sidebarCollapsing', payload: ShellConnectionEventMap['shell:sidebarCollapsing']) => void) & ((event: 'shell:setSidebarCollapsed', payload: ShellConnectionEventMap['shell:setSidebarCollapsed']) => void) & ((event: 'shell:themeChange', payload: ShellConnectionEventMap['shell:themeChange']) => void) & ((event: 'shell:viewActivated', payload: ShellConnectionEventMap['shell:viewActivated']) => void) & ((event: 'shell:manifestRefresh', payload: ShellConnectionEventMap['shell:manifestRefresh']) => void) & ((event: 'app:statusChanged', payload: ShellConnectionEventMap['app:statusChanged']) => void) & ((event: 'store:changed', payload: ShellConnectionEventMap['store:changed']) => void);
     /** Subscribe to a named event. Returns an unsubscribe function. */
     /** Subscribe to a named event. Returns an unsubscribe function. */
 on(event: 'shell:connected', handler: (payload: ShellConnectionEventMap['shell:connected']) => void): () => void;
@@ -7852,6 +7902,10 @@ on(event: 'shell:servicesUpdated', handler: (payload: ShellConnectionEventMap['s
 on(event: 'shell:appsUpdated', handler: (payload: ShellConnectionEventMap['shell:appsUpdated']) => void): () => void;
 /** Subscribe to a named event. Returns an unsubscribe function. */
 on(event: 'shell:notify', handler: (payload: ShellConnectionEventMap['shell:notify']) => void): () => void;
+/** Subscribe to a named event. Returns an unsubscribe function. */
+on(event: 'shell:toolSidebarActivated', handler: (payload: ShellConnectionEventMap['shell:toolSidebarActivated']) => void): () => void;
+/** Subscribe to a named event. Returns an unsubscribe function. */
+on(event: 'shell:toolSidebarDeactivated', handler: (payload: ShellConnectionEventMap['shell:toolSidebarDeactivated']) => void): () => void;
 /** Subscribe to a named event. Returns an unsubscribe function. */
 on(event: 'shell:login', handler: (payload: ShellConnectionEventMap['shell:login']) => void): () => void;
 /** Subscribe to a named event. Returns an unsubscribe function. */
@@ -8490,6 +8544,22 @@ emit(event: 'shell:notify', payload: ShellConnectionEventMap['shell:notify']): v
  * @param event   - The event name from ShellConnectionEventMap.
  * @param payload - The payload matching the event's type.
  */
+emit(event: 'shell:toolSidebarActivated', payload: ShellConnectionEventMap['shell:toolSidebarActivated']): void;
+/**
+ * Emit a typed shell event, dispatching to all registered handlers.
+ * Also pushes to the debug log for the ALT+D panel.
+ *
+ * @param event   - The event name from ShellConnectionEventMap.
+ * @param payload - The payload matching the event's type.
+ */
+emit(event: 'shell:toolSidebarDeactivated', payload: ShellConnectionEventMap['shell:toolSidebarDeactivated']): void;
+/**
+ * Emit a typed shell event, dispatching to all registered handlers.
+ * Also pushes to the debug log for the ALT+D panel.
+ *
+ * @param event   - The event name from ShellConnectionEventMap.
+ * @param payload - The payload matching the event's type.
+ */
 emit(event: 'shell:login', payload: ShellConnectionEventMap['shell:login']): void;
 /**
  * Emit a typed shell event, dispatching to all registered handlers.
@@ -8706,6 +8776,22 @@ on(event: 'shell:appsUpdated', handler: (payload: ShellConnectionEventMap['shell
  * @returns An unsubscribe function.
  */
 on(event: 'shell:notify', handler: (payload: ShellConnectionEventMap['shell:notify']) => void): () => void;
+/**
+ * Register a typed handler for a shell event.
+ *
+ * @param event   - The event name from ShellConnectionEventMap.
+ * @param handler - Callback invoked when the event fires.
+ * @returns An unsubscribe function.
+ */
+on(event: 'shell:toolSidebarActivated', handler: (payload: ShellConnectionEventMap['shell:toolSidebarActivated']) => void): () => void;
+/**
+ * Register a typed handler for a shell event.
+ *
+ * @param event   - The event name from ShellConnectionEventMap.
+ * @param handler - Callback invoked when the event fires.
+ * @returns An unsubscribe function.
+ */
+on(event: 'shell:toolSidebarDeactivated', handler: (payload: ShellConnectionEventMap['shell:toolSidebarDeactivated']) => void): () => void;
 /**
  * Register a typed handler for a shell event.
  *
@@ -10072,6 +10158,195 @@ export declare const AccountProvider: React$1.FC;
  * every section.  All edits apply immediately (deltas-only persistence).
  */
 export declare const SettingsProvider: React$1.FC;
+/** The `host:connection` snapshot: the controller realm's connection to the
+ *  RocketRide server. Frames hold no connection of their own — a frame's
+ *  run/apply enablement derives from this replicated snapshot. */
+export interface IHostConnectionState {
+    /** Whether the controller realm's server connection is up. */
+    connected: boolean;
+}
+/** Wire name of the host connection topic. */
+export declare const HOST_CONNECTION_TOPIC = "host:connection";
+/**
+ * The base STATE map — system topics every tool channel is born with,
+ * published by the HOST (never by a tool). Tools extend this interface
+ * with their own topics; `host:`-prefixed keys stay reserved for the base.
+ */
+export interface ToolStateMap {
+    /** The controller realm's server-connection status. HOST-published: the
+     *  host is the one party that always knows it, whether or not the tool's
+     *  controller has ever run (a restored editor panel must read correctly
+     *  before its sidebar mount first boots). */
+    "host:connection": IHostConnectionState;
+}
+/**
+ * The base EVENT map. Currently empty — tool-tab activation rides the shell
+ * event bus (`shell:toolSidebarActivated`), not the tool channel. Tools
+ * extend this interface with their own events; `host:`-prefixed keys stay
+ * reserved for the base.
+ */
+export interface ToolEventMap {
+}
+/**
+ * A strict-typed view over a {@link ToolChannel}: every topic and event key
+ * comes from the tool's protocol maps, every payload type checks at the
+ * call site. Purely a compile-time view — the runtime object IS the
+ * underlying channel.
+ */
+export interface TypedToolChannel<S extends ToolStateMap = ToolStateMap, E extends ToolEventMap = ToolEventMap> {
+    /** CONTROLLER ONLY (hosts for `host:*` topics): publish a retained state
+     *  snapshot. Late subscribers receive the latest immediately. */
+    publishState<K extends keyof S & string>(topic: K, snapshot: S[K]): void;
+    /** Subscribe to a state topic; the retained snapshot (if any) replays
+     *  synchronously before live updates. */
+    onState<K extends keyof S & string>(topic: K, cb: (snapshot: S[K]) => void): ToolChannelUnsubscribe;
+    /** Send an event to the other side. Buffered while the other side opens;
+     *  an event MAY summon a closed window — send only for user actions and
+     *  directed commands. */
+    sendEvent<K extends keyof E & string>(name: K, payload: E[K]): void;
+    /** Subscribe to an event by name. Events are not retained. */
+    onEvent<K extends keyof E & string>(name: K, cb: (payload: E[K]) => void): ToolChannelUnsubscribe;
+}
+/**
+ * Narrows a raw channel to the tool's typed protocol view. A cast, not a
+ * wrapper: the returned object is the same channel instance.
+ *
+ * @param channel - The mount's channel (DevToolProps.channel, or one built
+ *                  with createToolChannel).
+ * @returns The same channel, typed by the tool's protocol maps.
+ */
+export declare function typedToolChannel<S extends ToolStateMap = ToolStateMap, E extends ToolEventMap = ToolEventMap>(channel: ToolChannel): TypedToolChannel<S, E>;
+/**
+ * The live snapshot of one state topic, or undefined until the first
+ * (possibly retained) snapshot arrives.
+ *
+ * @param channel - The mount's typed channel.
+ * @param topic - The topic to follow.
+ * @returns The latest snapshot, or undefined.
+ */
+export declare function useToolState<S extends ToolStateMap, E extends ToolEventMap, K extends keyof S & string>(channel: TypedToolChannel<S, E>, topic: K): S[K] | undefined;
+/**
+ * Whether the controller realm's server connection is up, from the retained
+ * `host:connection` system topic. False until the snapshot arrives.
+ *
+ * @param channel - The mount's channel (raw or typed).
+ * @returns Whether the controller realm can reach the server.
+ */
+export declare function useConnectionReady(channel: ToolChannel | TypedToolChannel): boolean;
+/**
+ * Publishes the server-connection status into one tool channel's retention.
+ * HOST-side: called per tool channel on every connection change (tools
+ * never call it). The VS Code extension host mirrors this envelope by hand
+ * in its DevToolBridge (it cannot import the browser bundle) — the wire
+ * shape here and there must stay identical.
+ *
+ * @param channel - The tool channel to publish into.
+ * @param connected - Whether the server connection is up.
+ */
+export declare function publishHostConnectionState(channel: ToolChannel, connected: boolean): void;
+declare const ENVELOPE$1 = "__rrtool";
+/** Default per-call timeout — generous because engine-side statements can
+ *  legitimately run long; override per call. */
+export declare const DEFAULT_OP_TIMEOUT_MS = 120000;
+/** A correlated request on the wire. */
+export interface IToolCallMessage {
+    [ENVELOPE$1]: "call";
+    id: string;
+    op: string;
+    args?: unknown;
+}
+/** A correlated reply on the wire. */
+export interface IToolReplyMessage {
+    [ENVELOPE$1]: "reply";
+    id: string;
+    ok: boolean;
+    result?: unknown;
+    error?: string;
+}
+/**
+ * Narrows a peer payload to a CALL — for the server and the host relays
+ * (which must exclude calls from retention).
+ *
+ * @param message - Any peer payload.
+ * @returns The call message, or null.
+ */
+export declare function asToolCallMessage(message: unknown): IToolCallMessage | null;
+/**
+ * Narrows a peer payload to a REPLY — for the client and the host relays
+ * (which deliver replies to live subscribers only).
+ *
+ * @param message - Any peer payload.
+ * @returns The reply message, or null.
+ */
+export declare function asToolReplyMessage(message: unknown): IToolReplyMessage | null;
+/** One operation's compile-time shape: params in, result out. */
+export interface ToolOpSpec<P, R> {
+    /** Phantom carriers — never read at runtime. */
+    readonly params: P;
+    readonly result: R;
+}
+/**
+ * The base op map every tool's op vocabulary extends. Deliberately empty —
+ * ops are tool-private by nature (unlike state topics, where the host owns
+ * a base set). A tool declares, in its own module:
+ *
+ *   interface MyOps extends ToolOpMap {
+ *       'myTool.verb': ToolOpSpec<{ id: string }, MyResult>;
+ *   }
+ *
+ * Op names are `<tool>.<verb>` by convention; the interface key is the wire
+ * name, so a typo'd string or drifted payload shape fails to compile.
+ */
+export interface ToolOpMap {
+}
+/** The params type of one op in a map. */
+export type ToolOpParams<O, K extends keyof O> = O[K] extends ToolOpSpec<infer P, unknown> ? P : never;
+/** The result type of one op in a map. */
+export type ToolOpResult<O, K extends keyof O> = O[K] extends ToolOpSpec<unknown, infer R> ? R : never;
+/** Per-call options. */
+export interface IToolCallOptions {
+    /** Overrides {@link DEFAULT_OP_TIMEOUT_MS}. */
+    timeoutMs?: number;
+}
+/**
+ * The calling function a frame holds: ask this tool's controller to execute
+ * an operation and await the result. Keys and both payload types come from
+ * the tool's op map.
+ */
+export type ToolControllerFn<O extends ToolOpMap = ToolOpMap> = <K extends keyof O & string>(op: K, params: ToolOpParams<O, K>, opts?: IToolCallOptions) => Promise<ToolOpResult<O, K>>;
+/**
+ * Builds the frame's controller function over a mount's peer pipe. One
+ * client per mount lifetime (it holds a standing peer subscription).
+ *
+ * @param peer - The mount's peer pipe (DevToolProps.peer).
+ * @returns The calling function, typed by the tool's op map.
+ */
+export declare function createToolController<O extends ToolOpMap = ToolOpMap>(peer: DevToolProps["peer"]): ToolControllerFn<O>;
+/** The controller-side registry, typed by the tool's op map. */
+export interface IToolOpServer<O extends ToolOpMap = ToolOpMap> {
+    /**
+     * Serves one operation. Replaces any previous handler for the op.
+     *
+     * @param op - The op's wire name (a key of the tool's op map).
+     * @param handler - Plain async function; a thrown error becomes the
+     *                  caller's rejection (its message crosses the wire).
+     * @returns Unregister for this op.
+     */
+    serve<K extends keyof O & string>(op: K, handler: (params: ToolOpParams<O, K>) => ToolOpResult<O, K> | Promise<ToolOpResult<O, K>>): () => void;
+    /** Tears the whole registry down (unsubscribes from the peer). */
+    dispose(): void;
+}
+/**
+ * Builds the controller's op server over its peer pipe. One per controller
+ * mount, created beside its state publishing.
+ *
+ * Reply-iff-tracked: a CALL gets a correlated reply; a plain channel EVENT
+ * whose name matches a served op runs the same handler with NO reply.
+ *
+ * @param peer - The controller mount's peer pipe.
+ * @returns The registry, typed by the tool's op map.
+ */
+export declare function createToolOpServer<O extends ToolOpMap = ToolOpMap>(peer: DevToolProps["peer"]): IToolOpServer<O>;
 /**
  * Sent by the shell to an iframe immediately after the iframe posts `view:ready`.
  *

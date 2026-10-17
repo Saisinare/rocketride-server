@@ -42,14 +42,14 @@ import { getDocs } from '../docs';
 import type { PipelineConfig } from 'shell';
 // Project module is imported via subpath (not the 'shared' barrel) so the
 // canvas bundles into THIS app, not the shell's eager shared chunk.
-import { ProjectView, parseServerEvent, isDevLiveEvent } from 'shared/modules/project';
-import { registerServiceIcons } from 'shared/components/canvas/util/Icon';
-import { foldProjectDeployRuns } from 'shared/modules/sidebar/taskFold';
+import { ProjectView, parseServerEvent, isDevLiveEvent } from 'shared/tools/pipelines/project';
+import { registerServiceIcons } from 'shared/tools/pipelines/canvas/util/Icon';
+import { foldProjectDeployRuns } from 'shared/tools/pipelines/taskFold';
 import type { DeploySnapshot, TeamDeployment } from 'shared/components/deploy-panel';
 import type { DeployArtifact } from 'shell';
 import { useDeployments } from '../hooks/useDeployments';
 import { PrefsProvider } from 'shell';
-import type { TaskEventMessage, TaskEventSession, TaskStatus, TaskTimeline, TraceLevel, ViewState } from 'shared/modules/project';
+import type { TaskEventMessage, TaskEventSession, TaskStatus, TaskTimeline, TraceLevel, ViewState } from 'shared/tools/pipelines/project';
 import { displayName as projectDisplayName } from '../utils/projectStore';
 import { createProjectVfs } from '../utils/projectVfs';
 import { downloadJson } from '../utils/downloadFile';

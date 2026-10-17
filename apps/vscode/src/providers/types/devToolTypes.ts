@@ -19,8 +19,6 @@ export interface DevToolInitPayload {
 	docKey: string;
 	/** Engine base URL ('' when disconnected). */
 	engineHttpUrl: string;
-	/** Session credential for the webview's own SDK connection ('' = none). */
-	authToken: string;
 	/** Whether the extension currently holds a server connection. */
 	connected: boolean;
 	/** The tool to mount. */

@@ -48,7 +48,7 @@ import { SidebarMenu, TabControl, TabPanel } from 'shell';
 import type { ViewMenu } from 'shell';
 import { CodiconExtensions } from '../../../components/icons/Codicon';
 import { PANEL_HOVER_BG, panelStyles } from './panelStyles';
-import type { SidebarMode, ToolTab, ToolTabsSidebar } from '../../../modules/sidebar/types';
+import type { SidebarMode, ToolTab, ToolTabsSidebar } from './types';
 
 // =============================================================================
 // STYLES (chrome-only — panel vocabulary lives in panelStyles)
@@ -141,11 +141,57 @@ const S = {
  * tool (icon, name, version, description, Installed marker). Clicking a row
  * opens the tool's details page via `onShowTool`.
  */
-const ToolStorePanel: React.FC<{ available: ToolTab[]; installedIds: Set<string>; onShowTool: (id: string) => void }> = ({ available, installedIds, onShowTool }) => {
+const ToolStorePanel: React.FC<{
+	available: ToolTab[];
+	installedIds: Set<string>;
+	onShowTool: (id: string) => void;
+	onRefresh?: () => void;
+	builtins?: { id: string; name: string; description?: string; enabled: boolean }[];
+	onToggleBuiltin?: (id: string, enabled: boolean) => void;
+}> = ({ available, installedIds, onShowTool, onRefresh, builtins, onToggleBuiltin }) => {
 	const [hovered, setHovered] = useState<string | null>(null);
 	return (
 		<div style={panelStyles.panelColumn}>
-			<div style={panelStyles.sectionLabel}>Dev Tools</div>
+			{/* Builtin (resident) tools: enabled/disabled, never uninstalled. */}
+			{builtins && builtins.length > 0 && (
+				<>
+					<div style={panelStyles.sectionLabel}>Built-in</div>
+					<div style={panelStyles.sectionList}>
+						{builtins.map((b) => (
+							<div key={b.id} style={S.storeRow}>
+								<div style={{ flex: 1, minWidth: 0 }}>
+									<div style={{ fontWeight: 600, ...commonStyles.textEllipsis, ...(b.enabled ? {} : { color: 'var(--rr-text-secondary)' }) }}>{b.name}</div>
+									{b.description && (
+										<div style={{ fontSize: 11, color: 'var(--rr-text-secondary)', ...commonStyles.textEllipsis }}>{b.description}</div>
+									)}
+								</div>
+								{onToggleBuiltin && (
+									<button
+										type="button"
+										onClick={() => onToggleBuiltin(b.id, !b.enabled)}
+										style={{ border: '1px solid var(--rr-border)', background: 'transparent', color: 'var(--rr-text-primary)', fontSize: 11, cursor: 'pointer', padding: '2px 8px', borderRadius: 4, flexShrink: 0, fontFamily: 'inherit' }}
+									>
+										{b.enabled ? 'Disable' : 'Enable'}
+									</button>
+								)}
+							</div>
+						))}
+					</div>
+				</>
+			)}
+			<div style={{ display: 'flex', alignItems: 'baseline' }}>
+				<div style={{ ...panelStyles.sectionLabel, flex: 1 }}>Dev Tools</div>
+				{onRefresh && (
+					<button
+						type="button"
+						onClick={onRefresh}
+						title="Re-fetch the app registry from the server and reload every loaded tool (after publishing a new version)"
+						style={{ border: 'none', background: 'transparent', color: 'var(--rr-text-secondary)', fontSize: 11, cursor: 'pointer', padding: '6px 8px 4px', fontFamily: 'inherit' }}
+					>
+						Refresh
+					</button>
+				)}
+			</div>
 			<div style={panelStyles.sectionList}>
 				{available.length === 0 && (
 					<div style={panelStyles.emptyLine}>No dev tools are published on this server.</div>
@@ -343,7 +389,7 @@ export const SidebarChrome: React.FC<ISidebarChromeProps> = ({ items, headerSlot
 						...Object.fromEntries(items.map((item) => [item.id, { content: item.render() }])),
 						...(toolTabs
 							? {
-								toolStore: { content: <ToolStorePanel available={toolTabs.available} installedIds={new Set(tools.map((t) => t.id))} onShowTool={toolTabs.onShowTool} /> },
+								toolStore: { content: <ToolStorePanel available={toolTabs.available} installedIds={new Set(tools.map((t) => t.id))} onShowTool={toolTabs.onShowTool} {...(toolTabs.onRefreshTools ? { onRefresh: toolTabs.onRefreshTools } : {})} {...(toolTabs.builtins ? { builtins: toolTabs.builtins } : {})} {...(toolTabs.onToggleBuiltin ? { onToggleBuiltin: toolTabs.onToggleBuiltin } : {})} /> },
 								...Object.fromEntries(tools.map((t) => [
 									`tool:${t.id}`,
 									{ content: toolTabs.renderToolPanel?.(t.id) ?? <ToolPanel tool={t} onOpen={toolTabs.onOpenTool} onRemove={toolTabs.onRemoveTool} /> },

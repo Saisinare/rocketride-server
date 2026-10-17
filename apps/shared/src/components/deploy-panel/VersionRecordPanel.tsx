@@ -19,7 +19,7 @@
 import React, { useMemo, CSSProperties, ComponentProps } from 'react';
 
 import { DetailPanel } from 'shell';
-import CanvasPanel from '../canvas';
+import CanvasPanel from 'shared/tools/pipelines/canvas';
 import { OAUTH_ROOT_URL } from 'shell';
 import { formatTime } from 'shell';
 import type { DeployVersionCard } from './types';

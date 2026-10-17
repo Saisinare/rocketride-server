@@ -28,15 +28,13 @@
  * rsbuild.devtool.config.mjs with the react/react-dom/shell/rocketride share
  * singletons the store-app remotes require). On init it:
  *
- *   1. connects the shell's ConnectionManager singleton to the engine with
- *      the host-provided credential — so the mounted tool can use the
- *      standard shell hooks (useShellConnection, useDashboardData, …)
- *      exactly as it does inside the shell;
- *   2. registers the tool's remote at the engine's versioned entry URL and
+ *   1. registers the tool's remote at the engine's versioned entry URL and
  *      loads its AppDescriptor (the same `<moduleId>/AppDescriptor` module
  *      the shell loads);
- *   3. mounts `descriptor.devToolFrame` with DevToolProps — a live client
- *      and the peer bus relayed through the extension host.
+ *   2. mounts `descriptor.devToolFrame` with DevToolProps — the peer bus
+ *      relayed through the extension host. This document opens NO engine
+ *      socket: frames are controller-routed (all engine access rides the
+ *      tool channel to the tool's sidebar controller).
  *
  * Theming is ambient: the tool styles itself with the `--rr-*` tokens this
  * document defines (rocketride-default.css + the VS Code variable mapping).
@@ -45,7 +43,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { registerRemotes, loadRemote } from '@module-federation/runtime';
-import { ConnectionManager, createToolChannel } from 'shell';
+import { createToolChannel } from 'shell';
 import type { AppDescriptor, DevToolProps, ToolChannel } from 'shell';
 import { useMessaging } from '../hooks/useMessaging';
 import type { DevToolHostToWebview, DevToolInitPayload, DevToolWebviewToHost } from '../../types/devToolTypes';
@@ -174,15 +172,10 @@ const DevToolWebview: React.FC = () => {
 
 		void (async () => {
 			try {
-				// 1. Bring the shell connection singleton up against the engine
-				//    so the tool's shell hooks are live. initialize() is
-				//    idempotent; connect() resolves the session from the
-				//    host-provided credential.
-				const cm = ConnectionManager.getInstance();
-				cm.initialize({ uri: data.engineHttpUrl });
-				if (!cm.isConnected()) await cm.connect(data.authToken || undefined);
-
-				// 2. Register + load the tool's remote descriptor.
+				// Register + load the tool's remote descriptor. No engine
+				// connection here, ever: frames are controller-routed — their
+				// ops cross the tool channel to the sidebar controller, which
+				// owns the tool's single socket.
 				registerRemotes([{ name: app.moduleId, entry: entryUrl(data.engineHttpUrl, app.id, app.registryVersion) }], { force: true });
 				const mod = (await loadRemote(`${app.moduleId}/AppDescriptor`)) as { default: AppDescriptor } | null;
 				const descriptor = mod?.default;
@@ -241,17 +234,14 @@ const DevToolWebview: React.FC = () => {
 	}
 
 	if (phase.kind === 'ready') {
-		const client = ConnectionManager.getInstance().getClient();
-		if (client) {
-			const Frame = phase.Frame;
-			return (
-				<div style={styles.page}>
-					<div style={styles.frameHost}>
-						<Frame client={client} peer={peerRef.current} channel={channelRef.current} documents={documents} {...(data.docKey ? { docKey: data.docKey } : {})} />
-					</div>
+		const Frame = phase.Frame;
+		return (
+			<div style={styles.page}>
+				<div style={styles.frameHost}>
+					<Frame peer={peerRef.current} channel={channelRef.current} documents={documents} {...(data.docKey ? { docKey: data.docKey } : {})} />
 				</div>
-			);
-		}
+			</div>
+		);
 	}
 
 	return (

@@ -21,20 +21,14 @@
 // SOFTWARE.
 
 // =============================================================================
-// DEV-TOOL PEER — in-memory frame ↔ sidebar channel, one per tool
+// DEV-TOOL PEER — in-memory frame ↔ sidebar transport, one per tool
 // =============================================================================
 //
-// The DevToolProps.peer contract for THIS host. Both of a tool's mounts (the
-// `tool:<appId>` document frame and the sidebar mount behind its rail/strip
-// tab) live in one window, so no bridge or serialization hop exists — this is
-// a plain pub/sub keyed by app id, mirroring the semantics the VS Code
-// extension's DevToolBridge provides across webviews:
-//
-//   - frame → sidebar: delivered live; the LAST message is retained and
-//     replayed to a (re)mounted sidebar so it renders without asking.
-//   - sidebar → frame: delivered live when the frame is mounted; otherwise
-//     buffered (bounded) and the registered frame opener is summoned — a
-//     sidebar post to a closed frame is an implicit "open the tool".
+// The DevToolProps.peer contract for THIS host. Both of a tool's mounts
+// live in one window, so the transport is a plain pub/sub keyed by app id;
+// WHAT is retained, buffered, or summoned is the shell's ONE relay policy
+// (createToolRelay) — this file only supplies the transport and the
+// delivery scheduling.
 //
 // Delivery is ASYNCHRONOUS (a fresh macrotask per post), matching the
 // webview postMessage semantics tools are written against: a mount that
@@ -43,27 +37,18 @@
 // direct recursion ("Maximum call stack size exceeded").
 // =============================================================================
 
-import { asToolStateMessage, createToolChannel } from 'shell';
-import type { DevToolProps, ToolChannel } from 'shell';
+import { createToolChannel, createToolRelay } from 'shell';
+import type { DevToolProps, ToolChannel, ToolRelay } from 'shell';
 
 /** The peer shape handed to both mounts. */
 type Peer = DevToolProps['peer'];
 
-/** Upper bound on sidebar→frame messages held while the frame opens. */
-const BUFFER_LIMIT = 64;
-
-/** Per-tool channel state. */
+/** Per-tool transport state. */
 interface Channel {
 	frameSubs: Set<(m: unknown) => void>;
 	sidebarSubs: Set<(m: unknown) => void>;
-	/** Last frame→sidebar message, replayed to a (re)mounted sidebar. */
-	retainedToSidebar?: { payload: unknown };
-	/** Sidebar→frame messages queued while no frame is mounted. */
-	pendingToFrame: unknown[];
-	/** Tool-channel STATE toward frames, retained per topic — replayed to a
-	 *  frame mount that subscribes later. Unlike buffered events, a state
-	 *  publish never summons the frame document. */
-	retainedToFrame: Map<string, unknown>;
+	/** The shell's relay policy over this tool's two ends. */
+	relay: ToolRelay;
 	/** Cached peer objects — stable identities across remounts. */
 	framePeer?: Peer;
 	sidebarPeer?: Peer;
@@ -87,16 +72,6 @@ export function setToolFrameOpener(open: ((appId: string) => void) | null): void
 	frameOpener = open;
 }
 
-/** The (lazily created) channel for one tool. */
-function channel(appId: string): Channel {
-	let ch = channels.get(appId);
-	if (!ch) {
-		ch = { frameSubs: new Set(), sidebarSubs: new Set(), pendingToFrame: [], retainedToFrame: new Map() };
-		channels.set(appId, ch);
-	}
-	return ch;
-}
-
 /**
  * Delivers one message to a subscriber set on a FRESH task (see the file
  * header). The set is read at fire time, so a callback unsubscribed while
@@ -111,6 +86,46 @@ function deliver(subs: Set<(m: unknown) => void>, message: unknown): void {
 	}, 0);
 }
 
+/** The (lazily created) transport for one tool. */
+function channel(appId: string): Channel {
+	let ch = channels.get(appId);
+	if (!ch) {
+		const frameSubs = new Set<(m: unknown) => void>();
+		const sidebarSubs = new Set<(m: unknown) => void>();
+		ch = {
+			frameSubs,
+			sidebarSubs,
+			relay: createToolRelay({
+				toFrame: (payload) => deliver(frameSubs, payload),
+				toSidebar: (payload) => deliver(sidebarSubs, payload),
+				frameLive: () => frameSubs.size > 0,
+				sidebarLive: () => sidebarSubs.size > 0,
+				summonFrame: () => frameOpener?.(appId),
+			}),
+		};
+		channels.set(appId, ch);
+	}
+	return ch;
+}
+
+/**
+ * Replays relay-held payloads to a freshly subscribed callback — async like
+ * every delivery, skipped if the callback unsubscribed first.
+ *
+ * @param subs - The side's subscriber set (liveness check at fire time).
+ * @param cb - The new subscriber.
+ * @param replay - The relay's replay function for this side.
+ */
+function replayAsync(subs: Set<(m: unknown) => void>, cb: (m: unknown) => void, replay: (deliver: (payload: unknown) => void) => void): void {
+	const payloads: unknown[] = [];
+	replay((payload) => payloads.push(payload));
+	if (payloads.length === 0) return;
+	setTimeout(() => {
+		if (!subs.has(cb)) return;
+		for (const payload of payloads) cb(payload);
+	}, 0);
+}
+
 /**
  * The peer handed to a tool's FRAME mount (`tool:<appId>` document).
  * Stable identity per tool — safe to pass as a React prop across remounts.
@@ -122,27 +137,12 @@ export function getFramePeer(appId: string): Peer {
 	const ch = channel(appId);
 	if (!ch.framePeer) {
 		ch.framePeer = {
-			post: (message: unknown) => {
-				// Frame pushes state; retain the last so a sidebar that mounts
-				// later renders without a mount-time handshake.
-				ch.retainedToSidebar = { payload: message };
-				deliver(ch.sidebarSubs, message);
-			},
+			post: (message: unknown) => ch.relay.fromFrame(message),
 			subscribe: (cb: (message: unknown) => void) => {
 				ch.frameSubs.add(cb);
-				// Retained channel state first (a late frame renders from the
-				// controller's current snapshots), then the buffered events —
-				// async like every delivery, skipped if cb unsubscribed first.
-				const retained = [...ch.retainedToFrame.values()];
-				const pending = ch.pendingToFrame;
-				ch.pendingToFrame = [];
-				if (retained.length || pending.length) {
-					setTimeout(() => {
-						if (!ch.frameSubs.has(cb)) return;
-						for (const payload of retained) cb(payload);
-						for (const payload of pending) cb(payload);
-					}, 0);
-				}
+				// Retained channel state first, then buffered events — the
+				// relay's canonical replay order for a late frame.
+				replayAsync(ch.frameSubs, cb, (d) => ch.relay.replayToFrame(d));
 				return () => ch.frameSubs.delete(cb);
 			},
 		};
@@ -157,6 +157,22 @@ export function getFramePeer(appId: string): Peer {
  * @param appId - The tool's app id.
  * @returns The sidebar-side peer.
  */
+export function getSidebarPeer(appId: string): Peer {
+	const ch = channel(appId);
+	if (!ch.sidebarPeer) {
+		ch.sidebarPeer = {
+			post: (message: unknown) => ch.relay.fromSidebar(message),
+			subscribe: (cb: (message: unknown) => void) => {
+				ch.sidebarSubs.add(cb);
+				// The frame's retained last push (+ any buffered payloads).
+				replayAsync(ch.sidebarSubs, cb, (d) => ch.relay.replayToSidebar(d));
+				return () => ch.sidebarSubs.delete(cb);
+			},
+		};
+	}
+	return ch.sidebarPeer;
+}
+
 /**
  * The cached ToolChannel for one slot of one tool — built lazily over the
  * slot's peer, stable across remounts (a channel holds one standing peer
@@ -174,46 +190,4 @@ export function getToolChannel(appId: string, slot: 'frame' | 'sidebar'): ToolCh
 	}
 	if (!ch.sidebarChannel) ch.sidebarChannel = createToolChannel(getSidebarPeer(appId));
 	return ch.sidebarChannel;
-}
-
-export function getSidebarPeer(appId: string): Peer {
-	const ch = channel(appId);
-	if (!ch.sidebarPeer) {
-		ch.sidebarPeer = {
-			post: (message: unknown) => {
-				// Tool-channel STATE: retain per topic (replayed to frames that
-				// mount later) and deliver to whoever is mounted. Never buffer,
-				// never summon — publishing state must not open documents.
-				const state = asToolStateMessage(message);
-				if (state) {
-					ch.retainedToFrame.set(state.topic, message);
-					if (ch.frameSubs.size > 0) deliver(ch.frameSubs, message);
-					return;
-				}
-				if (ch.frameSubs.size > 0) {
-					deliver(ch.frameSubs, message);
-					return;
-				}
-				// No frame yet: buffer (bounded, oldest evicted) and summon it —
-				// a sidebar post (event / legacy raw message) is a user action
-				// per the peer contract.
-				ch.pendingToFrame.push(message);
-				if (ch.pendingToFrame.length > BUFFER_LIMIT) ch.pendingToFrame.shift();
-				frameOpener?.(appId);
-			},
-			subscribe: (cb: (message: unknown) => void) => {
-				ch.sidebarSubs.add(cb);
-				// Replay the frame's retained state push — async like every
-				// delivery, skipped if cb unsubscribed first.
-				const retained = ch.retainedToSidebar;
-				if (retained) {
-					setTimeout(() => {
-						if (ch.sidebarSubs.has(cb)) cb(retained.payload);
-					}, 0);
-				}
-				return () => ch.sidebarSubs.delete(cb);
-			},
-		};
-	}
-	return ch.sidebarPeer;
 }

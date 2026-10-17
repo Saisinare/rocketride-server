@@ -41,40 +41,37 @@
 //                             endpoint key came to front — the fallback
 //                             selection signal for hosts without
 //                             DevToolProps.activeDocKey.
-//
-// Two legacy RAW peer ops remain for hosts without a documents API, where
-// the tool has a single frame instead of per-document windows: 'open' (show
-// a connection in the single frame) and 'overlay' (raise the add/edit modal
-// there). Both hosts in this repo have documents; these are compatibility
-// only.
+//   STATE  'engine'           HOST → documents: engine reachability (the
+//                             generic tools/core topic — the host publishes
+//                             it, no tool does). Frames hold NO RocketRide
+//                             client — their run/apply enablement derives
+//                             from this retained snapshot.
+//   OPS    sql.*              document → controller → document: every engine
+//                             interaction a frame needs (resolve/release,
+//                             execute, schema, dialect, discovery, service,
+//                             validate, env keys), executed on the
+//                             controller's single connection. The vocabulary
+//                             lives in ops.ts; frames reach it through the
+//                             remote SqlEnv (sqlEnv.ts), never directly.
 // =============================================================================
 
-import { createToolChannel } from 'shell';
+import { createToolChannel, createToolOpServer, typedToolChannel } from 'shell';
 import { getClient } from 'shell';
-import type { DevToolProps, ToolChannel } from 'shell';
-import { applySavedConnections, getSavedConnection, getSavedConnections, getSavedConnectionsStatus, resolveEndpoint, subscribeSavedConnections, upsertSavedConnection } from './connect';
+import type { DevToolProps, RocketRideClient, ToolChannel, TypedToolChannel } from 'shell';
+import { applySavedConnections, discoverSqlEndpoints, getSavedConnection, getSavedConnections, getSavedConnectionsStatus, releaseDirectEndpoint, resolveEndpoint, subscribeSavedConnections, upsertSavedConnection } from './connect';
 import type { SavedSqlConnection } from './connect';
-import { getActiveConnection, requestConnectionOverlay, subscribeActiveConnection } from './navigation';
-import type { ConnectionOverlayRequest } from './navigation';
+import { getLocalSession } from './sqlEnv';
+import type { SqlOps, SqlStateMap, SqlEventMap } from './ops';
+import { getActiveConnection, subscribeActiveConnection } from './navigation';
 import { connectionEditorDocKey, connectionEditorUri, connectionUri, getDocs } from './docs';
 
 // =============================================================================
-// PROTOCOL NAMES
+// PROTOCOL
 // =============================================================================
-
-/** State topic: the saved-connection list (controller → documents). */
-const TOPIC_CONNECTIONS = 'connections';
-/** Event: editor save to commit in the controller realm. */
-const EVENT_SAVE = 'saveConnection';
-/** Event: open/resolve failure surfaced to the sidebar. */
-const EVENT_ERROR = 'openError';
-/** Event: a document's endpoint key came to front (activeDocKey fallback). */
-const EVENT_ACTIVE = 'active';
-
-/** Legacy raw ops for documents-less hosts (single-frame tools). */
-type SqlLegacyMessage =
-	| { op: 'open'; connId: string }
-	| { op: 'overlay'; request: ConnectionOverlayRequest | null };
+//
+// The tool's topics, events and ops live in ops.ts as protocol maps
+// (SqlStateMap / SqlEventMap / SqlOps) — the typed channel view below makes
+// every key and payload check at the call site.
 
 // =============================================================================
 // TYPES
@@ -94,7 +91,7 @@ export interface SqlSidebarBridge {
 
 /** What a mount hands the bridge builders — straight from DevToolProps. */
 export interface SqlToolMountContext {
-	/** The peer pipe (transport for the channel, and the legacy ops). */
+	/** The peer pipe (the channel's transport). */
 	peer: DevToolProps['peer'];
 	/** The typed channel; built locally over `peer` when the host is too old
 	 *  to provide one (degraded: no host-side retention). */
@@ -103,9 +100,10 @@ export interface SqlToolMountContext {
 	documents?: DevToolProps['documents'];
 }
 
-/** The mount's channel, host-provided or locally constructed. */
-function channelOf(ctx: SqlToolMountContext): ToolChannel {
-	return ctx.channel ?? createToolChannel(ctx.peer);
+/** The mount's channel, host-provided or locally constructed, as the sql
+ *  tool's typed protocol view. */
+function channelOf(ctx: SqlToolMountContext): TypedToolChannel<SqlStateMap, SqlEventMap> {
+	return typedToolChannel<SqlStateMap, SqlEventMap>(ctx.channel ?? createToolChannel(ctx.peer));
 }
 
 // =============================================================================
@@ -180,41 +178,73 @@ export function createSidebarToolBridge(ctx: SqlToolMountContext): SqlSidebarBri
 
 	// Editor saves commit here (upsert queues internally until the owner
 	// load installs the writer, so a racing save defers instead of dying).
-	channel.onEvent(EVENT_SAVE, (payload) => {
-		upsertSavedConnection(payload as SavedSqlConnection);
+	channel.onEvent('saveConnection', (payload) => {
+		upsertSavedConnection(payload);
+	});
+
+	// Operations served on the controller's engine connection — plain
+	// handlers; correlation and replies are the op server's business. The
+	// session ops share the realm's local session cache (token caching).
+	const needClient = (): RocketRideClient => {
+		const client = getClient();
+		if (!client || !client.isConnected()) throw new Error('Not connected to a server.');
+		return client;
+	};
+	const ops = createToolOpServer<SqlOps>(ctx.peer);
+	ops.serve('sql.resolveEndpoint', async ({ connId }) => {
+		const conn = getSavedConnection(connId);
+		if (!conn) throw new Error(`No saved connection '${connId}'.`);
+		return resolveEndpoint(needClient(), conn);
+	});
+	ops.serve('sql.releaseEndpoint', async ({ key }) => {
+		await releaseDirectEndpoint(needClient(), key);
+	});
+	ops.serve('sql.discoverEndpoints', async () => discoverSqlEndpoints(needClient()));
+	ops.serve('sql.execute', async ({ endpoint, sql, params, idempotent }) =>
+		getLocalSession(needClient(), endpoint).execute(sql, { ...(params ? { params } : {}), ...(idempotent !== undefined ? { idempotent } : {}) }));
+	ops.serve('sql.getSchema', async ({ endpoint, table }) => getLocalSession(needClient(), endpoint).getSchema(table));
+	ops.serve('sql.refreshSchema', async ({ endpoint }) => getLocalSession(needClient(), endpoint).refreshSchema());
+	ops.serve('sql.dialect', async ({ endpoint }) => getLocalSession(needClient(), endpoint).dialect());
+	ops.serve('sql.getService', async ({ provider }) => needClient().getService(provider));
+	ops.serve('sql.validate', async ({ pipeline }) => needClient().validate({ pipeline }));
+	ops.serve('sql.envKeys', async () => {
+		try {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const keys = await (needClient() as any).account?.getEnvironmentKeys?.();
+			return (keys as string[] | undefined) ?? [];
+		} catch {
+			return [];
+		}
 	});
 
 	// The list rides to every document as retained state — now, whenever the
 	// store changes, and never before the owner load has read the file.
 	const publishConnections = (): void => {
 		if (getSavedConnectionsStatus() !== 'ready') return;
-		channel.publishState(TOPIC_CONNECTIONS, getSavedConnections());
+		channel.publishState('connections', getSavedConnections());
 	};
 	publishConnections();
 	subscribeSavedConnections(publishConnections);
 
 	// ── Frame → sidebar feeds ────────────────────────────────────────────────
 
-	channel.onEvent(EVENT_ACTIVE, (payload) => {
-		activeKey = (payload as string | null) ?? null;
+	channel.onEvent('active', (payload) => {
+		activeKey = payload ?? null;
 		activeSubs.forEach((fn) => fn(activeKey));
 	});
-	channel.onEvent(EVENT_ERROR, (payload) => {
+	channel.onEvent('openError', (payload) => {
 		errorSubs.forEach((fn) => fn(String(payload)));
 	});
 
 	// ── The sidebar's actions ────────────────────────────────────────────────
 
 	return {
-		// Per-document hosts open the connection's OWN top-level tab; legacy
-		// single-frame hosts are summoned over the raw peer.
+		// Hosts open the connection's OWN top-level tab through documents.
 		openConnection: (conn) => {
-			if (ctx.documents) ctx.documents.open(conn.id, conn.name);
-			else ctx.peer.post({ op: 'open', connId: conn.id } satisfies SqlLegacyMessage);
+			ctx.documents?.open(conn.id, conn.name);
 		},
 		openConnectionEditor: (editing) => {
-			if (ctx.documents) ctx.documents.open(connectionEditorDocKey(editing?.id ?? null), editing ? `Edit ${editing.name}` : 'New Connection');
-			else ctx.peer.post({ op: 'overlay', request: { kind: 'modal', editing } } satisfies SqlLegacyMessage);
+			ctx.documents?.open(connectionEditorDocKey(editing?.id ?? null), editing ? `Edit ${editing.name}` : 'New Connection');
 		},
 		subscribeActive(cb) {
 			cb(activeKey);
@@ -231,6 +261,9 @@ export function createSidebarToolBridge(ctx: SqlToolMountContext): SqlSidebarBri
 // =============================================================================
 // DOCUMENT SIDE — every devToolFrame mount
 // =============================================================================
+
+// Connection reachability rides the shell's `host:connection` system topic —
+// frames read it with useConnectionReady(channel) from 'shell'.
 
 /** The realm's single document-host wiring teardown (ref-counted). */
 let documentHostDetach: (() => void) | null = null;
@@ -265,7 +298,7 @@ export function attachSqlDocumentHost(ctx: SqlToolMountContext): () => void {
  * @param conn - The full record (id minted by the editor).
  */
 export function sendConnectionSave(ctx: SqlToolMountContext, conn: SavedSqlConnection): void {
-	channelOf(ctx).sendEvent(EVENT_SAVE, conn);
+	channelOf(ctx).sendEvent('saveConnection', conn);
 }
 
 /** The actual one-per-realm wiring behind {@link attachSqlDocumentHost}. */
@@ -276,25 +309,8 @@ function wireSqlDocumentHost(ctx: SqlToolMountContext): () => void {
 	// mutation attempted in this realm is refused by the store). In-shell
 	// both realms share the store: applying an identical list is a no-op, so
 	// the publish→apply→notify cycle cannot loop.
-	const offConnections = channel.onState(TOPIC_CONNECTIONS, (snapshot) => {
-		applySavedConnections(snapshot as SavedSqlConnection[]);
-	});
-
-	// Legacy raw ops (documents-less single-frame hosts only).
-	const offPeer = ctx.peer.subscribe((message) => {
-		const msg = message as SqlLegacyMessage;
-		if (!msg || typeof msg !== 'object') return;
-		switch (msg.op) {
-			case 'open': {
-				const conn = getSavedConnection(msg.connId);
-				if (!conn) break;
-				openSavedConnection(conn).catch((err: unknown) => {
-					channel.sendEvent(EVENT_ERROR, err instanceof Error ? err.message : String(err));
-				});
-				break;
-			}
-			case 'overlay': requestConnectionOverlay(msg.request); break;
-		}
+	const offConnections = channel.onState('connections', (snapshot) => {
+		applySavedConnections(snapshot);
 	});
 
 	// Announce this realm's active endpoint — on change, and again whenever
@@ -307,20 +323,19 @@ function wireSqlDocumentHost(ctx: SqlToolMountContext): () => void {
 		const key = getActiveConnection();
 		if (key === lastActive) return;
 		lastActive = key;
-		channel.sendEvent(EVENT_ACTIVE, key);
+		channel.sendEvent('active', key);
 	};
 	pushActive();
 	const offActive = subscribeActiveConnection(pushActive);
 	const onVisible = (): void => {
 		if (document.visibilityState !== 'visible') return;
 		lastActive = getActiveConnection();
-		channel.sendEvent(EVENT_ACTIVE, lastActive);
+		channel.sendEvent('active', lastActive);
 	};
 	document.addEventListener('visibilitychange', onVisible);
 
 	return () => {
 		offConnections();
-		offPeer();
 		offActive();
 		document.removeEventListener('visibilitychange', onVisible);
 	};

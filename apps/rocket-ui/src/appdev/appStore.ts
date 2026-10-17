@@ -37,10 +37,9 @@
 
 import { PROJECT_DIR } from 'rocketride';
 import type { RocketRideClient } from 'shell';
-import { emitFsChange } from 'shared/utils/fsNotify';
 import { getStagedWorkspace, getWorkspaceVfs, toScopedStorePath } from '../workspace/workspace';
-import { renderTemplate } from 'shared/modules/appdev';
-import type { FrameOptions, PackageJsonLike, TemplateName } from 'shared/modules/appdev';
+import { renderTemplate } from 'shared/tools/appdev';
+import type { FrameOptions, PackageJsonLike, TemplateName } from 'shared/tools/appdev';
 
 // =============================================================================
 // PATHS
@@ -69,14 +68,6 @@ export function appPath(folder: string, rel = ''): string {
 	// tree (user or team) the view translates into.
 	return toScopedStorePath(rel ? `${PROJECT_DIR}/${APPDEV_DIR}/${folder}/${rel}` : `${PROJECT_DIR}/${APPDEV_DIR}/${folder}`);
 }
-
-// =============================================================================
-// CHANGE NOTIFICATION
-// =============================================================================
-
-// The emitter lives in shared (ONE page-monotonic rev counter for every
-// store writer); re-exported here so existing importers keep working.
-export { emitFsChange };
 
 /**
  * Guards an app-folder-relative path against traversal — the store client

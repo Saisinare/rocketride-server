@@ -37,10 +37,10 @@
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import type { CSSProperties } from 'react';
-import { useShellConnection, getClient } from 'shell';
 import { commonStyles } from 'shell';
 import type { ProfileThreadInfo, ProfileThreadsResponse, ProfileTreeNode, ProfileTreeResponse, VizStyle } from './visualizations/types';
 import type { ProfilerAction, ProfilerControlsState, ProfilerFrameChannel } from '../profilerBridge';
+import type { ProfilerEngine } from '../ops';
 import ReportText from './visualizations/ReportText';
 import FlameGraph from './visualizations/FlameGraph';
 import SunburstChart from './visualizations/SunburstChart';
@@ -279,6 +279,11 @@ interface ProfilerViewProps {
 	 * face in a dev-tool mount.
 	 */
 	channel: ProfilerFrameChannel;
+	/**
+	 * The engine surface — local (the realm's client) in the full app,
+	 * controller-routed in dev-tool frames. The view never holds a client.
+	 */
+	engine: ProfilerEngine;
 }
 
 // =============================================================================
@@ -319,8 +324,8 @@ function threadLabel(thread: ProfileThreadInfo): string {
  * simultaneously). All controls render in the sidebar panel and arrive here
  * as channel actions.
  */
-const ProfilerView: React.FC<ProfilerViewProps> = ({ channel }) => {
-	const { isConnected } = useShellConnection();
+const ProfilerView: React.FC<ProfilerViewProps> = ({ channel, engine }) => {
+	const isConnected = engine.ready;
 
 	// =========================================================================
 	// STATE
@@ -384,17 +389,16 @@ const ProfilerView: React.FC<ProfilerViewProps> = ({ channel }) => {
 
 	/** Fetch profiling status for the selected target. */
 	const fetchStatus = useCallback(async () => {
-		const client = getClient();
-		if (!client || !client.isConnected()) return;
+		if (!engine.ready) return;
 		try {
 			const args: Record<string, unknown> = {};
 			if (target) args.target = target;
-			const result = await client.call<CProfileStatus>('rrext_cprofile_status', args);
+			const result = await engine.call<CProfileStatus>('rrext_cprofile_status', args);
 			setStatus(result);
 		} catch (err) {
 			console.log('[ProfilerView] Status fetch failed:', err);
 		}
-	}, [target]);
+	}, [engine, target]);
 
 	/** Start polling status when connected. */
 	useEffect(() => {
@@ -415,15 +419,14 @@ const ProfilerView: React.FC<ProfilerViewProps> = ({ channel }) => {
 
 	/** Fetch the list of running tasks/pipelines for the target dropdown. */
 	const fetchTasks = useCallback(async () => {
-		const client = getClient();
-		if (!client || !client.isConnected()) return;
+		if (!engine.ready) return;
 		try {
-			const result = await client.call<{ tasks: TaskEntry[] }>('rrext_get_tasks', {});
+			const result = await engine.call<{ tasks: TaskEntry[] }>('rrext_get_tasks', {});
 			setTasks(result.tasks || []);
 		} catch {
 			setTasks([]);
 		}
-	}, []);
+	}, [engine]);
 
 	/** Start polling task list when connected. */
 	useEffect(() => {
@@ -444,8 +447,7 @@ const ProfilerView: React.FC<ProfilerViewProps> = ({ channel }) => {
 
 	/** Fetch both the text report and structured tree data. */
 	const fetchReport = useCallback(async (systemCalls?: boolean) => {
-		const client = getClient();
-		if (!client) return;
+		if (!engine.ready) return;
 
 		// Increment fetch ID so stale responses from a previous target are ignored
 		const id = ++fetchIdRef.current;
@@ -455,7 +457,7 @@ const ProfilerView: React.FC<ProfilerViewProps> = ({ channel }) => {
 
 		// Fetch text report
 		try {
-			const textResult = await client.call<{ report: string }>('rrext_cprofile_report', args);
+			const textResult = await engine.call<{ report: string }>('rrext_cprofile_report', args);
 			if (fetchIdRef.current !== id) return; // stale response
 			setReport(textResult.report || 'No report available.');
 		} catch (err) {
@@ -468,7 +470,7 @@ const ProfilerView: React.FC<ProfilerViewProps> = ({ channel }) => {
 		// selector; everything else keeps working on all threads
 		let thread = selectedThread;
 		try {
-			const threadsResult = await client.call<ProfileThreadsResponse>('rrext_cprofile_threads', args);
+			const threadsResult = await engine.call<ProfileThreadsResponse>('rrext_cprofile_threads', args);
 			if (fetchIdRef.current !== id) return; // stale response
 			const threadList = threadsResult.threads || [];
 			setThreads(threadList);
@@ -491,7 +493,7 @@ const ProfilerView: React.FC<ProfilerViewProps> = ({ channel }) => {
 		treeArgs.include_system = includeSystem;
 		if (thread !== null) treeArgs.thread = thread;
 		try {
-			const treeResult = await client.call<ProfileTreeResponse>('rrext_cprofile_report_tree', treeArgs);
+			const treeResult = await engine.call<ProfileTreeResponse>('rrext_cprofile_report_tree', treeArgs);
 			if (fetchIdRef.current !== id) return; // stale response
 			setTreeData(treeResult);
 			// Set the original root and initial viz root
@@ -513,7 +515,7 @@ const ProfilerView: React.FC<ProfilerViewProps> = ({ channel }) => {
 			setVizRoot(null);
 			setCallStack([]);
 		}
-	}, [target, showSystemCalls, selectedThread]);
+	}, [engine, target, showSystemCalls, selectedThread]);
 
 	// Re-fetch tree when the system calls toggle or the thread changes (if we
 	// have data). The thread list counts as data: a thread whose tree failed
@@ -573,14 +575,13 @@ const ProfilerView: React.FC<ProfilerViewProps> = ({ channel }) => {
 
 	/** Start a new profiling session on the selected target. */
 	const handleStart = async (session: string) => {
-		const client = getClient();
-		if (!client) return;
+		if (!engine.ready) return;
 		try {
 			const args: Record<string, unknown> = {};
 			if (target) args.target = target;
 			if (session.trim()) args.session = session.trim();
 
-			const result = await client.call<{ status: string; message?: string }>('rrext_cprofile_start', args);
+			const result = await engine.call<{ status: string; message?: string }>('rrext_cprofile_start', args);
 			if (result.status === 'error') {
 				setError(result.message || 'Failed to start profiling');
 			} else {
@@ -606,13 +607,12 @@ const ProfilerView: React.FC<ProfilerViewProps> = ({ channel }) => {
 
 	/** Stop the active profiling session and fetch the report. */
 	const handleStop = async () => {
-		const client = getClient();
-		if (!client) return;
+		if (!engine.ready) return;
 		try {
 			const args: Record<string, unknown> = {};
 			if (target) args.target = target;
 
-			const result = await client.call<{ status: string; message?: string }>('rrext_cprofile_stop', args);
+			const result = await engine.call<{ status: string; message?: string }>('rrext_cprofile_stop', args);
 			if (result.status === 'error') {
 				setError(result.message || 'Failed to stop profiling');
 			} else {

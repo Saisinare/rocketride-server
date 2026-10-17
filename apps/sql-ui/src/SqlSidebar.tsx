@@ -149,7 +149,7 @@ const styles = {
 // =============================================================================
 
 /** Props for {@link SqlSidebar}. */
-export interface ISqlSidebarProps {
+export interface SqlSidebarProps {
 	/** The frame bridge (in-document calls by default; peer in a tool mount). */
 	bridge?: SqlSidebarBridge;
 	/**
@@ -171,7 +171,7 @@ export interface ISqlSidebarProps {
  * Two mounts, one sidebar: AppLayout's `sidebar` slot in the full app (local
  * bridge), and the host's sidebar panel as a devToolSidebar (peer bridge).
  */
-const SqlSidebar: React.FC<ISqlSidebarProps> = ({ bridge = localSidebarBridge, hostActiveDoc }) => {
+const SqlSidebar: React.FC<SqlSidebarProps> = ({ bridge = localSidebarBridge, hostActiveDoc }) => {
 	const { client, isConnected } = useShellConnection();
 	const connections = useSavedConnections();
 	const connectionsStatus = useSavedConnectionsStatus();

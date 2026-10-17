@@ -7,8 +7,8 @@
  * Shell-level webview protocol — the messages EVERY host/webview pair
  * exchanges, independent of what the view shows: theme delivery, connection
  * state, view lifecycle. Each per-view protocol file (accountTypes.ts,
- * projectTypes.ts, monitorTypes.ts, ...) composes these unions beside its
- * own view-specific messages; no view file redeclares a shell message.
+ * projectTypes.ts, ...) composes these unions beside its own view-specific
+ * messages; no view file redeclares a shell message.
  *
  * Pure types only — this file is imported by both the extension host and
  * the webviews, so it must never import 'vscode' or any tsx module.
@@ -19,13 +19,14 @@
  * connection push only where the host knows them.
  */
 export type ShellHostToWebview =
-	| { type: 'shell:init'; theme: Record<string, string>; isConnected: boolean }
-	| { type: 'shell:themeChange'; tokens: Record<string, string> }
 	| { type: 'shell:connectionChange'; isConnected: boolean; isSubscribed?: boolean; serverHost?: string }
-	| { type: 'shell:viewActivated'; viewId: string }
+	// The generic prefs channel's seed: the realm's merged snapshot, sent in
+	// the view:ready reply BEFORE any consumer mounts (see PrefsBag).
+	| { type: 'prefs:init'; values: Record<string, unknown> }
 	| { type: 'shell:event'; event: unknown };
 
 /** Shell lifecycle requests every webview can send to its host. */
 export type ShellWebviewToHost =
 	| { type: 'view:ready' }
-	| { type: 'view:initialized' };
+	// The generic prefs channel's write (fire-and-forget persist).
+	| { type: 'prefs:set'; key: string; value: unknown; scope: 'workspace' | 'global' };

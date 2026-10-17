@@ -41,12 +41,15 @@ import type { Documents } from 'shell';
 import { EmptyState } from 'shell';
 import { commonStyles } from 'shell';
 import { closeDocumentByUri, connectionEditorIdFromUri, createDocs, destroyDocs, endpointKeyFromAnyUri, endpointKeyFromUri, getDocs, isConnectionEditorUri, isDesignUri, isDiagramUri, isQueryUri, isTableDataUri, parseConnectionEditorDocKey } from './docs';
-import type { IQueryDocPayload } from './docs';
+import type { QueryDocPayload } from './docs';
 import { setActiveConnection } from './navigation';
-import { loadSavedConnections, resetSavedConnections, releaseDirectEndpoint, isDirectEndpointKey, resolveEndpoint, useSavedConnections, useSavedConnectionsStatus } from './connect';
+import { loadSavedConnections, resetSavedConnections, isDirectEndpointKey, useSavedConnections, useSavedConnectionsStatus } from './connect';
 import type { SavedSqlConnection } from './connect';
+import { createToolChannel, createToolController, useConnectionReady } from 'shell';
+import type { SqlOps } from './ops';
 import { attachSqlDocumentHost, localSidebarBridge, sendConnectionSave } from './sqlBridge';
-import type { ISqlEndpoint } from './connect';
+import { SqlEnvProvider, createLocalSqlEnv, createRemoteSqlEnv, useSqlEnv } from './sqlEnv';
+import type { SqlEndpoint } from './connect';
 import ConnectionView from './views/ConnectionView';
 import ConnectionOverlays from './components/ConnectionOverlays';
 import NewConnectionModal from './components/NewConnectionModal';
@@ -64,7 +67,7 @@ import { DatabaseIcon } from './icons';
 // =============================================================================
 
 // The query-document payload type lives beside the URI builders in docs.ts
-// (IQueryDocPayload); producers and this consumer import it from there.
+// (QueryDocPayload); producers and this consumer import it from there.
 
 // =============================================================================
 // STYLES
@@ -153,17 +156,23 @@ const SqlApp: React.FC<ShellAppProps> = (_props) => {
 	// state from the shared singletons, so the slot registration is stable.
 	const sidebar = useMemo(() => <SqlSidebar />, []);
 
+	// The FULL APP's engine surface: the realm legitimately owns a client, so
+	// the views get the LOCAL environment (dev-tool frames get the remote one).
+	const env = useMemo(() => createLocalSqlEnv(client, isConnected), [client, isConnected]);
+
 	// Two-column app: the navigation/schema sidebar mounts once Documents is
 	// ready (it shares the singleton with the workbench documents).
 	if (!ready) return <AppLayout showStatus>{null}</AppLayout>;
 	return (
-		<AppLayout sidebar={sidebar} showStatus>
-			<SqlAppReady docs={getDocs()!} />
-			{/* Sidebar-requested dialogs render HERE, outside the sidebar
-			    subtree — the compact drawer is a transformed ancestor that
-			    would trap a fixed-position overlay. */}
-			<ConnectionOverlays />
-		</AppLayout>
+		<SqlEnvProvider value={env}>
+			<AppLayout sidebar={sidebar} showStatus>
+				<SqlAppReady docs={getDocs()!} />
+				{/* Sidebar-requested dialogs render HERE, outside the sidebar
+				    subtree — the compact drawer is a transformed ancestor that
+				    would trap a fixed-position overlay. */}
+				<ConnectionOverlays />
+			</AppLayout>
+		</SqlEnvProvider>
 	);
 };
 
@@ -211,23 +220,25 @@ const OverlayHost: React.FC = () => {
  * @param props.connId - The saved connection's id (the host document key).
  */
 const SqlConnectionDocument: React.FC<{ connId: string }> = ({ connId }) => {
-	const { client, isConnected } = useShellConnection();
+	const env = useSqlEnv();
 	const status = useSavedConnectionsStatus();
 	const connections = useSavedConnections();
 	const conn = connections.find((c) => c.id === connId);
-	const [endpoint, setEndpoint] = useState<ISqlEndpoint | null>(null);
+	const [endpoint, setEndpoint] = useState<SqlEndpoint | null>(null);
 	const [resolveError, setResolveError] = useState<string | null>(null);
 
 	// Resolve the endpoint whenever the record (or the connection) changes.
+	// In a dev-tool frame this is a controller op — the temp pipeline (and
+	// its revival) lives in the CONTROLLER realm, never here.
 	useEffect(() => {
-		if (!client || !isConnected || !conn) return;
+		if (!env.ready || !conn) return;
 		let alive = true;
 		setResolveError(null);
-		resolveEndpoint(client, conn)
+		env.resolveEndpoint(conn)
 			.then((ep) => { if (alive) setEndpoint(ep); })
 			.catch((err: unknown) => { if (alive) setResolveError(err instanceof Error ? err.message : String(err)); });
 		return () => { alive = false; };
-	}, [client, isConnected, conn]);
+	}, [env, conn]);
 
 	// Publish the active connection for the sidebar's schema tree, and stop a
 	// direct connection's temp pipeline when its document closes (the 15-min
@@ -236,12 +247,12 @@ const SqlConnectionDocument: React.FC<{ connId: string }> = ({ connId }) => {
 		if (!endpoint) return;
 		setActiveConnection(endpoint.key);
 		return () => {
-			if (client && isDirectEndpointKey(endpoint.key)) void releaseDirectEndpoint(client, endpoint.key);
+			if (isDirectEndpointKey(endpoint.key)) env.releaseEndpoint(endpoint.key);
 		};
-	}, [endpoint, client]);
+	}, [endpoint, env]);
 
 	let body: React.ReactNode;
-	if (!isConnected) {
+	if (!env.ready) {
 		body = <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Not connected" description="Connect to a RocketRide server to open this connection." /></div>;
 	} else if (resolveError) {
 		body = <div style={styles.welcome}><EmptyState icon={<DatabaseIcon />} title="Could not open connection" description={resolveError} /></div>;
@@ -319,11 +330,20 @@ export const SqlDevTool: React.FC<DevToolProps> = ({ peer, channel, docKey, docu
 	// active endpoint. Ref-counted — any number of frames, one wiring.
 	useEffect(() => attachSqlDocumentHost({ peer, ...(channel ? { channel } : {}), ...(documents ? { documents } : {}) }), [peer, channel, documents]);
 
+	// FRAMES HOLD NO ROCKETRIDE CLIENT. Every engine interaction below this
+	// point is a controller op: the calling function rides the peer, and the
+	// enablement flag is the host-published `host:connection` system topic.
+	const toolChannel = useMemo(() => channel ?? createToolChannel(peer), [channel, peer]);
+	const call = useMemo(() => createToolController<SqlOps>(peer), [peer]);
+	const engineReady = useConnectionReady(toolChannel);
+	const env = useMemo(() => createRemoteSqlEnv(call, engineReady), [call, engineReady]);
+
 	// The connection editor rides its own docKey family ('edit:…'); every
 	// other docKey is a saved connection id.
 	const editorKey = docKey ? parseConnectionEditorDocKey(docKey) : null;
+	let body: React.ReactNode;
 	if (docKey && editorKey) {
-		return (
+		body = (
 			<ConnectionEditorBody
 				connId={editorKey.connId}
 				onCloseSelf={() => documents?.close(docKey)}
@@ -333,16 +353,19 @@ export const SqlDevTool: React.FC<DevToolProps> = ({ peer, channel, docKey, docu
 				commit={(conn) => sendConnectionSave({ peer, ...(channel ? { channel } : {}) }, conn)}
 			/>
 		);
-	}
-	if (docKey) return <SqlConnectionDocument connId={docKey} />;
-	return (
-		<div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-			<div style={styles.welcome}>
-				<EmptyState icon={<DatabaseIcon />} title="SQL Explorer" description="Open a connection from the sidebar, or add one with New Connection." />
+	} else if (docKey) {
+		body = <SqlConnectionDocument connId={docKey} />;
+	} else {
+		body = (
+			<div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+				<div style={styles.welcome}>
+					<EmptyState icon={<DatabaseIcon />} title="SQL Explorer" description="Open a connection from the sidebar, or add one with New Connection." />
+				</div>
+				<OverlayHost />
 			</div>
-			<OverlayHost />
-		</div>
-	);
+		);
+	}
+	return <SqlEnvProvider value={env}>{body}</SqlEnvProvider>;
 };
 
 /**
@@ -351,7 +374,7 @@ export const SqlDevTool: React.FC<DevToolProps> = ({ peer, channel, docKey, docu
  */
 const SqlAppReady: React.FC<{ docs: Documents }> = ({ docs }) => {
 	const state = docs.useStore();
-	const { client } = useShellConnection();
+	const env = useSqlEnv();
 
 	// Publish the active connection (for the sidebar's schema tree): the
 	// active group's active editor, for ANY connection-scoped document —
@@ -375,10 +398,10 @@ const SqlAppReady: React.FC<{ docs: Documents }> = ({ docs }) => {
 			if (key && isDirectEndpointKey(key)) open.add(key);
 		}
 		for (const key of openDirectKeysRef.current) {
-			if (!open.has(key) && client) void releaseDirectEndpoint(client, key);
+			if (!open.has(key)) env.releaseEndpoint(key);
 		}
 		openDirectKeysRef.current = open;
-	}, [state, client]);
+	}, [state, env]);
 
 	// Multiple groups exist — show the close-group affordance on tabs.
 	const canCloseGroups = state.rootNode.type === 'split';
@@ -469,7 +492,7 @@ const DocumentPane: React.FC<{ uri: string; docs: Documents }> = ({ uri, docs })
 	// Query document — payload carries the endpoint and the tab label.
 	if (isQueryUri(uri)) {
 		const doc = docs.getState().documents[uri];
-		const payload = doc?.content as IQueryDocPayload | undefined;
+		const payload = doc?.content as QueryDocPayload | undefined;
 		if (payload) {
 			return (
 				<QueryView
@@ -486,21 +509,21 @@ const DocumentPane: React.FC<{ uri: string; docs: Documents }> = ({ uri, docs })
 	// Table data-browser document — payload carries the endpoint and table.
 	if (isTableDataUri(uri)) {
 		const doc = docs.getState().documents[uri];
-		const payload = doc?.content as { endpoint: ISqlEndpoint; table: string } | undefined;
+		const payload = doc?.content as { endpoint: SqlEndpoint; table: string } | undefined;
 		if (payload) return <TableDataView key={uri} endpoint={payload.endpoint} table={payload.table} />;
 	}
 
 	// Table-designer document — table null = create-table draft.
 	if (isDesignUri(uri)) {
 		const doc = docs.getState().documents[uri];
-		const payload = doc?.content as { endpoint: ISqlEndpoint; table: string | null } | undefined;
+		const payload = doc?.content as { endpoint: SqlEndpoint; table: string | null } | undefined;
 		if (payload) return <TableDesignView key={uri} endpoint={payload.endpoint} table={payload.table} />;
 	}
 
 	// ER diagram document.
 	if (isDiagramUri(uri)) {
 		const doc = docs.getState().documents[uri];
-		const endpoint = doc?.content as ISqlEndpoint | undefined;
+		const endpoint = doc?.content as SqlEndpoint | undefined;
 		if (endpoint) return <DiagramView key={uri} endpoint={endpoint} />;
 	}
 
@@ -509,7 +532,7 @@ const DocumentPane: React.FC<{ uri: string; docs: Documents }> = ({ uri, docs })
 	const key = endpointKeyFromUri(uri);
 	if (key) {
 		const doc = docs.getState().documents[uri];
-		const endpoint = doc?.content as ISqlEndpoint | undefined;
+		const endpoint = doc?.content as SqlEndpoint | undefined;
 		if (endpoint) return <ConnectionView key={key} endpoint={endpoint} />;
 	}
 

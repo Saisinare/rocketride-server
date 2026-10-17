@@ -22,7 +22,7 @@
 // =============================================================================
 
 /**
- * Welcome Page Provider
+ * Welcome Page Provider — a FRAMEWORK PAGE (see shared/frameworkPage).
  *
  * Shows a branded welcome/setup page on first install. Delays engine download
  * and connection until the user explicitly configures and confirms their setup.
@@ -40,22 +40,26 @@ import { getConnectionManager, getEngineRegistry } from '../extension';
 import { commitStagedCloudCredentials } from '../connection/connection';
 import { CloudAuthProvider } from '../auth/CloudAuthProvider';
 import { ConnectionMessageHandler } from './shared/connection-message-handler';
+import { FrameworkPageProvider } from './shared/frameworkPage';
 
 const DISMISSED_KEY = 'welcomeDismissed';
 
-export class WelcomeProvider {
-	private disposables: vscode.Disposable[] = [];
+export class WelcomeProvider extends FrameworkPageProvider {
 	private configManager: ConfigManager;
 	private connHandler: ConnectionMessageHandler;
-	private panel: vscode.WebviewPanel | undefined;
 	/** True while the provider itself is being disposed (host shutdown) — a
 	 * panel closed by shutdown is NOT a user dismissal. */
 	private isShuttingDown = false;
+	private cleanupCloudAuth: (() => void) | null = null;
 
-	constructor(
-		private readonly context: vscode.ExtensionContext,
-		private readonly extensionUri: vscode.Uri
-	) {
+	constructor(context: vscode.ExtensionContext, extensionUri: vscode.Uri) {
+		super(context, extensionUri, {
+			command: 'rocketride.page.welcome.open',
+			viewType: 'rocketrideWelcome',
+			title: 'Welcome to RocketRide',
+			entry: 'page-welcome',
+			retain: true,
+		});
 		this.configManager = ConfigManager.getInstance();
 		this.connHandler = new ConnectionMessageHandler({
 			extensionFsPath: extensionUri.fsPath,
@@ -63,7 +67,6 @@ export class WelcomeProvider {
 			getConnectionManager,
 			getEngineRegistry,
 		});
-		this.registerCommands();
 	}
 
 	/** Whether the user has already dismissed the welcome page */
@@ -71,104 +74,74 @@ export class WelcomeProvider {
 		return vscode.workspace.getConfiguration('rocketride').get<boolean>(DISMISSED_KEY, false);
 	}
 
-	private registerCommands(): void {
-		const cmd = vscode.commands.registerCommand('rocketride.page.welcome.open', async () => {
-			await this.show();
-		});
-		this.disposables.push(cmd);
-		this.context.subscriptions.push(cmd);
+	protected override onPanelCreated(): void {
+		this.cleanupCloudAuth = this.connHandler.registerCloudAuthListener(this.panel!.webview);
 	}
 
-	/** Creates or reveals the welcome panel */
-	public async show(): Promise<void> {
-		if (this.panel) {
-			this.panel.reveal(vscode.ViewColumn.One);
-			return;
+	protected override onPanelDisposed(): void {
+		this.cleanupCloudAuth?.();
+		this.cleanupCloudAuth = null;
+		// Closing without Save & Connect discards any staged sign-in/out.
+		// (After a successful save the staged state is already committed,
+		// so this is a no-op on the normal path.)
+		CloudAuthProvider.getInstance().clearPendingChanges();
+		// Closing the welcome page — by ANY user exit (the tab's X,
+		// Advanced Settings, Save & Connect) — counts as dismissal, so it
+		// never nags again on the next activation. Host shutdown is not a
+		// user exit. Best-effort: a write failure must not throw here.
+		if (!this.isShuttingDown) {
+			vscode.workspace
+				.getConfiguration('rocketride')
+				.update(DISMISSED_KEY, true, vscode.ConfigurationTarget.Global)
+				.then(undefined, () => { /* best effort */ });
 		}
+		this.connHandler.stopStatusPolling();
+	}
 
-		this.panel = vscode.window.createWebviewPanel('rocketrideWelcome', 'Welcome to RocketRide', vscode.ViewColumn.One, {
-			enableScripts: true,
-			localResourceRoots: [this.extensionUri],
-			retainContextWhenHidden: true,
-		});
+	protected override async handleMessage(message: { type: string } & Record<string, unknown>): Promise<void> {
+		try {
+			switch (message.type) {
+				case 'view:ready':
+					await this.sendCurrentSettings();
+					// Server probe is triggered by CloudPanel when cloud mode is selected
+					await this.connHandler.startStatusPolling();
+					break;
 
-		this.panel.webview.html = this.getHtmlForWebview(this.panel.webview);
+				case 'saveAndConnect':
+					await this.saveAndConnect(message.settings as Record<string, unknown>);
+					break;
 
-		const messageDisposable = this.panel.webview.onDidReceiveMessage(async (message) => {
-			if (!this.panel) return;
-			try {
-				switch (message.type) {
-					case 'view:ready':
-						await this.sendCurrentSettings();
-						// Server probe is triggered by CloudPanel when cloud mode is selected
-						await this.connHandler.startStatusPolling();
-						break;
+				case 'openSettings':
+					this.panel?.dispose();
+					vscode.commands.executeCommand('rocketride.page.settings.open');
+					break;
 
-					case 'saveAndConnect':
-						await this.saveAndConnect(message.settings);
-						break;
-
-					case 'openSettings':
-						this.panel?.dispose();
-						vscode.commands.executeCommand('rocketride.page.settings.open');
-						break;
-
-					case 'openExternal':
-						if (message.url) {
-							vscode.env.openExternal(vscode.Uri.parse(message.url));
-						}
-						break;
-
-					default: {
-						// Delegate connection messages (cloud, docker, service, test, engine versions, sudo)
-						const handled = await this.connHandler.handleMessage(message, this.panel.webview);
-						if (handled) break;
-
-						console.warn('[WelcomeProvider] Unhandled message type:', message.type);
-						break;
+				case 'openExternal':
+					if (message.url) {
+						vscode.env.openExternal(vscode.Uri.parse(String(message.url)));
 					}
+					break;
+
+				default: {
+					// Delegate connection messages (cloud, docker, service, test, engine versions, sudo)
+					const handled = this.panel ? await this.connHandler.handleMessage(message, this.panel.webview) : false;
+					if (handled) break;
+
+					console.warn('[WelcomeProvider] Unhandled message type:', message.type);
+					break;
 				}
-			} catch (error) {
-				console.error('[WelcomeProvider] Message handling error:', error);
-				const msgType = message.type as string;
-				if (msgType.startsWith('docker')) {
-					this.panel?.webview.postMessage({ type: 'dockerError', message: `${error}` });
-				} else if (msgType.startsWith('service')) {
-					this.panel?.webview.postMessage({ type: 'serviceError', message: `${error}` });
-				} else {
-					this.panel?.webview.postMessage({ type: 'showMessage', level: 'error', message: `Error: ${error}` });
-				}
 			}
-		});
-
-		this.disposables.push(messageDisposable);
-
-		const panelWebview = this.panel.webview;
-		const cleanupCloudAuth = this.connHandler.registerCloudAuthListener(panelWebview);
-
-		this.panel.onDidDispose(() => {
-			cleanupCloudAuth();
-			// Closing without Save & Connect discards any staged sign-in/out.
-			// (After a successful save the staged state is already committed,
-			// so this is a no-op on the normal path.)
-			CloudAuthProvider.getInstance().clearPendingChanges();
-			// Closing the welcome page — by ANY user exit (the tab's X,
-			// Advanced Settings, Save & Connect) — counts as dismissal, so it
-			// never nags again on the next activation. Host shutdown is not a
-			// user exit. Best-effort: a write failure must not throw here.
-			if (!this.isShuttingDown) {
-				vscode.workspace
-					.getConfiguration('rocketride')
-					.update(DISMISSED_KEY, true, vscode.ConfigurationTarget.Global)
-					.then(undefined, () => { /* best effort */ });
+		} catch (error) {
+			console.error('[WelcomeProvider] Message handling error:', error);
+			const msgType = message.type;
+			if (msgType.startsWith('docker')) {
+				this.post({ type: 'dockerError', message: `${error}` });
+			} else if (msgType.startsWith('service')) {
+				this.post({ type: 'serviceError', message: `${error}` });
+			} else {
+				this.post({ type: 'showMessage', level: 'error', message: `Error: ${error}` });
 			}
-			this.connHandler.stopStatusPolling();
-			this.panel = undefined;
-			const index = this.disposables.indexOf(messageDisposable);
-			if (index !== -1) {
-				this.disposables.splice(index, 1);
-			}
-		});
+		}
 	}
 
 	/** Send current config to the webview so the form is pre-populated */
@@ -200,7 +173,7 @@ export class WelcomeProvider {
 		// settings object with this payload and sends it back verbatim on
 		// Save & Connect — a missing field would be written as `undefined`,
 		// silently resetting that setting to its default.
-		this.panel.webview.postMessage({
+		this.post({
 			type: 'settingsLoaded',
 			logoDarkUri: logoDarkUri.toString(),
 			logoLightUri: logoLightUri.toString(),
@@ -262,6 +235,7 @@ export class WelcomeProvider {
 	private async saveAndConnect(settings: Record<string, unknown>): Promise<void> {
 		try {
 			// Step 1: Atomic write — suppresses config-change listeners during the batch
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			await this.configManager.applyAllSettings(settings as any);
 
 			// Step 1b: Commit any staged cloud sign-in/sign-out together with the
@@ -287,55 +261,13 @@ export class WelcomeProvider {
 			this.panel?.dispose();
 		} catch (error) {
 			console.error('[WelcomeProvider] Failed to save settings:', error);
-			this.panel?.webview.postMessage({ type: 'showMessage', level: 'error', message: `Failed to save settings: ${error}` });
+			this.post({ type: 'showMessage', level: 'error', message: `Failed to save settings: ${error}` });
 		}
 	}
 
-	private getHtmlForWebview(webview: vscode.Webview): string {
-		const nonce = this.generateNonce();
-		const htmlPath = vscode.Uri.joinPath(this.extensionUri, 'webview', 'page-welcome.html');
-
-		try {
-			let htmlContent = require('fs').readFileSync(htmlPath.fsPath, 'utf8');
-
-			htmlContent = htmlContent.replace(/\{\{nonce\}\}/g, nonce).replace(/\{\{cspSource\}\}/g, webview.cspSource);
-
-			return htmlContent.replace(/(?:src|href)="(\/static\/[^"]+)"/g, (match: string, relativePath: string): string => {
-				const cleanPath = relativePath.startsWith('/') ? relativePath.substring(1) : relativePath;
-				const resourceUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'webview', cleanPath));
-				return match.replace(relativePath, resourceUri.toString());
-			});
-		} catch (error) {
-			console.error('Error loading welcome HTML:', error);
-			return `<!DOCTYPE html>
-			<html lang="en">
-			<head><meta charset="UTF-8"><title>Welcome Error</title></head>
-			<body>
-				<div style="padding: 20px; color: #f44336;">
-					<h3>Error Loading Welcome View</h3>
-					<p><strong>Error:</strong> ${error}</p>
-					<p>Run <code>pnpm run build</code> to build the webview.</p>
-					<p>Expected: <code>${htmlPath.fsPath}</code></p>
-				</div>
-			</body>
-			</html>`;
-		}
-	}
-
-	private generateNonce(): string {
-		let text = '';
-		const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-		for (let i = 0; i < 32; i++) {
-			text += possible.charAt(Math.floor(Math.random() * possible.length));
-		}
-		return text;
-	}
-
-	public dispose(): void {
+	public override dispose(): void {
 		this.isShuttingDown = true;
 		this.connHandler.dispose();
-		this.panel?.dispose();
-		this.disposables.forEach((d) => d.dispose());
-		this.disposables = [];
+		super.dispose();
 	}
 }

@@ -26,12 +26,12 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { useShellConnection } from 'shell';
 import { Button, ContentHeader, TabControl, TabPanel } from 'shell';
 import type { ViewMenu } from 'shell';
 import { commonStyles } from 'shell';
-import type { ISqlEndpoint } from '../connect';
+import type { SqlEndpoint } from '../connect';
 import { refreshSchema, useSchema } from '../schema/schemaStore';
+import { useSqlEnv } from '../sqlEnv';
 import { HistoryPrefsBridge } from '../history/historyStore';
 import { runSchemaChecks } from '../schema/quality';
 import { useTableRecordRequest } from '../navigation';
@@ -49,9 +49,9 @@ import { TableDesignView } from './TableDesignView';
 // =============================================================================
 
 /** Props for the {@link ConnectionView} component. */
-export interface IConnectionViewProps {
+export interface ConnectionViewProps {
 	/** The connection's endpoint. */
-	endpoint: ISqlEndpoint;
+	endpoint: SqlEndpoint;
 }
 
 // =============================================================================
@@ -142,8 +142,8 @@ const styles = {
  * today; Query / Data / Diagram land with their phases), the standard page
  * header, and the active panel. Kicks the first schema reflection on mount.
  */
-export const ConnectionView: React.FC<IConnectionViewProps> = ({ endpoint }) => {
-	const { client, isConnected } = useShellConnection();
+export const ConnectionView: React.FC<ConnectionViewProps> = ({ endpoint }) => {
+	const env = useSqlEnv();
 	const snapshot = useSchema(endpoint.key);
 
 	// The active page of this document's TabControl.
@@ -211,10 +211,10 @@ export const ConnectionView: React.FC<IConnectionViewProps> = ({ endpoint }) => 
 
 	// First schema reflection as soon as the connection is live.
 	useEffect(() => {
-		if (client && isConnected && snapshot.status === 'idle') {
-			void refreshSchema(client, endpoint);
+		if (env.ready && snapshot.status === 'idle') {
+			void refreshSchema(env.getSession(endpoint));
 		}
-	}, [client, isConnected, snapshot.status, endpoint]);
+	}, [env, snapshot.status, endpoint]);
 
 	// The record drawer belongs to OverviewPanel, and TabPanel hides the
 	// inactive panel with `display: none` — so a table opened from Insights,
@@ -292,8 +292,8 @@ export const ConnectionView: React.FC<IConnectionViewProps> = ({ endpoint }) => 
 					<>
 						<Button
 							variant="ghost"
-							onClick={() => { if (client) void refreshSchema(client, endpoint, { fresh: true }); }}
-							disabled={!client || snapshot.status === 'loading'}
+							onClick={() => { if (env.ready) void refreshSchema(env.getSession(endpoint), { fresh: true }); }}
+							disabled={!env.ready || snapshot.status === 'loading'}
 						>
 							{snapshot.status === 'loading' ? 'Reading...' : 'Refresh Schema'}
 						</Button>
@@ -313,7 +313,7 @@ export const ConnectionView: React.FC<IConnectionViewProps> = ({ endpoint }) => 
 					<TabPanel
 						activeId={activePage}
 						panels={{
-							overview: { content: <OverviewPanel endpoint={endpoint} snapshot={snapshot} client={client} /> },
+							overview: { content: <OverviewPanel endpoint={endpoint} snapshot={snapshot} /> },
 							insights: { content: <InsightsPanel endpoint={endpoint} snapshot={snapshot} /> },
 							...(visited.has('diagram') ? { diagram: { content: <DiagramView endpoint={endpoint} /> } } : {}),
 							...(visited.has('query') ? {

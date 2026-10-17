@@ -61,7 +61,7 @@ import type { RocketRideClient } from 'rocketride';
 // =============================================================================
 
 /** Fields shared by both connection modes. */
-interface ISavedConnectionBase {
+interface SavedConnectionBase {
 	/** Stable id (list identity, temp-pipeline naming). */
 	id: string;
 	/** User-visible name (sidebar row, workbench tab). */
@@ -69,7 +69,7 @@ interface ISavedConnectionBase {
 }
 
 /** A connection bound to a database node inside a user pipeline. */
-export interface IPipelineBoundConnection extends ISavedConnectionBase {
+export interface PipelineBoundConnection extends SavedConnectionBase {
 	mode: 'pipeline';
 	/** Project (pipeline) identifier the node lives in. */
 	projectId: string;
@@ -84,7 +84,7 @@ export interface IPipelineBoundConnection extends ISavedConnectionBase {
 }
 
 /** A connection that owns its node config (temp tool pipeline on open). */
-export interface IDirectConnection extends ISavedConnectionBase {
+export interface DirectConnection extends SavedConnectionBase {
 	mode: 'direct';
 	/** Component provider, e.g. 'db_mysql'. */
 	provider: string;
@@ -93,7 +93,7 @@ export interface IDirectConnection extends ISavedConnectionBase {
 }
 
 /** One saved connection. */
-export type SavedSqlConnection = IPipelineBoundConnection | IDirectConnection;
+export type SavedSqlConnection = PipelineBoundConnection | DirectConnection;
 
 // =============================================================================
 // STORE

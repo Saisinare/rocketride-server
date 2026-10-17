@@ -34,9 +34,6 @@
 /** File extensions the design loop loads as text into Monaco models. */
 const TEXT_EXTENSIONS = new Set(['ts', 'tsx', 'js', 'jsx', 'mts', 'cts', 'json', 'css', 'scss', 'less', 'md', 'svg', 'html', 'txt', 'rrapp', 'gitignore', 'yaml', 'yml']);
 
-/** Store subtrees the loop never loads (derived outputs, never user truth). */
-export const SKIP_DIRS = ['node_modules', 'dist', 'build', '.git'];
-
 /**
  * Whether a file participates in the design loop as text.
  *

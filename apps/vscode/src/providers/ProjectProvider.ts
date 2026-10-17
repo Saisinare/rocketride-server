@@ -15,8 +15,10 @@
  */
 
 import * as vscode from 'vscode';
+import { readPrefsSnapshot, writePref } from './PrefsBag';
 import * as path from 'path';
-import { TaskStatus, GenericEvent, ConnectionState, PIPE_BUILDER_APP_ID } from '../shared/types';
+import { GenericEvent, ConnectionState, PIPE_BUILDER_APP_ID } from '../shared/types';
+import type { TaskStatus } from 'shared/tools/pipelines/project/types';
 import { ConnectionManager } from '../connection/connection';
 import { CloudAuthProvider } from '../auth/CloudAuthProvider';
 import { ConfigManager } from '../config';
@@ -619,6 +621,10 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				case 'view:ready': {
 					editorState.isReady = true;
 
+					// Seed the realm's prefs store FIRST (grid layouts answer
+					// synchronously from it — see useGridConfigAnswering).
+					void editorState.webviewPanel.webview.postMessage({ type: 'prefs:init', values: readPrefsSnapshot(this.context) });
+
 					// Build project from document
 					const text = document.getText();
 					const parsed = parsePipelineContent(text, document.uri.fsPath);
@@ -902,12 +908,11 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 					break;
 				}
 
-				// Trace messages
-				case 'trace:clear':
-					// No-op on host side
+				// View state change — not persisted in VS Code
+				case 'prefs:set':
+					writePref(this.context, data.key, data.value, data.scope);
 					break;
 
-				// View state change — not persisted in VS Code
 				case 'project:viewStateChange': {
 					// Update layouts (per-document defaults for future opens)
 					if (data.viewState) {

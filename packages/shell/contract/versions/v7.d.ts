@@ -23,8 +23,8 @@
 // =============================================================================
 // FROZEN shell-api contract — ShellApiV7 — never edit by hand
 // =============================================================================
-// Generated:     2026-10-14T22:58:04.094Z
-// Source commit: 6a70df0af5d9c7a079408b1c97cb4b1321b9e42c
+// Generated:     2026-10-17T00:07:38.865Z
+// Source commit: 9096bf41985daecf153066c2556acfc3393b923f
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder shell:freeze
 // =============================================================================
@@ -6040,6 +6040,91 @@ export declare function useAuthUser(): ConnectResult | null;
  * @returns Always null in the current implementation.
  */
 export declare function useLogout(): (() => void) | null;
+declare const ENVELOPE = "__rrtool";
+/** A retained state snapshot on the wire. */
+export interface IToolStateMessage {
+    [ENVELOPE]: "state";
+    topic: string;
+    snapshot: unknown;
+}
+/** A fire-and-forget event on the wire. */
+export interface IToolEventMessage {
+    [ENVELOPE]: "event";
+    name: string;
+    payload?: unknown;
+}
+/**
+ * Narrows a peer payload to a channel STATE message — for host relays
+ * (retention, replay, no-summon) and the channel itself.
+ *
+ * @param message - Any peer payload.
+ * @returns The state message, or null.
+ */
+export declare function asToolStateMessage(message: unknown): IToolStateMessage | null;
+/**
+ * Narrows a peer payload to a channel EVENT message.
+ *
+ * @param message - Any peer payload.
+ * @returns The event message, or null.
+ */
+export declare function asToolEventMessage(message: unknown): IToolEventMessage | null;
+/** Unsubscribe handle. */
+export type ToolChannelUnsubscribe = () => void;
+/**
+ * The typed channel between a tool's controller (devToolSidebar) and its
+ * document views (devToolFrame mounts). See the file header for the model.
+ */
+export interface ToolChannel {
+    /**
+     * CONTROLLER ONLY: publish a state snapshot. Retained — late subscribers
+     * receive the latest immediately. One publisher per topic by contract.
+     *
+     * @param topic - Tool-scoped topic name (e.g. 'connections').
+     * @param snapshot - The full snapshot (replaces the previous one).
+     */
+    publishState(topic: string, snapshot: unknown): void;
+    /**
+     * Subscribe to a state topic. The retained snapshot (if any) is replayed
+     * synchronously before live updates.
+     *
+     * @param topic - The topic to follow.
+     * @param cb - Receives each snapshot.
+     * @returns Unsubscribe.
+     */
+    onState(topic: string, cb: (snapshot: unknown) => void): ToolChannelUnsubscribe;
+    /**
+     * Send an event to the other side (documents → controller, or
+     * controller → documents). Buffered by the host while the other side
+     * opens; an event MAY summon a closed window, so send only for user
+     * actions and directed commands.
+     *
+     * @param name - Tool-scoped event name (e.g. 'saveConnection').
+     * @param payload - Optional payload.
+     */
+    sendEvent(name: string, payload?: unknown): void;
+    /**
+     * Subscribe to an event by name. Events are not retained.
+     *
+     * @param name - The event name to follow.
+     * @param cb - Receives each payload.
+     * @returns Unsubscribe.
+     */
+    onEvent(name: string, cb: (payload: unknown) => void): ToolChannelUnsubscribe;
+}
+/**
+ * Builds a ToolChannel over a DevToolProps.peer pipe. Called by HOST mounts
+ * (one channel per mount); tools receive the result as
+ * {@link DevToolProps.channel} and never construct one themselves.
+ *
+ * The instance keeps a per-realm retained-snapshot map so a component that
+ * subscribes after a snapshot arrived still gets it; cross-realm replay to
+ * freshly attached documents is the host relay's job (it re-delivers its
+ * retained state messages into the new realm, which lands here).
+ *
+ * @param peer - The mount's peer pipe.
+ * @returns The channel.
+ */
+export declare function createToolChannel(peer: DevToolProps["peer"]): ToolChannel;
 /**
  * Props injected by the shell into the app's main `<App />` component.
  *
@@ -6300,52 +6385,91 @@ export interface AppDescriptor {
      */
     devToolFrame?: React$1.ComponentType<DevToolProps>;
     /**
-     * Dev-tool sidebar — mounted by the host workbench in ITS sidebar (behind
-     * the tool's tab) while `devToolFrame` runs in the main surface. The two
-     * mounts may live in isolated documents (VS Code webviews): durable state
-     * flows through the server via each mount's own `client`; ephemeral UI
-     * coordination rides `peer`.
+     * Dev-tool sidebar — the tool's CONTROLLER, mounted by the host workbench
+     * in ITS sidebar (behind the tool's tab) while `devToolFrame` runs in the
+     * main surface. The two mounts may live in isolated documents (VS Code
+     * webviews). The controller realm owns the tool's single engine
+     * connection; frames hold none — every frame↔engine interaction is a
+     * correlated operation to the controller over the tool channel, and
+     * ephemeral UI coordination rides `peer`.
      */
     devToolSidebar?: React$1.ComponentType<DevToolProps>;
 }
 /**
- * The structural face of the host's live client handed to a dev tool.
- *
- * Deliberately NOT the RocketRideClient class: the frozen contract rolls
- * classes up (privates stripped), and a class in component props breaks the
- * per-version floors. The real object IS the host's RocketRideClient — cast
- * to it (import the type from 'rocketride') for the full typed surface; the
- * shell connection singleton is also live, so in-shell hooks
- * (useShellConnection, useDashboardData, …) work as usual.
- */
-export interface DevToolClient {
-    /** Raw DAP command against the connected engine. */
-    call<T = unknown>(command: string, args?: Record<string, unknown>, options?: {
-        token?: string;
-        timeout?: number;
-    }): Promise<T>;
-}
-/**
  * Props every dev-tool component receives from its host workbench.
+ *
+ * NO client member: dev-tool mounts never receive an engine connection.
+ * The tool's sidebar CONTROLLER realm owns one (established by that realm
+ * itself, not through these props), and frames reach the engine solely via
+ * correlated operations over the tool channel (tools/core opCall).
  *
  * No theme member: tools are themed by the ambient `--rr-*` CSS custom
  * properties of the document they mount into (the shell's active theme
  * in-browser; the VS Code webview's editor-variable mapping in the editor).
  */
 export interface DevToolProps {
-    /** Live, authenticated client owned by the host (see {@link DevToolClient}). */
-    client: DevToolClient;
     /**
      * Ephemeral coordination channel to this tool's OTHER mount (frame ↔
      * sidebar). Message payloads are opaque to the host. In-shell hosts relay
      * in-memory; the VS Code extension relays across its webviews.
      */
     peer: {
-        /** Send a message to the other mount (buffered briefly while it opens). */
+        /**
+         * Send a message to the other mount (buffered briefly while it opens).
+         *
+         * Direction discipline: a sidebar mount posts ONLY in response to a
+         * user action (a post to a closed frame summons it — a tree click is
+         * an implicit "open the tool"); the frame PUSHES its state whenever
+         * it changes, and the host retains the last frame→sidebar message so
+         * a (re)mounted sidebar renders without asking. Mount-time handshakes
+         * from the sidebar side are a bug: every pinned tool's sidebar mount
+         * boots with the host sidebar, and an ask-on-mount would summon every
+         * tool's frame.
+         */
         post(message: unknown): void;
         /** Subscribe to messages from the other mount; returns unsubscribe. */
         subscribe(cb: (message: unknown) => void): () => void;
     };
+    /**
+     * Host documents — present on hosts that give one tool MULTIPLE top-level
+     * documents (e.g. one tab per database connection). `open` opens or
+     * focuses the tool document for `docKey` with the given tab title,
+     * mounting `devToolFrame` with that key in {@link DevToolProps.docKey};
+     * `close` closes it. Hosts without the capability omit the member — the
+     * tool falls back to its single-frame behavior (peer summon).
+     */
+    documents?: {
+        /** Opens (or focuses) the tool document for one key. */
+        open(docKey: string, title: string): void;
+        /** Closes the tool document for one key (open elsewhere = no-op). */
+        close(docKey: string): void;
+    };
+    /**
+     * The document key this FRAME mount serves — set when the host opened it
+     * through `documents.open`. Absent on sidebar mounts and on a tool's
+     * single/default frame.
+     */
+    docKey?: string;
+    /**
+     * For SIDEBAR mounts on hosts with `documents`: the key of this tool's
+     * document currently fronted in the host's editor area, or null when the
+     * active editor is NOT one of this tool's documents (another tool, a
+     * text file). Hosts keep it live across tab switches, so a sidebar can
+     * follow the selection — highlight the fronted document's row, clear
+     * highlight and dependent panels on null. Omitted (undefined) by hosts
+     * that cannot tell and on frame mounts; a sidebar then falls back to its
+     * own signals (e.g. frame pushes over `peer`).
+     */
+    activeDocKey?: string | null;
+    /**
+     * The typed state/event channel between this tool's controller (the
+     * sidebar mount) and its document views — the PREFERRED surface over the
+     * raw `peer`: state snapshots are retained per topic (late subscribers
+     * replay), events are buffered, and a state publish never summons a
+     * window. Rides the same transport as `peer`; both work side by side
+     * while tools migrate. See `createToolChannel` / ToolChannel.
+     */
+    channel?: ToolChannel;
 }
 /**
  * Branding tokens for a specific app or the login screen.
@@ -11770,6 +11894,12 @@ export type ThemeTokens = {
     "--rr-bg-paper": string;
     "--rr-bg-surface": string;
     "--rr-bg-surface-alt": string;
+    "--rr-doctabs-bg": string;
+    "--rr-doctabs-tab-active-bg": string;
+    "--rr-doctabs-tab-hover-bg": string;
+    "--rr-doctabs-fg-active": string;
+    "--rr-doctabs-fg-inactive": string;
+    "--rr-doctabs-border": string;
     "--rr-fg-titleBar-active": string;
     "--rr-fg-titleBar-inactive": string;
     "--rr-bg-titleBar-active": string;

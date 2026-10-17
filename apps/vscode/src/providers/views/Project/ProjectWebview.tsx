@@ -21,16 +21,17 @@ import type { IProject, ThemeTokens } from 'shell';
 // Project module is imported via subpath (not the 'shared' barrel): the
 // barrel is the shell's MF share and must stay canvas-free; this webview
 // bundles the project module directly.
-import { ProjectView, parseServerEvent, isDevLiveEvent, isTeamLiveEvent } from 'shared/modules/project';
-import { mergeProjectPreferences } from 'shared/modules/project/projectPreferences';
-import { registerServiceIcons } from 'shared/components/canvas/util/Icon';
-import { foldProjectDeployRuns } from 'shared/modules/sidebar/taskFold';
-import type { TaskLifecycleEvent } from 'shared/modules/sidebar/taskFold';
-import type { TaskEventMessage, TaskEventSession, TaskStatus, TaskTimeline, ViewState } from 'shared/modules/project';
+import { ProjectView, parseServerEvent, isDevLiveEvent, isTeamLiveEvent } from 'shared/tools/pipelines/project';
+import { mergeProjectPreferences } from 'shared/tools/pipelines/project/projectPreferences';
+import { registerServiceIcons } from 'shared/tools/pipelines/canvas/util/Icon';
+import { foldProjectDeployRuns } from 'shared/tools/pipelines/taskFold';
+import type { TaskLifecycleEvent } from 'shared/tools/pipelines/taskFold';
+import type { TaskEventMessage, TaskEventSession, TaskStatus, TaskTimeline, ViewState } from 'shared/tools/pipelines/project';
 import { CheckoutModal } from 'shell';
 import type { CheckoutPlan, PlanAction } from 'shell';
 import { DeploymentRecordPanel, TeamDeploymentRecordPanel } from 'shared/components/deploy-panel';
 import type { DeploySnapshot } from 'shared/components/deploy-panel';
+import { createBridgedPrefsStore, useGridConfigAnswering } from 'shell';
 import { useMessaging } from '../hooks/useMessaging';
 import { useStripeKey } from '../hooks/useStripeKey';
 import { CheckoutUnavailableNotice } from '../components';
@@ -157,6 +158,15 @@ const ProjectWebview: React.FC = () => {
 	// --- Messaging ------------------------------------------------------------
 
 	const sendMessageRef = useRef<(msg: ProjectWebviewToHost) => void>(() => {});
+
+	// This realm's prefs store (hydrate-once, host-seeded via prefs:init);
+	// grid layouts answer synchronously from it, so DataGrid persistence
+	// works in this webview exactly as in the web shell.
+	const prefsBridgeRef = useRef<ReturnType<typeof createBridgedPrefsStore> | null>(null);
+	if (!prefsBridgeRef.current) {
+		prefsBridgeRef.current = createBridgedPrefsStore((key, value, scope) => sendMessageRef.current({ type: 'prefs:set', key, value, scope }));
+	}
+	useGridConfigAnswering(prefsBridgeRef.current.store);
 	const getStateRef = useRef<() => ViewState | null>(() => null);
 
 	const handleMessage = useCallback((msg: ProjectHostToWebview) => {
@@ -192,14 +202,6 @@ const ProjectWebview: React.FC = () => {
 			}
 			case 'project:oauthTokens':
 				setPendingOAuthTokens({ tokens: msg.tokens, state: msg.state });
-				break;
-			case 'shell:init':
-				if (msg.theme) applyTheme(msg.theme as ThemeTokens);
-				setIsConnected(msg.isConnected);
-				sendMessageRef.current({ type: 'view:initialized' });
-				break;
-			case 'shell:themeChange':
-				applyTheme(msg.tokens as ThemeTokens);
 				break;
 			case 'project:update':
 				setProject(msg.project);
@@ -289,6 +291,9 @@ const ProjectWebview: React.FC = () => {
 				break;
 			case 'project:cloudConnectionConfigured':
 				setCloudConnectionConfigured(msg.cloudConnectionConfigured);
+				break;
+			case 'prefs:init':
+				prefsBridgeRef.current?.seed(msg.values);
 				break;
 			case 'shell:connectionChange':
 				if (msg.isConnected) {
@@ -428,16 +433,6 @@ const ProjectWebview: React.FC = () => {
 				}
 				break;
 			}
-			case 'shell:viewActivated':
-				window.dispatchEvent(new CustomEvent('canvas:restoreViewport'));
-				break;
-			case 'project:initialState':
-				setViewState({
-					mode: msg.state?.mode ?? 'design',
-					flowViewMode: msg.state?.flowViewMode ?? 'pipeline',
-					viewport: msg.state?.viewport,
-				});
-				break;
 			case 'project:initialPrefs':
 				// Merge: the host broadcasts only the keys that changed, not the whole bag.
 				setPrefs((prev) => mergeProjectPreferences(prev, msg.prefs ?? {}));

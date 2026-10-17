@@ -25,8 +25,10 @@
 // TOOLS/CORE — host-agnostic tool plumbing (sidebar-as-controller)
 // =============================================================================
 
-export { defineStateTopic, defineEvent, publishState, onState, sendEvent, onEvent } from './channelTypes';
-export type { ToolStateTopic, ToolEvent } from './channelTypes';
+// The comms layer (typed protocol maps, op calls, the host:connection system
+// topic) lives in the shell now — import from 'shell': typedToolChannel,
+// useToolState, useConnectionReady, createToolController, createToolOpServer.
 export { registerBuiltinTool, getBuiltinTools } from './registry';
 export type { BuiltinTool } from './registry';
-export type { IToolWorkspaceFs } from './workspaceFs';
+export { ToolHostProvider, useToolHost, createLoopbackPeer } from './ToolContext';
+export type { BuiltinToolServices } from './ToolContext';

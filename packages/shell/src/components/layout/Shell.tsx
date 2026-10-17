@@ -362,8 +362,6 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 				uri: config.serverUri || undefined,
 				clientName: 'Cloud Shell-UI',
 				authProvider,
-				zitadelUrl: RR_ZITADEL_URL,
-				zitadelClientId: RR_ZITADEL_CLIENT_ID,
 			});
 
 			// Run the optional init callback (e.g. theme initialisation)

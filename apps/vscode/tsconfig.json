@@ -17,6 +17,9 @@
 		"paths": {
 			"shared/*": [
 				"../shared/src/*"
+			],
+			"shell/src/*": [
+				"../../packages/shell/src/*"
 			]
 		}
 	},

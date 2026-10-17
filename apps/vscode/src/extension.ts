@@ -33,7 +33,6 @@ import { getLogger } from './shared/util/output';
 import { icons } from './shared/util/icons';
 import { createCatalogueReporter } from './shared/util/catalogueDiagnostic';
 
-// import { registerDebugger } from './debugger/adapter'; // Disabled: debugger removed from package.json
 import { ConnectionManager, disconnectCloudConnections } from './connection/connection';
 import { DeployManager } from './connection/deploy-manager';
 import { ConfigManager } from './config';
@@ -44,8 +43,7 @@ import { getUserConfigDir, getSystemInstallDir, migrateLocalEngine, migrateServi
 import { SidebarProvider } from './providers/SidebarProvider';
 import { ProjectProvider } from './providers/ProjectProvider';
 import { SettingsProvider } from './providers/SettingsProvider';
-import { MonitorProvider } from './providers/MonitorProvider';
-import { IntroProvider } from './providers/IntroProvider';
+import { HtmlPageProvider } from './providers/HtmlPageProvider';
 // DeployProvider removed — Docker/Service operations now live in Settings panels
 import { StatusProvider } from './providers/StatusProvider';
 import { BarStatus } from './providers/BarStatusProvider';
@@ -55,6 +53,7 @@ import { EnvironmentProvider } from './providers/EnvironmentProvider';
 import { NewAppProvider } from './providers/NewAppProvider';
 import { DevToolStore } from './providers/DevToolStore';
 import { DevToolBridge } from './providers/DevToolBridge';
+import { writePref } from './providers/PrefsBag';
 import { DevToolPanelProvider } from './providers/DevToolPanelProvider';
 import { DevToolReadmeProvider } from './providers/DevToolReadmeProvider';
 // BillingProvider removed — billing is now a tab in AccountProvider
@@ -78,8 +77,7 @@ let configManager: ConfigManager | undefined;
 let sidebar: SidebarProvider | undefined;
 let project: ProjectProvider | undefined;
 let settings: SettingsProvider | undefined;
-let _monitor: MonitorProvider | undefined;
-let _intro: IntroProvider | undefined;
+let _htmlPages: HtmlPageProvider | undefined;
 // deploy removed — functionality moved to Settings panels
 let status: StatusProvider | undefined;
 let appScreen: AppScreenProvider | undefined;
@@ -203,6 +201,27 @@ async function runMigrations(context: vscode.ExtensionContext): Promise<void> {
 	// Old: %PROGRAMDATA%/RocketRide/config.json + engines/server-3.2.0--abc/
 	// New: %PROGRAMDATA%/RocketRide/engine/engine.exe + engine/version.json
 	migrateServiceConfig();
+
+	// Migration 6: Sidebar state into the generic prefs bag ('rr.prefs')
+	// under the ShellPrefsMap system keys — one spelling per concept across
+	// hosts. Workspace-scoped (each workspace migrates on its first open).
+	if (!context.workspaceState.get('sidebarPrefsMigrationDone')) {
+		const moves: Array<[string, string]> = [
+			['rr.devTools', 'devToolPins'],
+			['rr.sidebarTabOrder', 'sidebarTabOrder'],
+			['rr.disabledBuiltins', 'disabledBuiltins'],
+			['rr.sidebarMode', 'sidebarMode'],
+		];
+		for (const [oldKey, newKey] of moves) {
+			const value = context.workspaceState.get(oldKey);
+			if (value !== undefined) {
+				await writePref(context, newKey, value, 'workspace');
+				await context.workspaceState.update(oldKey, undefined);
+				logger.output(`${icons.info} Migrated ${oldKey} -> prefs.${newKey}`);
+			}
+		}
+		await context.workspaceState.update('sidebarPrefsMigrationDone', true);
+	}
 }
 
 /**
@@ -294,6 +313,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				devToolBridge.onPanelNeeded = (appId) => {
 					void vscode.commands.executeCommand('rocketride.devtool.open', appId);
 				};
+				// The HOST owns the tools' 'engine' reachability topic: feed the
+				// bridge from the extension's connection state so every frame's
+				// enablement is right even when no tool sidebar has mounted.
+				const engineConnection = ConnectionManager.getInstance();
+				devToolBridge.setHostConnected(engineConnection.isConnected());
+				engineConnection.on('shell:statusChange', () => {
+					devToolBridge.setHostConnected(engineConnection.isConnected());
+				});
 
 				// Register unified sidebar webview. retainContextWhenHidden: the
 				// sidebar carries live state (dev-tool sidebar mounts, their SDK
@@ -313,9 +340,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				progress.report({ increment: 60, message: 'Creating webview providers...' });
 
 				settings = new SettingsProvider(context.extensionUri);
-				_monitor = new MonitorProvider(context);
+				// Server Monitor is a DEV TOOL now — the old page command opens
+				// the tool's frame panel (palette compatibility).
+				context.subscriptions.push(vscode.commands.registerCommand('rocketride.page.monitor.open', () => {
+					void vscode.commands.executeCommand('rocketride.devtool.open', 'rocketride.monitor');
+				}));
 				// Embedded "Introduction to ..." pages (sidebar Introduction rows).
-				_intro = new IntroProvider(context);
+				_htmlPages = new HtmlPageProvider(context);
 				// deploy removed — register redirect command so sidebar "Deploy" opens Settings
 				context.subscriptions.push(vscode.commands.registerCommand('rocketride.page.deploy.open', () => vscode.commands.executeCommand('rocketride.page.settings.open', 'deployment')));
 				status = new StatusProvider(context);
@@ -377,9 +408,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				registerUtilityCommands(context);
 
 				//-------------------------------------
-				// Register debugger (disabled — see debugger/adapter.ts to re-enable)
 				//-------------------------------------
-				// registerDebugger(context);
 
 				//-------------------------------------
 				// Set up event handlers
@@ -735,21 +764,12 @@ async function refreshAllProviders(): Promise<void> {
  * Extension deactivation cleanup
  */
 export async function deactivate(): Promise<void> {
-	if (_intro) {
+	if (_htmlPages) {
 		try {
-			_intro.dispose();
+			_htmlPages.dispose();
 		} catch (error: unknown) {
 			if (!(error instanceof Error) || error.name !== 'Canceled') {
-				console.error('[ROCKETRIDE] Error disposing intro pages:', error);
-			}
-		}
-	}
-	if (_monitor) {
-		try {
-			_monitor.dispose();
-		} catch (error: unknown) {
-			if (!(error instanceof Error) || error.name !== 'Canceled') {
-				console.error('[ROCKETRIDE] Error disposing monitor page:', error);
+				console.error('[ROCKETRIDE] Error disposing html pages:', error);
 			}
 		}
 	}

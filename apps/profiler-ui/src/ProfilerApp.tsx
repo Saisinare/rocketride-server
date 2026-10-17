@@ -31,12 +31,13 @@
 // sidebar panel, the two joined by the profilerBridge channel.
 // =============================================================================
 
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import type { DevToolProps, ShellAppProps } from 'shell';
-import { AppLayout } from 'shell';
+import { AppLayout, createToolChannel, createToolController, getClient, useConnectionReady, useShellConnection } from 'shell';
 import ProfilerView from './views/ProfilerView';
 import ProfilerSidebar from './ProfilerSidebar';
 import { localFrameChannel, createPeerFrameChannel } from './profilerBridge';
+import type { ProfilerEngine, ProfilerOps } from './ops';
 
 // =============================================================================
 // MAIN COMPONENT
@@ -46,11 +47,23 @@ import { localFrameChannel, createPeerFrameChannel } from './profilerBridge';
  * Profiler app — the profiler frame inside the app chrome, with the control
  * panel in the sidebar. Both ends share the in-document channel.
  */
-const ProfilerApp: React.FC<ShellAppProps> = (_props) => (
-	<AppLayout sidebar={<ProfilerSidebar />} showStatus>
-		<ProfilerView channel={localFrameChannel} />
-	</AppLayout>
-);
+const ProfilerApp: React.FC<ShellAppProps> = (_props) => {
+	const { client, isConnected } = useShellConnection();
+	// The LOCAL engine: the full app's realm legitimately owns a client.
+	const engine = useMemo<ProfilerEngine>(() => ({
+		ready: !!client && isConnected,
+		call: <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
+			const live = getClient();
+			if (!live || !live.isConnected()) return Promise.reject(new Error('Not connected to a server.'));
+			return live.call<T>(command, args ?? {});
+		},
+	}), [client, isConnected]);
+	return (
+		<AppLayout sidebar={<ProfilerSidebar />} showStatus>
+			<ProfilerView channel={localFrameChannel} engine={engine} />
+		</AppLayout>
+	);
+};
 
 // =============================================================================
 // DEV-TOOL FRAME — the profiler without shell chrome
@@ -62,9 +75,21 @@ const ProfilerApp: React.FC<ShellAppProps> = (_props) => (
  * panel). Controls live in the tool's sidebar mount; the two coordinate over
  * the host-relayed peer channel.
  */
-export const ProfilerDevTool: React.FC<DevToolProps> = ({ peer }) => {
-	const channel = useMemo(() => createPeerFrameChannel(peer), [peer]);
-	return <ProfilerView channel={channel} />;
+export const ProfilerDevTool: React.FC<DevToolProps> = ({ peer, channel }) => {
+	const frameChannel = useMemo(() => createPeerFrameChannel(peer), [peer]);
+
+	// FRAMES HOLD NO ROCKETRIDE CLIENT: commands ride the controller op, and
+	// enablement is the host-published `host:connection` system topic.
+	const toolChannel = useMemo(() => channel ?? createToolChannel(peer), [channel, peer]);
+	const call = useMemo(() => createToolController<ProfilerOps>(peer), [peer]);
+	const ready = useConnectionReady(toolChannel);
+	const engine = useMemo<ProfilerEngine>(() => ({
+		ready,
+		call: <T,>(command: string, args?: Record<string, unknown>): Promise<T> =>
+			call('profiler.call', { command, ...(args ? { args } : {}) }) as Promise<T>,
+	}), [call, ready]);
+
+	return <ProfilerView channel={frameChannel} engine={engine} />;
 };
 
 export default ProfilerApp;

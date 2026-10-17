@@ -36,8 +36,8 @@ import { BxDesktop, BxGridAlt, BxNote, BxPlus } from 'shell';
 import { SidebarMenu } from 'shell';
 import type { ViewMenu } from 'shell';
 import { PANEL_HOVER_BG, panelStyles } from '../core/chrome/panelStyles';
-import type { AppBuilderSidebar } from '../../modules/sidebar/types';
-import type { IntroMode } from '../../modules/intro/introPages';
+import type { AppBuilderSidebar } from './sidebarTypes';
+import type { IntroMode } from '../introCatalog';
 
 /** Props for {@link AppDevSidebarPanel}. */
 export interface IAppDevSidebarPanelProps {

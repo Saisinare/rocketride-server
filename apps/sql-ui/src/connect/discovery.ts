@@ -32,7 +32,7 @@
 // =============================================================================
 
 import type { RocketRideClient } from 'shell';
-import type { ISqlEndpoint } from './types';
+import type { SqlEndpoint } from './types';
 
 // =============================================================================
 // PROVIDER SET
@@ -54,7 +54,7 @@ export const DATABASE_PROVIDERS: ReadonlySet<string> = new Set([
 // =============================================================================
 
 /** The subset of a pipeline component discovery needs. */
-interface IPipelineComponent {
+interface PipelineComponent {
 	/** Component id (tool call target). */
 	id?: string;
 	/** Component provider name. */
@@ -64,9 +64,9 @@ interface IPipelineComponent {
 }
 
 /** The subset of the pipeline dict discovery needs. */
-interface IPipelineDict {
+interface PipelineDict {
 	/** The pipeline's components. */
-	components?: IPipelineComponent[];
+	components?: PipelineComponent[];
 }
 
 // =============================================================================
@@ -82,7 +82,7 @@ interface IPipelineDict {
  * @param client - The shell's RocketRide client.
  * @returns Endpoints sorted by pipeline name, then node id.
  */
-export async function discoverSqlEndpoints(client: RocketRideClient): Promise<ISqlEndpoint[]> {
+export async function discoverSqlEndpoints(client: RocketRideClient): Promise<SqlEndpoint[]> {
 	// One page of 100 covers realistic task counts; discovery re-runs on demand.
 	const tasks = await client.listTasks({ page_size: 100 });
 
@@ -100,13 +100,13 @@ export async function discoverSqlEndpoints(client: RocketRideClient): Promise<IS
 	});
 
 	// Resolve each candidate's pipeline and collect its database components.
-	const endpoints: ISqlEndpoint[] = [];
+	const endpoints: SqlEndpoint[] = [];
 	for (const task of candidates) {
 		try {
 			// The token names the running task; the pipeline is read through it.
 			const token = await client.getTaskToken({ projectId: task.projectId, source: task.source });
 			if (!token) continue;
-			const pipeline = (await client.getTaskPipeline(token)) as IPipelineDict | undefined;
+			const pipeline = (await client.getTaskPipeline(token)) as PipelineDict | undefined;
 			if (!pipeline?.components) continue;
 
 			// Every database-provider component in the pipeline is an endpoint.

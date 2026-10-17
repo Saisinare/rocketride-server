@@ -73,6 +73,7 @@ import { useAppComponent } from './hooks/useAppComponent';
 
 // Shared hooks re-exported through shell for app convenience
 import { useClickOutside } from './hooks/useClickOutside';
+import { useLatest } from './hooks/useLatest';
 import { useFixedPopupPosition } from './hooks/useFixedPopupPosition';
 
 // Non-React client access + connection manager singleton
@@ -87,6 +88,18 @@ import { ConnectionState } from './types/connection';
 // in the app's workspace prefs bag). shared sits below shell, so the
 // implementation lives there; the shell surfaces it here as the frozen contract.
 import { usePrefs, PrefsProvider } from './components/contexts/PrefsContext';
+
+// Tool framework values — imported here so the shellApi aggregator can carry
+// them as lazy getters (the freeze fingerprints VALUE names off shellApi's
+// members; a standalone re-export is invisible to it).
+import { createToolChannel, asToolStateMessage, asToolEventMessage } from './components/workspace/toolChannel';
+import { createToolController, createToolOpServer, asToolCallMessage, asToolReplyMessage, DEFAULT_OP_TIMEOUT_MS } from './components/workspace/toolOps';
+import { typedToolChannel, useToolState, useConnectionReady, publishHostConnectionState, HOST_CONNECTION_TOPIC } from './components/workspace/toolProtocol';
+import { typedPrefs, scopedPrefs, createBridgedPrefsStore, usePref } from './components/workspace/prefsStore';
+import { ToolHostProvider, useToolHost, createLoopbackPeer } from './components/workspace/toolHost';
+import { useGridConfigAnswering } from './components/data-grid/gridConfigAnswering';
+import { createToolRelay, hostConnectionPayload, TOOL_RELAY_BUFFER_LIMIT } from './components/workspace/toolRelay';
+import { toolDocUri, parseToolDocUri, activeDocKeyFor, TOOL_DOC_PREFIX } from './components/workspace/toolDocUri';
 
 // Auth providers
 import { CloudAuthProvider } from './auth/CloudAuthProvider';
@@ -158,13 +171,51 @@ import { BxPlus, BxEditAlt, BxTrash, BxDesktop, BxGridAlt, BxCog, BxListUl, BxSt
 // =============================================================================
 
 // Shell component prop contracts + workspace/config types
-export type { ShellAppProps, AppDescriptor, DevToolProps, DevToolClient, AppManifestEntry, ShellConfig, ShellApiConfig, WorkspacePrefs, WorkspaceState, AppWorkspaceState, SettingValue, SettingSchema, AppConfiguration, ShellBrandingConfig, ShellThemeConfig, ShellThemeOption, ShellAccountConfig } from './components/workspace/types';
+export type { ShellAppProps, AppDescriptor, DevToolProps, AppManifestEntry, ShellConfig, ShellApiConfig, WorkspacePrefs, WorkspaceState, AppWorkspaceState, SettingValue, SettingSchema, AppConfiguration, ShellBrandingConfig, ShellThemeConfig, ShellThemeOption, ShellAccountConfig } from './components/workspace/types';
 
 // Tool channel — the typed state/event surface between a tool's controller
 // (devToolSidebar) and its document views (devToolFrame). Hosts construct it
 // over the peer transport; tools receive it as DevToolProps.channel.
 export { createToolChannel, asToolStateMessage, asToolEventMessage } from './components/workspace/toolChannel';
 export type { ToolChannel, ToolChannelUnsubscribe, IToolStateMessage, IToolEventMessage } from './components/workspace/toolChannel';
+
+// Tool protocol — typed protocol maps over the tool channel (the ShellEventMap
+// pattern per tool): the host-owned base state map (`host:*` reserved), each
+// tool's private extension, the typed channel view, and the hooks tools read
+// system topics with.
+export { typedToolChannel, useToolState, useConnectionReady, publishHostConnectionState, HOST_CONNECTION_TOPIC } from './components/workspace/toolProtocol';
+export type { ToolStateMap, ToolEventMap, TypedToolChannel, IHostConnectionState } from './components/workspace/toolProtocol';
+
+// Tool ops — the correlated request/reply lane between a tool's frames and
+// its sidebar controller, typed by the tool's op map. The call/reply wire
+// guards are for host relays (calls are never retained, replies never
+// buffered or summoning).
+export { createToolController, createToolOpServer, asToolCallMessage, asToolReplyMessage, DEFAULT_OP_TIMEOUT_MS } from './components/workspace/toolOps';
+export type { ToolOpMap, ToolOpSpec, ToolOpParams, ToolOpResult, ToolControllerFn, IToolOpServer, IToolCallOptions, IToolCallMessage, IToolReplyMessage } from './components/workspace/toolOps';
+
+// Workspace prefs store — the host framework's persisted-preference seam:
+// the shell types its SYSTEM partition (ShellPrefsMap); each app privately
+// types its own keys and receives a pre-scoped partition (scopedPrefs) —
+// isolation by construction, no shared flat bag.
+export { useLatest } from './hooks/useLatest';
+export { typedPrefs, scopedPrefs, createBridgedPrefsStore, usePref } from './components/workspace/prefsStore';
+export { useGridConfigAnswering } from './components/data-grid/gridConfigAnswering';
+export type { PrefScope, PrefsStore, ShellPrefsMap, TypedPrefsStore } from './components/workspace/prefsStore';
+
+// Tool host — host-wide capabilities beside the per-mount DevToolProps:
+// provided once per realm, read by tools, absent capabilities degrade
+// (and FAIL SAFE). In-repo builtins extend ToolHostServices privately in
+// apps/shared, the same pattern as the protocol maps.
+export { ToolHostProvider, useToolHost, createLoopbackPeer } from './components/workspace/toolHost';
+export type { ToolHostServices, ToolWorkspaceFs } from './components/workspace/toolHost';
+
+// Tool relay — the ONE relay policy between a tool's two mounts (hosts wire
+// transport + scheduling; the relay decides retention/buffering/summon).
+export { createToolRelay, hostConnectionPayload, TOOL_RELAY_BUFFER_LIMIT } from './components/workspace/toolRelay';
+export type { ToolRelay, ToolRelayEnds } from './components/workspace/toolRelay';
+
+// Tool document URIs — the `tool:<appId>[/<docKey>]` convention, spelled once.
+export { toolDocUri, parseToolDocUri, activeDocKeyFor, TOOL_DOC_PREFIX } from './components/workspace/toolDocUri';
 
 // Top-level shell + sidebar component prop types
 export type { ShellProps } from './components/layout/Shell';
@@ -498,6 +549,37 @@ export const shellApi = {
 	get useWorkspace() { return useWorkspace; },
 	get useClient() { return useClient; },
 	get useShellEvent() { return useShellEvent; },
+	get useLatest() { return useLatest; },
+
+	// Tool framework — channel, protocol maps, ops, prefs store, tool host.
+	get createToolChannel() { return createToolChannel; },
+	get asToolStateMessage() { return asToolStateMessage; },
+	get asToolEventMessage() { return asToolEventMessage; },
+	get createToolController() { return createToolController; },
+	get createToolOpServer() { return createToolOpServer; },
+	get asToolCallMessage() { return asToolCallMessage; },
+	get asToolReplyMessage() { return asToolReplyMessage; },
+	get DEFAULT_OP_TIMEOUT_MS() { return DEFAULT_OP_TIMEOUT_MS; },
+	get typedToolChannel() { return typedToolChannel; },
+	get useToolState() { return useToolState; },
+	get useConnectionReady() { return useConnectionReady; },
+	get publishHostConnectionState() { return publishHostConnectionState; },
+	get HOST_CONNECTION_TOPIC() { return HOST_CONNECTION_TOPIC; },
+	get typedPrefs() { return typedPrefs; },
+	get scopedPrefs() { return scopedPrefs; },
+	get createBridgedPrefsStore() { return createBridgedPrefsStore; },
+	get usePref() { return usePref; },
+	get ToolHostProvider() { return ToolHostProvider; },
+	get useToolHost() { return useToolHost; },
+	get createLoopbackPeer() { return createLoopbackPeer; },
+	get useGridConfigAnswering() { return useGridConfigAnswering; },
+	get createToolRelay() { return createToolRelay; },
+	get hostConnectionPayload() { return hostConnectionPayload; },
+	get TOOL_RELAY_BUFFER_LIMIT() { return TOOL_RELAY_BUFFER_LIMIT; },
+	get toolDocUri() { return toolDocUri; },
+	get parseToolDocUri() { return parseToolDocUri; },
+	get activeDocKeyFor() { return activeDocKeyFor; },
+	get TOOL_DOC_PREFIX() { return TOOL_DOC_PREFIX; },
 	get useIframeBridge() { return useIframeBridge; },
 	get useSubscriptions() { return useSubscriptions; },
 	get usePolling() { return usePolling; },

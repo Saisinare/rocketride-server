@@ -32,7 +32,7 @@ import { formatTime, formatDayTime } from 'shell';
 import { describeCron, describeTtl } from './SchedulePanel';
 import { buttonize } from '../../utils/buttonize';
 import type { GridColumnDefinition } from 'shell';
-import type { TaskTimeline } from '../../modules/project/hooks/useTaskEvents';
+import type { TaskTimeline } from 'shared/tools/pipelines/project/hooks/useTaskEvents';
 import type { DeploymentInfo } from './DeploymentView';
 import { DEPLOY_STATE_COLOR, createDeployHistoryColumns } from './types';
 import type { DeployHistoryRow, DeployScheduleRow, DeployVersionCard } from './types';

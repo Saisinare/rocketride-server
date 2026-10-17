@@ -37,17 +37,18 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { Banner, Button, ConnectionManager, ContentHeader, Modal, useShellConnection } from 'shell';
+import { Banner, Button, ConnectionManager, ContentHeader, Modal } from 'shell';
 import type { IFormData, IService, IServiceSchema } from 'shell';
-import NodeConfigForm, { validationProblemFromResponse } from 'shared/components/canvas/components/panels/node-config/NodeConfigForm';
-import type { INodeConfigFormHandle } from 'shared/components/canvas/components/panels/node-config/NodeConfigForm';
-import { PIPELINE_SCHEMA_VERSION } from 'shared/components/canvas/types';
+import NodeConfigForm, { validationProblemFromResponse } from 'shared/components/node-config/NodeConfigForm';
+import type { INodeConfigFormHandle } from 'shared/components/node-config/NodeConfigForm';
+import { PIPELINE_SCHEMA_VERSION } from 'shared/components/node-config';
 import {
 	DATABASE_PROVIDERS,
 	newConnectionId, upsertSavedConnection,
 	refreshEndpoints, useSqlEndpoints,
 } from '../connect';
-import type { ISqlEndpoint, SavedSqlConnection } from '../connect';
+import { useSqlEnv } from '../sqlEnv';
+import type { SqlEndpoint, SavedSqlConnection } from '../connect';
 import { DatabaseIcon } from '../icons';
 
 // =============================================================================
@@ -195,7 +196,7 @@ const styles = {
 // =============================================================================
 
 /** Props for {@link NewConnectionModal}. */
-export interface INewConnectionModalProps {
+export interface NewConnectionModalProps {
 	/** The connection being edited, or null to create a new one. */
 	editing: SavedSqlConnection | null;
 	/** Close the editor (saved or cancelled). */
@@ -221,10 +222,10 @@ export interface INewConnectionModalProps {
  * The add/edit connection modal: the pipeline-discovery path and the direct
  * node-config path behind one path switch.
  *
- * @param props - {@link INewConnectionModalProps}.
+ * @param props - {@link NewConnectionModalProps}.
  */
-const NewConnectionModal: React.FC<INewConnectionModalProps> = ({ editing, onClose, onSaved, commit = upsertSavedConnection, page = false }) => {
-	const { client, isConnected } = useShellConnection();
+const NewConnectionModal: React.FC<NewConnectionModalProps> = ({ editing, onClose, onSaved, commit = upsertSavedConnection, page = false }) => {
+	const env = useSqlEnv();
 
 	// ── Shared state ─────────────────────────────────────────────────────────
 	const [path, setPath] = useState<'pipeline' | 'direct'>(editing?.mode ?? 'pipeline');
@@ -238,8 +239,8 @@ const NewConnectionModal: React.FC<INewConnectionModalProps> = ({ editing, onClo
 		editing?.mode === 'pipeline' ? `${editing.projectId}:${editing.source}:${editing.nodeId}` : null,
 	);
 	useEffect(() => {
-		if (client && isConnected) void refreshEndpoints(client);
-	}, [client, isConnected]);
+		if (env.ready) void refreshEndpoints(() => env.discoverEndpoints());
+	}, [env]);
 
 	// ── Direct path: provider pick + schema fetch ────────────────────────────
 	const [provider, setProvider] = useState<string | null>(editing?.mode === 'direct' ? editing.provider : null);
@@ -259,13 +260,13 @@ const NewConnectionModal: React.FC<INewConnectionModalProps> = ({ editing, onClo
 
 	// The full Pipe schema is fetched on demand once a provider is picked.
 	useEffect(() => {
-		if (!provider || !client) { setService(null); return; }
+		if (!provider || !env.ready) { setService(null); return; }
 		let alive = true;
 		setService(null);
 		setSchemaError('');
 		void (async () => {
 			try {
-				const def = (await client.getService(provider)) as IService | undefined;
+				const def = (await env.getService(provider)) as IService | undefined;
 				if (!alive) return;
 				if (!def?.Pipe) {
 					setSchemaError(`No configuration schema for ${providerTitle(provider)}.`);
@@ -277,22 +278,19 @@ const NewConnectionModal: React.FC<INewConnectionModalProps> = ({ editing, onClo
 			}
 		})();
 		return () => { alive = false; };
-	}, [provider, client, providerTitle]);
+	}, [provider, env, providerTitle]);
 
 	// Env-var names feed the form's `${}` autocomplete (server-encrypted values).
 	useEffect(() => {
-		if (!client || !isConnected) { setEnvKeys([]); return; }
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		(client as any).account?.getEnvironmentKeys?.()
-			.then((keys: string[]) => setEnvKeys(keys ?? []))
-			.catch(() => setEnvKeys([]));
-	}, [client, isConnected]);
+		if (!env.ready) { setEnvKeys([]); return; }
+		void env.getEnvironmentKeys().then((keys) => setEnvKeys(keys));
+	}, [env]);
 
 	// ── Save paths ───────────────────────────────────────────────────────────
 
 	/** Persists the pipeline-bound record from the selected endpoint. */
 	const savePipeline = useCallback(() => {
-		const endpoint = endpoints.find((e: ISqlEndpoint) => e.key === selectedKey);
+		const endpoint = endpoints.find((e: SqlEndpoint) => e.key === selectedKey);
 		if (!endpoint) { setError('Select a database node.'); return; }
 		const record: SavedSqlConnection = {
 			id: editing?.id ?? newConnectionId(),
@@ -315,7 +313,7 @@ const NewConnectionModal: React.FC<INewConnectionModalProps> = ({ editing, onClo
 		setSaving(true);
 		setError('');
 		try {
-			if (client) {
+			if (env.ready) {
 				// Single-component validate payload (the editor's shape). The
 				// `ui` block is canvas bookkeeping the validator ignores, but
 				// IProjectComponent requires it structurally.
@@ -328,7 +326,7 @@ const NewConnectionModal: React.FC<INewConnectionModalProps> = ({ editing, onClo
 						ui: { position: { x: 0, y: 0 }, measured: { width: 0, height: 0 }, nodeType: 'service' },
 					},
 				};
-				const resp = await client.validate({ pipeline: payload as unknown as Record<string, unknown> });
+				const resp = await env.validate(payload as unknown as Record<string, unknown>);
 				const problem = validationProblemFromResponse(resp);
 				if (problem) throw new Error(problem);
 			}
@@ -347,7 +345,7 @@ const NewConnectionModal: React.FC<INewConnectionModalProps> = ({ editing, onClo
 		} finally {
 			setSaving(false);
 		}
-	}, [provider, client, name, editing, commit, onClose, onSaved, providerTitle]);
+	}, [provider, env, name, editing, commit, onClose, onSaved, providerTitle]);
 
 	/** Footer Save — routes to the active path. */
 	const handleSave = useCallback(() => {
@@ -370,7 +368,7 @@ const NewConnectionModal: React.FC<INewConnectionModalProps> = ({ editing, onClo
 	const title = editing ? 'Edit Connection' : 'New Connection';
 	const footer = (
 		<>
-			<Button variant="primary" onClick={handleSave} disabled={!saveReady || saving || !isConnected}>
+			<Button variant="primary" onClick={handleSave} disabled={!saveReady || saving || !env.ready}>
 				{saving ? 'Validating…' : 'Save'}
 			</Button>
 			<Button variant="ghost" onClick={onClose} disabled={saving}>Cancel</Button>
@@ -415,7 +413,7 @@ const NewConnectionModal: React.FC<INewConnectionModalProps> = ({ editing, onClo
 									: 'No database nodes found. Start a pipeline containing a database node (MySQL, PostgreSQL, or ClickHouse), then reopen this dialog.'}
 							</div>
 						)}
-						{endpoints.map((endpoint: ISqlEndpoint) => (
+						{endpoints.map((endpoint: SqlEndpoint) => (
 							<div
 								key={endpoint.key}
 								role="button"

@@ -25,8 +25,9 @@ import 'shell/themes/rocketride-default.css';
 import '../../../themes/rocketride-vscode.css';
 import '../../styles/root.css';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppBuilderScreen, toRungPins, toVersionInfos } from 'shared/modules/appdev';
-import type { AppBuilderCapabilities, AppBuilderStage, AppErrorRow, AppEventRow, AppHistoryEntry, AppSummary, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus, WirePin, WireRailEntry } from 'shared/modules/appdev';
+import { AppBuilderScreen } from 'shared/tools/appdev/views';
+import { toRungPins, toVersionInfos } from 'shared/tools/appdev';
+import type { AppBuilderCapabilities, AppBuilderStage, AppErrorRow, AppEventRow, AppHistoryEntry, AppSummary, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus, WirePin, WireRailEntry } from 'shared/tools/appdev';
 import { useMessaging } from '../hooks/useMessaging';
 
 // =============================================================================

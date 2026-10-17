@@ -21,8 +21,8 @@ import React, { useCallback, useState } from 'react';
 // Deep import by design: the wizard page carries the FORM alone — the
 // appdev barrel would pull the whole App Builder view layer into this
 // otherwise-thin webview bundle.
-import { NewAppForm } from 'shared/modules/appdev/NewAppForm';
-import type { FrameOptions } from 'shared/modules/appdev/templates';
+import { NewAppForm } from 'shared/tools/appdev/NewAppForm';
+import type { FrameOptions } from 'shared/tools/appdev/templates';
 import { useMessaging } from '../hooks/useMessaging';
 import type { NewAppHostToWebview, NewAppIdentity, NewAppWebviewToHost } from '../../types/newAppTypes';
 

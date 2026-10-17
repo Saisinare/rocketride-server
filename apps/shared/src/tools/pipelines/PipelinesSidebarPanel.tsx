@@ -40,8 +40,8 @@ import { Explorer, NOOP_VFS, SidebarMenu } from 'shell';
 import type { ExplorerConfig, ExplorerEntry, ExplorerStatus, ViewMenu } from 'shell';
 import type { ExplorerFileAction } from 'shell';
 import { PANEL_HOVER_BG, panelStyles } from '../core/chrome/panelStyles';
-import type { ActiveTaskState, ProjectEntry, UnknownTask } from '../../modules/sidebar/types';
-import type { IntroMode } from '../../modules/intro/introPages';
+import type { ActiveTaskState, ProjectEntry, UnknownTask } from './types';
+import type { IntroMode } from '../introCatalog';
 
 /** Default configuration for the pipeline Explorer panel. */
 const PIPELINE_CONFIG: ExplorerConfig = {

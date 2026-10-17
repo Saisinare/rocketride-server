@@ -25,7 +25,7 @@
 // =============================================================================
 //
 // Attach-mechanics live here on purpose (see types.ts). Both connection modes
-// resolve to the same ISqlEndpoint the session layer already speaks:
+// resolve to the same SqlEndpoint the session layer already speaks:
 //
 //  - 'pipeline': a pure mapping onto the stored (projectId, source, nodeId) —
 //    the session resolves the running task's token as it always has.
@@ -44,8 +44,8 @@
 // =============================================================================
 
 import type { RocketRideClient } from 'shell';
-import type { ISqlEndpoint } from './types';
-import type { IDirectConnection, SavedSqlConnection } from './savedConnections';
+import type { SqlEndpoint } from './types';
+import type { DirectConnection, SavedSqlConnection } from './savedConnections';
 
 // =============================================================================
 // CONSTANTS
@@ -69,12 +69,12 @@ const DIRECT_PROJECT_PREFIX = 'sqlconn-';
 // =============================================================================
 
 /** The temp pipeline's project id for one direct connection. */
-function directProjectId(conn: IDirectConnection): string {
+function directProjectId(conn: DirectConnection): string {
 	return `${DIRECT_PROJECT_PREFIX}${conn.id}`;
 }
 
 /** The single database component's id inside a direct temp pipeline. */
-function directNodeId(conn: IDirectConnection): string {
+function directNodeId(conn: DirectConnection): string {
 	return `${conn.provider}_1`;
 }
 
@@ -131,7 +131,7 @@ export function revivalFor(key: string): (() => Promise<void>) | undefined {
  * @param conn - The saved connection.
  * @returns The endpoint shape.
  */
-export function endpointForConnection(conn: SavedSqlConnection): ISqlEndpoint {
+export function endpointForConnection(conn: SavedSqlConnection): SqlEndpoint {
 	if (conn.mode === 'pipeline') {
 		return {
 			key: endpointKeyForConnection(conn),
@@ -165,7 +165,7 @@ export function endpointForConnection(conn: SavedSqlConnection): ISqlEndpoint {
  * @param conn - The saved connection.
  * @returns The endpoint to open documents against.
  */
-export async function resolveEndpoint(client: RocketRideClient, conn: SavedSqlConnection): Promise<ISqlEndpoint> {
+export async function resolveEndpoint(client: RocketRideClient, conn: SavedSqlConnection): Promise<SqlEndpoint> {
 	if (conn.mode === 'pipeline') {
 		return endpointForConnection(conn);
 	}

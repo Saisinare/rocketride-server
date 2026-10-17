@@ -39,8 +39,9 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { SidebarCollapsedGate } from 'shell';
+import { SidebarCollapsedGate, createToolOpServer, getClient, useShellEvent } from 'shell';
 import type { DevToolProps } from 'shell';
+import type { ProfilerOps } from './ops';
 import { localSidebarChannel, createPeerSidebarChannel } from './profilerBridge';
 import type { ProfilerControlsState, ProfilerSidebarChannel } from './profilerBridge';
 
@@ -274,9 +275,31 @@ const ProfilerSidebar: React.FC<IProfilerSidebarProps> = ({ channel = localSideb
  * channel to the frame panel, and the frame's state arrives back the same
  * way (seeded by a `hello`, since the frame may already be running).
  */
-export const ProfilerDevToolSidebar: React.FC<DevToolProps> = ({ peer }) => {
-	const channel = useMemo(() => createPeerSidebarChannel(peer), [peer]);
-	return <ProfilerSidebar channel={channel} gated={false} />;
+export const ProfilerDevToolSidebar: React.FC<DevToolProps> = ({ peer, documents }) => {
+	const sidebarChannel = useMemo(() => createPeerSidebarChannel(peer), [peer]);
+
+	// SINGLE-PANE UX: the profiler is one surface, so activating its sidebar
+	// tab opens (or reveals) the pane — the tool's choice, made here. This
+	// mount only exists because the tab was selected, so mounting IS the
+	// first activation; the shell event covers re-selections.
+	useEffect(() => { documents?.open('', 'Profiler'); }, [documents]);
+	useShellEvent('shell:toolSidebarActivated', ({ appId }) => {
+		if (appId === 'rocketride.profiler') documents?.open('', 'Profiler');
+	});
+
+	// The CONTROLLER realm: serve the frames' raw-command op on this mount's
+	// engine connection (frames hold none).
+	useEffect(() => {
+		const ops = createToolOpServer<ProfilerOps>(peer);
+		ops.serve('profiler.call', async ({ command, args }) => {
+			const live = getClient();
+			if (!live || !live.isConnected()) throw new Error('Not connected to a server.');
+			return live.call(command, args ?? {});
+		});
+		return () => ops.dispose();
+	}, [peer]);
+
+	return <ProfilerSidebar channel={sidebarChannel} gated={false} />;
 };
 
 export default ProfilerSidebar;

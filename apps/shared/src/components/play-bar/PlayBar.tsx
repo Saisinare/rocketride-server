@@ -43,7 +43,7 @@ import type {
 	TaskPlayerController,
 	TaskPlayerState,
 	TaskTimeline,
-} from '../../modules/project/hooks/useTaskEvents';
+} from 'shared/tools/pipelines/project/hooks/useTaskEvents';
 
 // =============================================================================
 // TYPES

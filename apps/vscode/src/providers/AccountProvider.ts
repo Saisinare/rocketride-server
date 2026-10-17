@@ -15,6 +15,7 @@
  */
 
 import * as vscode from 'vscode';
+import { readPrefsSnapshot, writePref } from './PrefsBag';
 import * as crypto from 'crypto';
 import { readFileSync } from 'fs';
 import { ConnectionManager, disconnectCloudConnections } from '../connection/connection';
@@ -35,6 +36,10 @@ import type { StripeKeyUnavailableReason } from './types/checkoutTypes';
 /** Shape of every message the Account webview can send to the extension host. */
 interface AccountWebviewMessage {
 	type: string;
+	/** prefs:set — the generic prefs channel's write. */
+	key?: string;
+	value?: unknown;
+	scope?: 'workspace' | 'global';
 	fields?: Record<string, string>;
 	teamId?: string;
 	keyId?: string;
@@ -151,7 +156,14 @@ export class AccountProvider {
 		switch (message.type) {
 			// -- Lifecycle --------------------------------------------------------
 			case 'view:ready':
+				// Seed the realm's prefs store FIRST (grid layouts answer
+				// synchronously from it — see useGridConfigAnswering).
+				void panel.webview.postMessage({ type: 'prefs:init', values: readPrefsSnapshot(this.context) });
 				await this.sendInitialData(panel);
+				break;
+
+			case 'prefs:set':
+				if (message.key) writePref(this.context, message.key, message.value, message.scope ?? 'workspace');
 				break;
 
 			// -- Profile ----------------------------------------------------------
@@ -877,10 +889,6 @@ export class AccountProvider {
 					// Re-fetch the currently visible section's data (teams, members, etc.)
 					this.handleSectionChange(panel, AccountProvider.currentSection).catch((error) => {
 						console.error(`[AccountProvider] Section reload error: ${error}`);
-					});
-					// Notify the webview that account data has changed
-					panel.webview.postMessage({ type: 'account:accountUpdate' }).then(undefined, (err: unknown) => {
-						console.error(`[AccountProvider] Failed to post accountUpdate: ${err}`);
 					});
 				}
 			});

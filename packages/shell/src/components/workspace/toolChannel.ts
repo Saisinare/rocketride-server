@@ -47,7 +47,10 @@
 
 import type { DevToolProps } from './types';
 
-/** The envelope key — reserved; raw peer payloads must not carry it. */
+/** The envelope key — reserved; raw peer payloads must not carry it.
+ *  Kinds 'state' and 'event' are defined here; kinds 'call' and 'reply'
+ *  belong to the op-call lane (toolOps.ts) and are ignored by this
+ *  channel's subscriptions. */
 const ENVELOPE = '__rrtool';
 
 /** A retained state snapshot on the wire. */

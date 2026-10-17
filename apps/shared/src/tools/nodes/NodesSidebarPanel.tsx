@@ -30,7 +30,7 @@ import { BxNote } from 'shell';
 import { SidebarMenu } from 'shell';
 import type { ViewMenu } from 'shell';
 import { panelStyles } from '../core/chrome/panelStyles';
-import type { IntroMode } from '../../modules/intro/introPages';
+import type { IntroMode } from '../introCatalog';
 
 /** Props for {@link NodesSidebarPanel}. */
 export interface INodesSidebarPanelProps {

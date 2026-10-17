@@ -22,9 +22,9 @@ import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
 // Deep file import (like the templates shim) — the barrel would drag the
 // React view layer into the extension-host bundle.
-import { applyListing, projectListing } from 'shared/modules/appdev/listing';
-import type { PackageJsonLike } from 'shared/modules/appdev/listing';
-import type { ListingDraft } from 'shared/modules/appdev/types';
+import { applyListing, projectListing } from 'shared/tools/appdev/listing';
+import type { PackageJsonLike } from 'shared/tools/appdev/listing';
+import type { ListingDraft } from 'shared/tools/appdev/types';
 
 // =============================================================================
 // TRIGGER FILE

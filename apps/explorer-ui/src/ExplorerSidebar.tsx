@@ -26,8 +26,9 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { useShellConnection } from 'shell';
-import { Explorer } from 'shell';
+import { getClient, useShellConnection, useShellEvent } from 'shell';
+import { Explorer, createToolOpServer } from 'shell';
+import type { ExplorerOps } from './ops';
 import { BxDownload, BxDockLeft, SidebarCollapsedGate } from 'shell';
 import type { ExplorerEntry, ExplorerConfig, ExplorerFileAction } from 'shell';
 import type { IVirtualFileSystem, RocketRideClient, DevToolProps } from 'shell';
@@ -303,8 +304,51 @@ const ExplorerSidebar: React.FC<{ bridge?: ExplorerDocsBridge; gated?: boolean }
  * channel to the frame (which owns Documents), and the active-path highlight
  * arrives back the same way.
  */
-export const ExplorerDevToolSidebar: React.FC<DevToolProps> = ({ peer }) => {
+export const ExplorerDevToolSidebar: React.FC<DevToolProps> = ({ peer, documents }) => {
 	const bridge = useMemo(() => createPeerDocsBridge(peer), [peer]);
+
+	// SINGLE-PANE UX: the explorer's editor surface is one pane, so
+	// activating its sidebar tab opens (or reveals) it — the tool's choice.
+	// This mount only exists because the tab was selected, so mounting IS
+	// the first activation; the shell event covers re-selections.
+	useEffect(() => { documents?.open('', 'File Explorer'); }, [documents]);
+	useShellEvent('shell:toolSidebarActivated', ({ appId }) => {
+		if (appId === 'rocketride.explorer') documents?.open('', 'File Explorer');
+	});
+
+	// ── CONTROLLER duties: the frame holds no RocketRide client ──────────────
+
+	// The frame's store surface, served on this mount's engine connection.
+	useEffect(() => {
+		const ops = createToolOpServer<ExplorerOps>(peer);
+		const needClient = () => {
+			const live = getClient();
+			if (!live || !live.isConnected()) throw new Error('Not connected to a server.');
+			return live;
+		};
+		ops.serve('explorer.listDir', async ({ dir }) => {
+			const result = await needClient().fsListDir(dir);
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			return (result.entries ?? []).map((e: any) => ({ name: e.name as string, type: e.type === 'dir' ? 'dir' as const : 'file' as const }));
+		});
+		ops.serve('explorer.readString', async ({ path }) => needClient().fsReadString(path));
+		ops.serve('explorer.getUrl', async ({ path }) => needClient().fsGetUrl(path));
+		ops.serve('explorer.writeString', async ({ path, content }) => { await needClient().fsWriteString(path, content); });
+		ops.serve('explorer.rename', async ({ oldPath, newPath }) => { await needClient().fsRename(oldPath, newPath); });
+		ops.serve('explorer.stat', async ({ path }) => {
+			const stat = await needClient().fsStat(path);
+			return { ...(stat.type !== undefined ? { type: stat.type } : {}), ...(stat.size !== undefined ? { size: stat.size } : {}) };
+		});
+		ops.serve('explorer.remove', async ({ path }) => {
+			const live = needClient();
+			const stat = await live.fsStat(path);
+			if (stat.type === 'dir') await live.fsRmdir(path, true);
+			else await live.fsDelete(path);
+		});
+		ops.serve('explorer.mkdir', async ({ path }) => { await needClient().fsMkdir(path); });
+		return () => ops.dispose();
+	}, [peer]);
+
 	return <ExplorerSidebar bridge={bridge} gated={false} />;
 };
 

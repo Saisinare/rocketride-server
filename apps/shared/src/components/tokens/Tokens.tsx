@@ -12,7 +12,7 @@
  * Plain React + inline styles using --rr-* theme tokens. No MUI.
  */
 
-import React, { useMemo } from 'react';
+import React from 'react';
 import type { CSSProperties } from 'react';
 import { commonStyles } from 'shell';
 import { EmptyState } from 'shell';
@@ -103,35 +103,9 @@ export interface TokenData {
 	total?: number;
 }
 
-interface TaskStatus {
-	tokens?: TokenData;
-	[key: string]: unknown;
-}
-
-interface SourceInfo {
-	id: string;
-	name: string;
-}
-
-export interface TokensProps {
-	statusMap: Record<string, TaskStatus>;
-	sources: SourceInfo[];
-}
-
 // =============================================================================
 // HELPERS
 // =============================================================================
-
-function sumTokens(entries: TokenData[]): TokenData {
-	const result: TokenData = { cpu_utilization: 0, cpu_memory: 0, gpu_memory: 0, total: 0 };
-	for (const t of entries) {
-		if (t.cpu_utilization !== undefined) result.cpu_utilization! += t.cpu_utilization;
-		if (t.cpu_memory !== undefined) result.cpu_memory! += t.cpu_memory;
-		if (t.gpu_memory !== undefined) result.gpu_memory! += t.gpu_memory;
-		if (t.total !== undefined) result.total! += t.total;
-	}
-	return result;
-}
 
 function fmt(v: number | undefined): string {
 	return v !== undefined ? v.toFixed(1) : '—';
@@ -202,69 +176,3 @@ export const SourceTokensContent: React.FC<SourceTokensContentProps> = ({ tokens
 		</>
 	);
 };
-
-// =============================================================================
-// MULTI-SOURCE (LEGACY)
-// =============================================================================
-
-export const Tokens: React.FC<TokensProps> = ({ statusMap, sources }) => {
-	// Collect all token entries from all sources
-	const { allTokens, aggregated, hasData } = useMemo(() => {
-		const entries: { name: string; tokens: TokenData }[] = [];
-		for (const src of sources) {
-			const ts = statusMap[src.id];
-			if (ts?.tokens) {
-				entries.push({ name: src.name, tokens: ts.tokens });
-			}
-		}
-		return {
-			allTokens: entries,
-			aggregated: sumTokens(entries.map((e) => e.tokens)),
-			hasData: entries.length > 0,
-		};
-	}, [statusMap, sources]);
-
-	if (!hasData) {
-		return <EmptyState title="No token data" description="Token consumption appears here while the pipeline runs or when replaying a recorded run." />;
-	}
-
-	const maxTotal = aggregated.total || 1;
-
-	return (
-		<>
-			{/* Aggregated summary cards */}
-			<div style={styles.summary}>
-				<div style={styles.card}>
-					<div style={styles.cardLabel}>Total Tokens</div>
-					<div style={styles.cardValue}>{fmt(aggregated.total)}</div>
-				</div>
-				<div style={styles.card}>
-					<div style={styles.cardLabel}>CPU Usage</div>
-					<div style={styles.cardValue}>{fmt(aggregated.cpu_utilization)}</div>
-				</div>
-				<div style={styles.card}>
-					<div style={styles.cardLabel}>CPU Memory</div>
-					<div style={styles.cardValue}>{fmt(aggregated.cpu_memory)}</div>
-				</div>
-				<div style={styles.card}>
-					<div style={styles.cardLabel}>GPU Memory</div>
-					<div style={styles.cardValue}>{fmt(aggregated.gpu_memory)}</div>
-				</div>
-			</div>
-
-			{/* Per-source breakdown */}
-			{allTokens.map(({ name, tokens }) => (
-				<div key={name} style={styles.sourceSection}>
-					{allTokens.length > 1 && <div style={styles.sourceName}>{name}</div>}
-					<div style={styles.bars}>
-						<TokenBar label="CPU Usage" value={tokens.cpu_utilization} max={maxTotal} />
-						<TokenBar label="CPU Memory" value={tokens.cpu_memory} max={maxTotal} />
-						<TokenBar label="GPU Memory" value={tokens.gpu_memory} max={maxTotal} />
-					</div>
-				</div>
-			))}
-		</>
-	);
-};
-
-export default Tokens;

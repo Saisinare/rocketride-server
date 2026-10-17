@@ -34,8 +34,9 @@
 //   link   — not handled here; video/audio viewers call fsGetUrl directly
 // =============================================================================
 
-import type { IVirtualFileSystem, RocketRideClient } from 'shell';
+import type { IVirtualFileSystem } from 'shell';
 import { getMediaInfo } from './mediaTypes';
+import type { IExplorerFs } from './fs';
 
 // =============================================================================
 // LOAD ERROR SENTINEL
@@ -123,18 +124,15 @@ export function isFileLoadError(value: unknown): value is FileLoadError {
 /**
  * Creates an IVirtualFileSystem backed by the RocketRide server store.
  *
- * @param client - The connected RocketRideClient instance.
+ * @param fs - The explorer's store surface (local in the full app,
+ *             controller-routed in dev-tool frames — see fs.ts).
  * @returns A VFS that proxies all operations to the server.
  */
-export function createStoreVfs(client: RocketRideClient): IVirtualFileSystem {
+export function createStoreVfs(fs: IExplorerFs): IVirtualFileSystem {
 	return {
 		async list(dir: string) {
 			try {
-				const result = await client.fsListDir(dir);
-				return (result.entries ?? []).map((e: any) => ({
-					name: e.name,
-					type: e.type ?? 'file',
-				}));
+				return await fs.list(dir);
 			} catch {
 				return [];
 			}
@@ -147,10 +145,10 @@ export function createStoreVfs(client: RocketRideClient): IVirtualFileSystem {
 					// Link files (video/audio) store an empty string — their
 					// viewers call fsGetUrl directly for streaming URLs.
 					if (contentMode === 'link') return '';
-					return await client.fsReadString(path);
+					return await fs.readString(path);
 				}
 				// blob — get a presigned URL, fetch the data, return a blob: URL
-				const url = await client.fsGetUrl(path);
+				const url = await fs.getUrl(path);
 				const response = await fetch(url);
 				if (!response.ok) {
 					throw new Error(`Failed to fetch ${path}: ${response.status} ${response.statusText}`);
@@ -175,25 +173,22 @@ export function createStoreVfs(client: RocketRideClient): IVirtualFileSystem {
 		async write(path: string, content: unknown) {
 			const { contentMode } = getMediaInfo(path);
 			if (typeof content === 'string' && contentMode === 'inline') {
-				await client.fsWriteString(path, content);
+				await fs.writeString(path, content);
 			}
 		},
 
 		async rename(oldPath: string, newPath: string) {
-			await client.fsRename(oldPath, newPath);
+			await fs.rename(oldPath, newPath);
 		},
 
 		async delete(path: string) {
-			const stat = await client.fsStat(path);
-			if (stat.type === 'dir') {
-				await client.fsRmdir(path, true);
-			} else {
-				await client.fsDelete(path);
-			}
+			// File-vs-directory branching lives behind the seam (and on the
+			// controller for remote frames).
+			await fs.remove(path);
 		},
 
 		async mkdir(path: string) {
-			await client.fsMkdir(path);
+			await fs.mkdir(path);
 		},
 	};
 }

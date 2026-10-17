@@ -319,11 +319,13 @@ export interface AppDescriptor {
 	 */
 	devToolFrame?: React.ComponentType<DevToolProps>;
 	/**
-	 * Dev-tool sidebar — mounted by the host workbench in ITS sidebar (behind
-	 * the tool's tab) while `devToolFrame` runs in the main surface. The two
-	 * mounts may live in isolated documents (VS Code webviews): durable state
-	 * flows through the server via each mount's own `client`; ephemeral UI
-	 * coordination rides `peer`.
+	 * Dev-tool sidebar — the tool's CONTROLLER, mounted by the host workbench
+	 * in ITS sidebar (behind the tool's tab) while `devToolFrame` runs in the
+	 * main surface. The two mounts may live in isolated documents (VS Code
+	 * webviews). The controller realm owns the tool's single engine
+	 * connection; frames hold none — every frame↔engine interaction is a
+	 * correlated operation to the controller over the tool channel, and
+	 * ephemeral UI coordination rides `peer`.
 	 */
 	devToolSidebar?: React.ComponentType<DevToolProps>;
 }
@@ -333,30 +335,18 @@ export interface AppDescriptor {
 // =============================================================================
 
 /**
- * The structural face of the host's live client handed to a dev tool.
- *
- * Deliberately NOT the RocketRideClient class: the frozen contract rolls
- * classes up (privates stripped), and a class in component props breaks the
- * per-version floors. The real object IS the host's RocketRideClient — cast
- * to it (import the type from 'rocketride') for the full typed surface; the
- * shell connection singleton is also live, so in-shell hooks
- * (useShellConnection, useDashboardData, …) work as usual.
- */
-export interface DevToolClient {
-	/** Raw DAP command against the connected engine. */
-	call<T = unknown>(command: string, args?: Record<string, unknown>, options?: { token?: string; timeout?: number }): Promise<T>;
-}
-
-/**
  * Props every dev-tool component receives from its host workbench.
+ *
+ * NO client member: dev-tool mounts never receive an engine connection.
+ * The tool's sidebar CONTROLLER realm owns one (established by that realm
+ * itself, not through these props), and frames reach the engine solely via
+ * correlated operations over the tool channel (tools/core opCall).
  *
  * No theme member: tools are themed by the ambient `--rr-*` CSS custom
  * properties of the document they mount into (the shell's active theme
  * in-browser; the VS Code webview's editor-variable mapping in the editor).
  */
 export interface DevToolProps {
-	/** Live, authenticated client owned by the host (see {@link DevToolClient}). */
-	client: DevToolClient;
 	/**
 	 * Ephemeral coordination channel to this tool's OTHER mount (frame ↔
 	 * sidebar). Message payloads are opaque to the host. In-shell hosts relay

@@ -34,7 +34,8 @@
 
 import React, { useEffect, useMemo } from 'react';
 import type { CSSProperties } from 'react';
-import { useShellConnection, useWorkspace } from 'shell';
+import { activeDocKeyFor, publishHostConnectionState, toolDocUri, useShellConnection, useWorkspace } from 'shell';
+import { getBuiltinTools } from 'shared/tools/core';
 import type { DevToolProps, Documents } from 'shell';
 import { getFramePeer, getSidebarPeer, getToolChannel } from './peer';
 import { getDocs } from '../docs';
@@ -93,17 +94,31 @@ const DevToolMount: React.FC<DevToolMountProps> = ({ appId, name, slot, docKey }
 	const { loadedApps, loadApp, appLoadErrors } = useWorkspace();
 	const { client, isConnected } = useShellConnection();
 
+	// BUILTIN tools resolve from the static registry — no MF load, no
+	// workspace descriptor; a store tool can never shadow a builtin id.
+	const builtin = getBuiltinTools().find((t) => t.id === appId);
+
 	// Kick the descriptor load; loadApp no-ops when already loaded/loading.
 	useEffect(() => {
-		loadApp(appId);
-	}, [appId, loadApp]);
+		if (!builtin) loadApp(appId);
+	}, [appId, loadApp, builtin]);
 
 	// Host documents: one top-level tab per docKey, named by the tool. Handed
 	// to BOTH slots — the sidebar is where "open this connection" starts.
 	const documents = useMemo<NonNullable<DevToolProps['documents']>>(() => ({
-		open: (key: string, title: string) => getDocs()?.openStaticDocument(`tool:${appId}/${key}`, title),
-		close: (key: string) => getDocs()?.discardDocument(`tool:${appId}/${key}`),
+		// The EMPTY key names the tool's generic/single pane (`tool:<id>`,
+		// no suffix) — the pane a single-pane tool opens on activation.
+		open: (key: string, title: string) => getDocs()?.openStaticDocument(toolDocUri(appId, key), title),
+		close: (key: string) => getDocs()?.discardDocument(toolDocUri(appId, key)),
 	}), [appId]);
+
+	// The HOST owns the tool's `host:connection` system topic (frames derive
+	// their enablement from it; no tool publishes it). Published through the
+	// sidebar-side channel so it retains toward frames; both slots publishing
+	// the same value is an idempotent overwrite.
+	useEffect(() => {
+		publishHostConnectionState(getToolChannel(appId, 'sidebar'), isConnected);
+	}, [appId, isConnected]);
 
 	const label = name ?? appId;
 	const descriptor = loadedApps[appId];
@@ -112,14 +127,16 @@ const DevToolMount: React.FC<DevToolMountProps> = ({ appId, name, slot, docKey }
 	if (!client || !isConnected) {
 		return <div style={styles.status}>Connect to a RocketRide server to open {label}.</div>;
 	}
-	if (loadError) {
+	if (!builtin && loadError) {
 		return <div style={styles.status}>Could not load {label}: {loadError}</div>;
 	}
-	if (!descriptor) {
+	if (!builtin && !descriptor) {
 		return <div style={styles.status}>Loading {label}…</div>;
 	}
 
-	const Component = slot === 'frame' ? descriptor.devToolFrame : descriptor.devToolSidebar;
+	const Component = builtin
+		? (slot === 'frame' ? builtin.frame : builtin.sidebar)
+		: (slot === 'frame' ? descriptor?.devToolFrame : descriptor?.devToolSidebar);
 	if (!Component) {
 		return <div style={styles.status}>{label} does not declare a {slot === 'frame' ? 'devToolFrame' : 'devToolSidebar'}.</div>;
 	}
@@ -134,14 +151,14 @@ const DevToolMount: React.FC<DevToolMountProps> = ({ appId, name, slot, docKey }
 	if (slot === 'sidebar' && docs) {
 		return (
 			<div style={styles.host}>
-				<SidebarWithActiveDoc docs={docs} appId={appId} Component={Component} client={client} peer={peer} channel={channel} documents={documents} />
+				<SidebarWithActiveDoc docs={docs} appId={appId} Component={Component} peer={peer} channel={channel} documents={documents} />
 			</div>
 		);
 	}
 
 	return (
 		<div style={styles.host}>
-			<Component client={client} peer={peer} channel={channel} documents={documents} {...(docKey !== undefined ? { docKey } : {})} />
+			<Component peer={peer} channel={channel} documents={documents} {...(docKey !== undefined ? { docKey } : {})} />
 		</div>
 	);
 };
@@ -151,7 +168,6 @@ interface ISidebarWithActiveDocProps {
 	docs: Documents;
 	appId: string;
 	Component: React.ComponentType<DevToolProps>;
-	client: DevToolProps['client'];
 	peer: DevToolProps['peer'];
 	channel: DevToolProps['channel'];
 	documents: NonNullable<DevToolProps['documents']>;
@@ -164,16 +180,13 @@ interface ISidebarWithActiveDocProps {
  * other document — another tool, a pipeline, a file — maps to null so the
  * controller clears its selection.
  */
-const SidebarWithActiveDoc: React.FC<ISidebarWithActiveDocProps> = ({ docs, appId, Component, client, peer, channel, documents }) => {
+const SidebarWithActiveDoc: React.FC<ISidebarWithActiveDocProps> = ({ docs, appId, Component, peer, channel, documents }) => {
 	const state = docs.useStore();
 	const group = state.groups[state.activeGroupId];
 	const editorId = group?.editorIds[group.activeEditorIndex];
 	const uri = editorId ? state.editors[editorId]?.documentUri : undefined;
-	const prefix = `tool:${appId}/`;
-	const activeDocKey = uri !== undefined && uri.startsWith(prefix)
-		? uri.slice(prefix.length)
-		: uri === `tool:${appId}` ? '' : null;
-	return <Component client={client} peer={peer} channel={channel} documents={documents} activeDocKey={activeDocKey} />;
+	const activeDocKey = activeDocKeyFor(uri, appId);
+	return <Component peer={peer} channel={channel} documents={documents} activeDocKey={activeDocKey} />;
 };
 
 export default DevToolMount;

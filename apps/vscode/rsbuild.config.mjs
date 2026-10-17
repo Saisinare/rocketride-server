@@ -61,7 +61,6 @@ export default defineConfig({
 			'page-settings': './src/providers/views/Settings/index.tsx',
 			'page-project': './src/providers/views/Project/index.tsx',
 			'page-welcome': './src/providers/views/Welcome/index.tsx',
-			'page-monitor': './src/providers/views/Monitor/index.tsx',
 			'page-account': './src/providers/views/Account/index.tsx',
 			'page-environment': './src/providers/views/Environment/index.tsx',
 			'page-app': './src/providers/views/App/index.tsx',

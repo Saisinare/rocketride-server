@@ -51,7 +51,7 @@ import type * as MonacoNS from 'monaco-editor';
 import { MonacoEditor } from 'shared/modules/monaco';
 import type { Monaco } from 'shared/modules/monaco';
 import type { SqlDialect } from '../connect';
-import type { ICompletionModel } from '../sql/completion';
+import type { CompletionModel } from '../sql/completion';
 import { suggestAt } from '../sql/completion';
 
 // =============================================================================
@@ -59,7 +59,7 @@ import { suggestAt } from '../sql/completion';
 // =============================================================================
 
 /** One decorated character range in the buffer. */
-export interface IDecorationRange {
+export interface DecorationRange {
 	/** Start offset (inclusive). */
 	start: number;
 	/** End offset (exclusive). */
@@ -69,7 +69,7 @@ export interface IDecorationRange {
 }
 
 /** Where the caret and selection are, after a settle. */
-export interface IEditorCursorState {
+export interface EditorCursorState {
 	/** Character offset of the caret. */
 	offset: number;
 	/** Selected text, or '' when the selection is empty. */
@@ -81,7 +81,7 @@ export interface IEditorCursorState {
 }
 
 /** The imperative surface `QueryView` drives the editor through. */
-export interface ISqlEditorHandle {
+export interface SqlEditorHandle {
 	/** The selected text, or '' when the selection is empty. */
 	getSelectionText(): string;
 	/**
@@ -93,13 +93,13 @@ export interface ISqlEditorHandle {
 	/** Character offset of the caret in the buffer. */
 	getCursorOffset(): number;
 	/** Replace the statement decorations (pass [] to clear). */
-	setDecorations(ranges: IDecorationRange[]): void;
+	setDecorations(ranges: DecorationRange[]): void;
 	/** Move focus into the editor. */
 	focus(): void;
 }
 
 /** Props for the {@link SqlEditor} component. */
-export interface ISqlEditorProps {
+export interface SqlEditorProps {
 	/** Current SQL text. */
 	value: string;
 	/** Fired with the new text on every edit. */
@@ -120,9 +120,9 @@ export interface ISqlEditorProps {
 	 * can show which statement a run would send. Not the run path — that reads
 	 * the handle, which is never stale.
 	 */
-	onCursorChange?: (state: IEditorCursorState) => void;
+	onCursorChange?: (state: EditorCursorState) => void;
 	/** Schema-derived suggestions for this connection, when a snapshot exists. */
-	completion?: ICompletionModel | null;
+	completion?: CompletionModel | null;
 }
 
 // =============================================================================
@@ -194,7 +194,7 @@ function languageFor(dialect: SqlDialect): string {
 // =============================================================================
 
 /** Per-editor completion state, keyed by the editor model's URI. */
-const completionByModel = new Map<string, { model: ICompletionModel; dialect: SqlDialect }>();
+const completionByModel = new Map<string, { model: CompletionModel; dialect: SqlDialect }>();
 
 /** True once the providers are registered; they are never re-registered. */
 let providersRegistered = false;
@@ -275,7 +275,7 @@ function ensureCompletionProviders(monaco: typeof MonacoNS): void {
  * minimap off, schema-aware suggestions, statement decorations, and the run
  * keybindings wired to the callbacks.
  */
-export const SqlEditor = forwardRef<ISqlEditorHandle, ISqlEditorProps>(function SqlEditor(
+export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function SqlEditor(
 	{ value, onChange, dialect, onRun, onRunAll, onExplain, onCursorChange, completion },
 	ref,
 ) {
@@ -333,7 +333,7 @@ export const SqlEditor = forwardRef<ISqlEditorHandle, ISqlEditorProps>(function 
 		if (cursorTimerRef.current) clearTimeout(cursorTimerRef.current);
 	}, []);
 
-	useImperativeHandle(ref, (): ISqlEditorHandle => ({
+	useImperativeHandle(ref, (): SqlEditorHandle => ({
 		getSelectionText: () => {
 			const editor = editorRef.current;
 			const selection = editor?.getSelection();

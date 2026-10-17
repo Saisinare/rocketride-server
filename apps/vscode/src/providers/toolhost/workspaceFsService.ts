@@ -37,8 +37,8 @@
 //   { type:'svc:fs',         id, method:'workspaceRoots' }
 //   { type:'svc:fs',         id, method:'readText',   path }
 //   { type:'svc:fs',         id, method:'readBase64', path, maxBytes }
-//   { type:'svc:fs.watch',   id, globs }
-//   { type:'svc:fs.unwatch', id }
+//   { type:'svc:fs:watch',   id, globs }
+//   { type:'svc:fs:unwatch', id }
 // host → webview:
 //   { type:'svc:fs:result', id, ok:true, result } | { ..., ok:false, error }
 //   { type:'svc:fs:event',  id, path }
@@ -57,8 +57,8 @@ type FsServiceRequest =
 	| { type: 'svc:fs'; id: number; method: 'workspaceRoots' }
 	| { type: 'svc:fs'; id: number; method: 'readText'; path: string }
 	| { type: 'svc:fs'; id: number; method: 'readBase64'; path: string; maxBytes: number }
-	| { type: 'svc:fs.watch'; id: number; globs: string[] }
-	| { type: 'svc:fs.unwatch'; id: number };
+	| { type: 'svc:fs:watch'; id: number; globs: string[] }
+	| { type: 'svc:fs:unwatch'; id: number };
 
 /** Posts one message into the owning webview. */
 type Post = (message: unknown) => void;
@@ -97,10 +97,10 @@ export class WorkspaceFsService {
 			case 'svc:fs':
 				void this.respond(msg, post);
 				return true;
-			case 'svc:fs.watch':
+			case 'svc:fs:watch':
 				this.startWatch(msg.id, msg.globs, post);
 				return true;
-			case 'svc:fs.unwatch':
+			case 'svc:fs:unwatch':
 				this.stopWatch(msg.id);
 				return true;
 			default:
