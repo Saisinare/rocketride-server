@@ -33,6 +33,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { DevToolProps, ShellNotification } from 'shell';
+import { showConfirmDialog } from 'shell';
 import { ConnectionManager, useShellConnection, useWorkspace } from 'shell';
 import { AgentSession, AGENTS_DIR } from '../../agent/agent';
 import type { AgentSessionMeta } from '../../agent/agent';
@@ -101,10 +102,8 @@ export const AgentTool: React.FC<DevToolProps> = ({ documents }) => {
 		onDeleteSession: (sessionId: string) => {
 			void (async () => {
 				const title = sessions.find((s) => s.sessionId === sessionId)?.title ?? sessionId;
-				// FAIL-SAFE: a host that provides no confirm capability gets NO
-			// destructive deletion — absence must never mean "yes".
-			if (!services.confirm) return;
-			const confirmed = await services.confirm('Delete session', `Are you sure you want to delete "${title}"?`, 'Delete');
+				// The shell's own dialog — realm UI, present in every host.
+			const confirmed = await showConfirmDialog('Delete session', `Are you sure you want to delete "${title}"?`, 'Delete');
 				if (!confirmed) return;
 				await AgentSession.deleteSession(sessionId);
 				// Force-close the conversation tab regardless of state.

@@ -558,7 +558,6 @@ const SidebarProvider: React.FC = () => {
 		pipelineAction: handleSourceAction,
 		newPipeline: () => handleNavigate('new'),
 		openUnknownTask: handleOpenUnknownTask,
-		confirm: showConfirm,
 		activeDocKey: activeFilePath,
 		appdevApps,
 		appdevFrames,

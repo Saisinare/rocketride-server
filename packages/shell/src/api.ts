@@ -143,6 +143,7 @@ import { NavButton } from './components/layout/Sidebar';
 // message, destructive, confirmDisabled) — the layout-local dialog stays
 // shell-internal chrome.
 import { ConfirmDialog } from './components/modal/ConfirmDialog';
+import { showConfirmDialog } from './components/modal/confirmService';
 import { PopupRow } from './components/PopupRow';
 import { AnchoredPopup } from './components/AnchoredPopup';
 
@@ -198,6 +199,9 @@ export type { ToolOpMap, ToolOpSpec, ToolOpParams, ToolOpResult, ToolControllerF
 // types its own keys and receives a pre-scoped partition (scopedPrefs) —
 // isolation by construction, no shared flat bag.
 export { useLatest } from './hooks/useLatest';
+// The shell's own confirmation dialog — realm UI, usable by any tool
+// without a host capability (ToolHostServices.confirm is deprecated).
+export { showConfirmDialog } from './components/modal/confirmService';
 export { typedPrefs, scopedPrefs, createBridgedPrefsStore, usePref } from './components/workspace/prefsStore';
 export { useGridConfigAnswering } from './components/data-grid/gridConfigAnswering';
 export type { PrefScope, PrefsStore, ShellPrefsMap, TypedPrefsStore } from './components/workspace/prefsStore';
@@ -550,6 +554,7 @@ export const shellApi = {
 	get useClient() { return useClient; },
 	get useShellEvent() { return useShellEvent; },
 	get useLatest() { return useLatest; },
+	get showConfirmDialog() { return showConfirmDialog; },
 
 	// Tool framework — channel, protocol maps, ops, prefs store, tool host.
 	get createToolChannel() { return createToolChannel; },
