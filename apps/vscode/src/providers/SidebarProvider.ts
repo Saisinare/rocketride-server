@@ -121,6 +121,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 	constructor(private readonly extensionUri: vscode.Uri, private readonly context?: vscode.ExtensionContext, private readonly devTools?: DevToolStore, private readonly devToolBridge?: DevToolBridge) {
 		// Restore the last mode (previously session-only — it died on reload)
 		// and the persisted strip order.
+		// DELIBERATE per-host default: 'apps' in VS Code, 'agent' on web. A
+		// persisted mode whose tool is disabled falls back in SidebarChrome.
 		this.sidebarMode = (this.context ? readPref<string>(this.context, SIDEBAR_MODE_KEY) : undefined) ?? 'apps';
 		this.tabOrder = (this.context ? readPref<string[]>(this.context, TAB_ORDER_KEY) : undefined) ?? [];
 		this.disabledBuiltins = (this.context ? readPref<string[]>(this.context, DISABLED_BUILTINS_KEY) : undefined) ?? [];

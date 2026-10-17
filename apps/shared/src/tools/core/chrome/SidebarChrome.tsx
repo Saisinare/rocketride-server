@@ -344,8 +344,10 @@ export const SidebarChrome: React.FC<ISidebarChromeProps> = ({ items, headerSlot
 	};
 
 	// A requested mode is honored only when its tab exists — membership in
-	// the menu IS the wiredness check; anything else falls back.
-	const fallback = fallbackId ?? items[0]?.id ?? 'toolStore';
+	// the menu IS the wiredness check; anything else (including a persisted
+	// mode whose tool the user has since DISABLED) falls back to the strip's
+	// first tab, in the user's own tab order.
+	const fallback = fallbackId ?? modeMenu.entries[0]?.id ?? items[0]?.id ?? 'toolStore';
 	const mode = sidebarMode !== undefined && modeMenu.entries.some((e) => e.id === sidebarMode) ? sidebarMode : fallback;
 
 	return (

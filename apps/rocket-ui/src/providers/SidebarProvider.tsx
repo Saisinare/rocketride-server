@@ -607,6 +607,8 @@ const SidebarProvider: React.FC = () => {
 	// the choice survives reload via workspace state. Agent is the startup
 	// default when no stored choice exists (requirement: default tab unless
 	// workspace state says otherwise).
+	// DELIBERATE per-host default: 'agent' on web, 'apps' in VS Code. A
+	// persisted mode whose tool is disabled falls back in SidebarChrome.
 	const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => (prefs?.sidebarMode as SidebarMode | undefined) ?? 'agent');
 	// The TRUE previous mode, mirrored from state — only a strip selection
 	// below emits the deactivation for the tab it replaces.
@@ -683,7 +685,6 @@ const SidebarProvider: React.FC = () => {
 				<ToolHostProvider value={toolServices}>
 					<SidebarChrome
 						items={builtinItems}
-						fallbackId="pipelines"
 						showModeStrip
 						hideModeStrip={!!shellView}
 						sidebarMode={effectiveMode}

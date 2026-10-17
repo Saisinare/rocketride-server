@@ -733,7 +733,7 @@ const SidebarViewWebview: React.FC = () => {
 
 	return (
 		<ToolHostProvider value={toolServices}>
-			<SidebarChrome items={builtinItems} fallbackId="pipelines" footerSlot={footerSlot} sidebarMode={sidebarMode} onSidebarModeChange={onSidebarModeChange} toolTabs={{ tools, available: availableTools, onOpenTool, onFocusTool, onShowTool, onRemoveTool, onRefreshTools, renderToolPanel, builtins: builtinStoreRows, onToggleBuiltin }} tabOrder={tabOrder} onReorderTabs={onReorderTabs} />
+			<SidebarChrome items={builtinItems} footerSlot={footerSlot} sidebarMode={sidebarMode} onSidebarModeChange={onSidebarModeChange} toolTabs={{ tools, available: availableTools, onOpenTool, onFocusTool, onShowTool, onRemoveTool, onRefreshTools, renderToolPanel, builtins: builtinStoreRows, onToggleBuiltin }} tabOrder={tabOrder} onReorderTabs={onReorderTabs} />
 		</ToolHostProvider>
 	);
 };
