@@ -674,11 +674,16 @@ export function devFallbackEntry(a: ServerAppEntry, nonce: string): string | nul
  * AFTER the entry ran (a broken expose or factory) leaves an initialized
  * container that must not be overwritten.
  *
+ * RUNTIME-008 also wraps a ScriptExecutionError: the script was fetched and
+ * ran, then threw. That entry did run, so it is not a load failure; Module
+ * Federation's own loadEntryError recovery excludes it the same way.
+ *
  * @param err - The rejection from loadRemote.
  * @returns True when the entry script never loaded.
  */
 export function isEntryLoadFailure(err: unknown): boolean {
 	const text = err instanceof Error ? `${err.name} ${err.message}` : String(err);
+	if (text.includes('ScriptExecutionError')) return false;
 	return text.includes('RUNTIME-008') || text.includes('ScriptNetworkError');
 }
 

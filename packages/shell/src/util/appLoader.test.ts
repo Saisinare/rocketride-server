@@ -171,4 +171,10 @@ test('only an entry script that never loaded counts as an entry-load failure', (
 	assert.equal(isEntryLoadFailure(network), true);
 	// A failure after the entry ran (broken expose or factory) must not fall back
 	assert.equal(isEntryLoadFailure(new Error('Cannot read properties of undefined (reading "app")')), false);
+	// RUNTIME-008 wrapping a ScriptExecutionError: the entry ran and threw, so it is not a load failure
+	const execution = new Error('[ Federation Runtime ]: Failed to load script resources. #RUNTIME-008 ScriptExecutionError: boom');
+	assert.equal(isEntryLoadFailure(execution), false);
+	const executionByName = new Error('Script "http://localhost:3030/remoteEntry.js" threw during execution');
+	executionByName.name = 'ScriptExecutionError';
+	assert.equal(isEntryLoadFailure(executionByName), false);
 });
