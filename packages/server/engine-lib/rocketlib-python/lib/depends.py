@@ -1015,6 +1015,27 @@ def _save_verdict(requirements_path: str, constraints_path: str):
         debug(f'  Could not record the satisfied verdict ({e}); the next process will resolve again')
 
 
+# A hosted engine's tasks carry --hosted (ai task_engine CONST_HOSTED_CHILD_FLAG).
+# There GPU inference runs on the model server and torch is never installed:
+# not by a model loader (ai.common.models.gpu_guard refuses those first) and not
+# as a dependency of some other package, which only the resolved plan shows.
+_HOSTED_FLAG = '--hosted'
+_HOSTED_REFUSED = frozenset({'torch', 'torchvision', 'torchaudio'})
+
+
+def _hosted_refusal(packages: list[str]) -> Optional[str]:
+    """Why a hosted engine must refuse this install plan, or None if it may proceed."""
+    if _HOSTED_FLAG not in sys.argv:
+        return None
+    refused = sorted({p for p in packages if p.lower().replace('_', '-') in _HOSTED_REFUSED})
+    if not refused:
+        return None
+    return (
+        f'{", ".join(refused)} would be installed, and torch is never installed on RocketRide Cloud: '
+        f'GPU inference runs on the model server.'
+    )
+
+
 def _install_dry_run(requirements_path: str, constraints_path: str) -> list[str]:
     """
     Run uv pip install --dry-run and return list of packages that would be installed.
@@ -1123,6 +1144,12 @@ def _install_requirements_inner(requirements_path: str, constraints_path: str):
     # Check what needs to be installed (raises on failure)
     packages = _install_dry_run(requirements_path, constraints_path)
     debug(f'Dry-run found {len(packages)} packages to install: {packages}')
+
+    # Refuse before anything is fetched, so nothing lands in site-packages
+    refusal = _hosted_refusal(packages)
+    if refusal:
+        error(f'Refusing {requirements_path}: {refusal}')
+        raise RuntimeError(refusal)
 
     # If dry-run returned empty list, all packages are satisfied
     if len(packages) == 0:

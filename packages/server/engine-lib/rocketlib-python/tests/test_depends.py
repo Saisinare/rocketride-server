@@ -447,6 +447,43 @@ class TestSatisfiedVerdict:
         assert len(env.resolves) == 1
 
 
+class TestHostedRefusesTorch:
+    """A hosted engine never installs torch, even as another package's dependency (#2681)."""
+
+    @pytest.fixture
+    def plan(self, exe_dir, monkeypatch):
+        """A requirements file whose resolved plan is whatever the test sets."""
+        monkeypatch.setattr(depends, '_get_site_packages', lambda: str(exe_dir / 'site-packages'))
+        monkeypatch.setattr(depends, 'updateProgress', lambda message: None)
+        monkeypatch.setattr(depends, '_start_heartbeat', lambda: None)
+        monkeypatch.setattr(depends, '_stop_heartbeat', lambda: None)
+        monkeypatch.setattr(depends, 'error', lambda message: None)
+        pending = []
+        monkeypatch.setattr(depends, '_install_dry_run', lambda *a: list(pending))
+        return SimpleNamespace(
+            req=_write(exe_dir / 'nodes' / 'demo' / 'requirements.txt', 'sentence-transformers\n'),
+            constraints=_write(exe_dir / 'cache' / 'constraints.txt', ''),
+            pending=pending,
+        )
+
+    def test_hosted_task_refuses_a_plan_that_pulls_torch(self, plan, monkeypatch):
+        monkeypatch.setattr(depends.sys, 'argv', ['engine', 'node.py', '--hosted'])
+        monkeypatch.setattr(depends.subprocess, 'Popen', lambda *a, **k: pytest.fail('nothing may be installed'))
+        plan.pending[:] = ['sentence-transformers', 'torch', 'nvidia-cublas-cu12']
+
+        with pytest.raises(RuntimeError, match='never installed on RocketRide Cloud'):
+            depends._install_requirements(str(plan.req), str(plan.constraints))
+
+    def test_names_are_normalised(self, monkeypatch):
+        monkeypatch.setattr(depends.sys, 'argv', ['engine', 'node.py', '--hosted'])
+        assert depends._hosted_refusal(['TorchVision', 'numpy']) is not None
+        assert depends._hosted_refusal(['requests', 'numpy']) is None
+
+    def test_local_engine_may_install_torch(self, monkeypatch):
+        monkeypatch.setattr(depends.sys, 'argv', ['engine', 'node.py'])
+        assert depends._hosted_refusal(['torch']) is None
+
+
 class TestDepends:
     def test_missing_requirements_file_returns_before_bootstrapping(self, tmp_path, monkeypatch):
         monkeypatch.setattr(depends, 'bootstrap', lambda: pytest.fail('bootstrap must not run'))
