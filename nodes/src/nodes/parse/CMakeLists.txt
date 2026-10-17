@@ -20,7 +20,13 @@ if(ROCKETRIDE_PLAT_LIN)
     if(NOT EXISTS "${sevenZipLib}")
         message(FATAL_ERROR "parse: ${sevenZipLib} is missing; the sevenzipjbinding vcpkg port did not install")
     endif()
-    add_custom_command(TARGET parse POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${sevenZipLib}" "${CMAKE_CURRENT_BINARY_DIR}/"
+    set(sevenZipCopy "${CMAKE_CURRENT_BINARY_DIR}/lib7-Zip-JBinding.so")
+    # A tracked dependency rather than a POST_BUILD step: a rebuilt port refreshes
+    # the copy even when libparse.so itself is up to date.
+    add_custom_command(OUTPUT "${sevenZipCopy}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${sevenZipLib}" "${sevenZipCopy}"
+        DEPENDS "${sevenZipLib}"
         COMMENT "Copying lib7-Zip-JBinding.so beside libparse.so")
+    add_custom_target(parse_sevenzipjbinding ALL DEPENDS "${sevenZipCopy}")
+    add_dependencies(parse parse_sevenzipjbinding)
 endif()

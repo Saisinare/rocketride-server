@@ -19,6 +19,12 @@
 
 vcpkg_check_linkage(ONLY_DYNAMIC_LIBRARY)
 set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
+# The library is shipped as <engine>/nodes/parse/lib7-Zip-JBinding.so and must find
+# the engine's libc++ like every node library does (rocketride-node.cmake):
+# $ORIGIN/../.. and $ORIGIN/../../lib. vcpkg's post-build fixup would rewrite that
+# relative to its own tree ($ORIGIN:$ORIGIN/..), and the image's ldd check then
+# fails on libc++.so.1. The RPATH is set with patchelf below instead.
+set(VCPKG_FIXUP_ELF_RPATH OFF)
 
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
@@ -60,18 +66,24 @@ vcpkg_cmake_configure(
         "-DJAVA_JDK=${JDK}"
         "-DJAVA_HOME=${JDK}"
         "-DJAVA_HEADER_COMPILE=${JAVAH}"
-        # Loaded from dist/server/nodes/parse; the engine's libc++ is two levels up
-        # in dist/server/lib. By the time the JVM loads it that library is already
-        # in the process, so this is a safety net, not the normal path.
-        "-DCMAKE_INSTALL_RPATH=\$ORIGIN/../../lib"
-        -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
 )
 
 vcpkg_cmake_build(TARGET 7-Zip-JBinding)
 
 set(LIB_NAME "${CMAKE_SHARED_LIBRARY_PREFIX}7-Zip-JBinding${CMAKE_SHARED_LIBRARY_SUFFIX}")
-file(INSTALL "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-rel/jbinding-cpp/${LIB_NAME}"
-     DESTINATION "${CURRENT_PACKAGES_DIR}/lib/sevenzipjbinding")
+set(BUILT_LIB "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-rel/jbinding-cpp/${LIB_NAME}")
+
+# Loaded from <engine>/nodes/parse: the engine runtime is two levels up, in <engine>
+# and <engine>/lib, the RPATH rocketride_add_node gives every node library. Set with
+# patchelf after the build: passed through -DCMAKE_INSTALL_RPATH the $ORIGIN did not
+# survive the project's link step (the file came out with "/../..").
+vcpkg_find_acquire_program(PATCHELF)
+vcpkg_execute_required_process(
+    COMMAND "${PATCHELF}" --set-rpath "\$ORIGIN/../..:\$ORIGIN/../../lib" "${BUILT_LIB}"
+    WORKING_DIRECTORY "${CURRENT_BUILDTREES_DIR}"
+    LOGNAME "patchelf-${TARGET_TRIPLET}")
+
+file(INSTALL "${BUILT_LIB}" DESTINATION "${CURRENT_PACKAGES_DIR}/lib/sevenzipjbinding")
 
 vcpkg_install_copyright(FILE_LIST
     "${SOURCE_PATH}/COPYING"

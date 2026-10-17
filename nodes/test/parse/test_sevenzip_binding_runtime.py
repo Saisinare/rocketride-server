@@ -76,17 +76,18 @@ _JAR_MEMBER = 'Linux-amd64/lib7-Zip-JBinding.so'
 _STB_GNU_UNIQUE = 10
 _SHN_UNDEF = 0
 _SHT_STRTAB, _SHT_DYNAMIC, _SHT_DYNSYM = 3, 6, 11
-_DT_NEEDED = 1
+_DT_NEEDED, _DT_RPATH, _DT_RUNPATH = 1, 15, 29
 _STD_PREFIXES = ('_ZNSt', '_ZNKSt', '_ZSt', '_ZTVSt', '_ZTISt', '_ZTSSt', '_ZGVZNSt', '_ZGVNSt')
 
 
-def _elf_dynamic_info(path: Path) -> tuple[list[tuple[str, int, int]], list[str]]:
+def _elf_dynamic_info(path: Path) -> tuple[list[tuple[str, int, int]], list[str], list[str]]:
     """
-    Read the dynamic symbols and the NEEDED entries of a little-endian ELF64 file.
+    Read the dynamic symbols, the NEEDED entries and the RUNPATH of a little-endian ELF64 file.
 
     Returns:
-        ``(symbols, needed)`` where ``symbols`` is a list of ``(name, binding, section index)``
-        for every ``.dynsym`` entry and ``needed`` the ``DT_NEEDED`` library names.
+        ``(symbols, needed, runpath)``: ``symbols`` is a list of ``(name, binding, section index)``
+        for every ``.dynsym`` entry, ``needed`` the ``DT_NEEDED`` library names, ``runpath`` the
+        ``DT_RUNPATH`` (or ``DT_RPATH``) entries.
     """
     data = path.read_bytes()
     assert data[:4] == b'\x7fELF' and data[4] == 2 and data[5] == 1, f'{path}: not a little-endian ELF64 file'
@@ -106,6 +107,7 @@ def _elf_dynamic_info(path: Path) -> tuple[list[tuple[str, int, int]], list[str]
 
     symbols: list[tuple[str, int, int]] = []
     needed: list[str] = []
+    runpath: list[str] = []
     for sh_type, off, size, link, entsize in sections:
         if sh_type == _SHT_DYNSYM:
             name_at = strtab(link)
@@ -118,7 +120,9 @@ def _elf_dynamic_info(path: Path) -> tuple[list[tuple[str, int, int]], list[str]
                 d_tag, d_val = struct.unpack_from('<qQ', data, pos)
                 if d_tag == _DT_NEEDED:
                     needed.append(name_at(d_val))
-    return symbols, needed
+                elif d_tag in (_DT_RPATH, _DT_RUNPATH):
+                    runpath.extend(name_at(d_val).split(':'))
+    return symbols, needed, runpath
 
 
 def _exports(symbols) -> list[tuple[str, int]]:
@@ -136,16 +140,28 @@ def test_shipped_binding_is_present():
 
 def test_shipped_binding_links_libcxx_not_libstdcxx():
     """The shipped binding uses the engine's C++ runtime and carries none of its own."""
-    _symbols, needed = _elf_dynamic_info(_SHIPPED)
+    _symbols, needed, _runpath = _elf_dynamic_info(_SHIPPED)
     assert 'libc++.so.1' in needed, f'NEEDED {needed}: expected the engine libc++'
     assert not any(lib.startswith('libstdc++') for lib in needed), (
         f'NEEDED {needed}: libstdc++ would collide with torch'
     )
 
 
+def test_shipped_binding_runpath_reaches_the_engine_runtime():
+    """
+    The RUNPATH must find libc++ beside the engine, like every node library's does.
+
+    ``Dockerfile.engine-base`` runs ``ldd`` over every shipped ``.so`` in a clean image and fails
+    the build on an unresolved dependency; vcpkg's rpath fixup once rewrote this one to
+    ``$ORIGIN:$ORIGIN/..``, one level short.
+    """
+    _symbols, _needed, runpath = _elf_dynamic_info(_SHIPPED)
+    assert '$ORIGIN/../..' in runpath, f'RUNPATH {runpath}: the engine runtime is two levels up (rocketride-node.cmake)'
+
+
 def test_shipped_binding_exports_only_jni_entry_points():
     """No ``std::`` and no GNU-unique export: nothing a second C++ runtime could bind to."""
-    symbols, _needed = _elf_dynamic_info(_SHIPPED)
+    symbols, _needed, _runpath = _elf_dynamic_info(_SHIPPED)
     exports = _exports(symbols)
     std = sorted(name for name, _b in exports if name.startswith(_STD_PREFIXES))
     unique = sorted(name for name, bind in exports if bind == _STB_GNU_UNIQUE)
@@ -274,7 +290,7 @@ def test_control_jar_binding_survives_with_libstdcxx_preloaded(tmp_path, jar_pre
 
 def test_jar_prebuilt_binding_exports_a_bundled_libstdcxx(jar_prebuilt_binding):
     """What the ELF guard above protects against, measured on the jar's library."""
-    symbols, needed = _elf_dynamic_info(jar_prebuilt_binding)
+    symbols, needed, _runpath = _elf_dynamic_info(jar_prebuilt_binding)
     exports = _exports(symbols)
     std = [name for name, _b in exports if name.startswith(_STD_PREFIXES)]
     unique = [name for name, bind in exports if bind == _STB_GNU_UNIQUE]
