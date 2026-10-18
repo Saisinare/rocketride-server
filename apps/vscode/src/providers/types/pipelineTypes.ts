@@ -17,11 +17,12 @@
  */
 
 import type { ViewState, TaskStatus } from 'shared/tools/pipelines/project/types';
-import type { ShellHostToWebview, ShellWebviewToHost } from './shellTypes';
 
 /** All messages the extension host can send to the ProjectWebview. */
 export type PipelineHostToWebview =
-	| ShellHostToWebview
+	// Synthesized LOCALLY from the realm's bus event (mirror.event → the
+	// same fold) — no host posts it anymore.
+	| { type: 'shell:event'; event: unknown }
 	| { type: 'project:load'; project: any; viewState: ViewState; prefs: Record<string, unknown>; services: Record<string, any>; icons?: Record<string, string>; isConnected: boolean; cloudConnectionConfigured?: boolean; isSubscribed?: boolean; statuses?: Record<string, TaskStatus>; serverHost?: string; oauthReturnUrl?: string; isReadonly?: boolean; envKeys?: string[] }
 	| { type: 'project:oauthTokens'; tokens: string; state: string }
 	| { type: 'project:update'; project: any }
@@ -37,7 +38,7 @@ export type PipelineHostToWebview =
 
 /** All messages the ProjectWebview can send to the extension host. */
 export type PipelineWebviewToHost =
-	| ShellWebviewToHost
+	| { type: 'view:ready' }
 	| { type: 'project:contentChanged'; project: any }
 	| { type: 'project:viewStateChange'; viewState: ViewState }
 	| { type: 'project:prefsChange'; prefs: Record<string, unknown> }
