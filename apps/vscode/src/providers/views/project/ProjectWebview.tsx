@@ -147,6 +147,44 @@ const ProjectWebview: React.FC = () => {
 	const pendingNodeSchemas = useRef<Map<number, { resolve: (v: Record<string, any> | undefined) => void; reject: (e: Error) => void }>>(new Map());
 	const nodeSchemaCounter = useRef(0);
 
+	// --- Framework state off the bus (mirror events + retained topics) --------
+	// Connection, services, env keys, and cloud-setup state all ride the
+	// bus's generic lanes now — no typed host pushes.
+	useEffect(() => {
+		const cm = ConnectionManager.getInstance();
+		const applyConnection = (): void => {
+			const connected = cm.isConnected();
+			if (connected) {
+				setStatusMap({});
+				setLiveLogEvents([]);
+			}
+			setIsConnected(connected);
+			const host = cm.getHttpUrl();
+			if (host) setServerHost(host);
+		};
+		const applyServices = (payload: { services: Record<string, unknown>; icons?: Record<string, string> } | null): void => {
+			if (!payload?.services) return;
+			registerServiceIcons({ services: payload.services as Record<string, any>, icons: payload.icons ?? {} });
+			setServicesJson(payload.services as Record<string, any>);
+		};
+		applyConnection();
+		applyServices(cm.getCachedServices() as { services: Record<string, unknown>; icons?: Record<string, string> } | null);
+		const offs = [
+			cm.on('shell:statusChange', applyConnection),
+			cm.on('shell:servicesUpdated', (payload) => applyServices(payload as { services: Record<string, unknown>; icons?: Record<string, string> })),
+			cm.subscribe('pipeline:env', (snap) => {
+				const keys = (snap as { envKeys?: string[] } | undefined)?.envKeys;
+				if (Array.isArray(keys)) setEnvKeys(keys);
+			}),
+			cm.subscribe('pipeline:cloudSetup', (snap) => {
+				const v = (snap as { cloudConnectionConfigured?: boolean } | undefined)?.cloudConnectionConfigured;
+				if (typeof v === 'boolean') setCloudConnectionConfigured(v);
+			}),
+		];
+		return () => offs.forEach((off) => off());
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
 	// --- Messaging ------------------------------------------------------------
 
 	const sendMessageRef = useRef<(msg: ProjectWebviewToHost) => void>(() => {});
@@ -204,10 +242,6 @@ const ProjectWebview: React.FC = () => {
 				break;
 			case 'project:update':
 				setProject(msg.project);
-				break;
-			case 'project:services':
-				registerServiceIcons({ services: msg.services, icons: msg.icons });
-				setServicesJson(msg.services);
 				break;
 			case 'project:validateResponse': {
 				const pending = pendingValidates.current.get(msg.requestId);
@@ -285,21 +319,6 @@ const ProjectWebview: React.FC = () => {
 				}
 				break;
 			}
-			case 'project:envKeysUpdate':
-				setEnvKeys(msg.envKeys);
-				break;
-			case 'project:cloudConnectionConfigured':
-				setCloudConnectionConfigured(msg.cloudConnectionConfigured);
-				break;
-			case 'shell:connectionChange':
-				if (msg.isConnected) {
-					setStatusMap({});
-					setLiveLogEvents([]);
-				}
-				setIsConnected(msg.isConnected);
-				if ((msg as any).isSubscribed !== undefined) setSubscribed((msg as any).isSubscribed);
-				if (msg.serverHost) setServerHost(msg.serverHost);
-				break;
 			case 'checkout:required':
 				// Host says subscription is required — show inline prompt (handled by ProjectView's Subscribe button)
 				console.log('[ProjectWebview] checkout:required received');

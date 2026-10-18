@@ -151,6 +151,10 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			void this.broadcastEnvKeys();
 		});
 
+		// Connection + services state ride the framework's retained topics
+		// ('shell:status' / 'shell:services' — busHost.startMirrors) and the
+		// realm-local shell events; no typed pushes. The reconnect hook below
+		// only restarts monitoring (realm-side in a later step).
 		const connectionStateListener = this.connectionManager.on('shell:statusChange', async (connectionStatus) => {
 			try {
 				if (connectionStatus.state === ConnectionState.CONNECTED) {
@@ -162,23 +166,20 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 						});
 					}
 				}
-				this.broadcastConnectionState(this.connectionManager.isConnected());
 			} catch (error) {
 				this.logger.error(`Handling connection state change: ${error}`);
 			}
 		});
 
-		const servicesUpdatedListener = this.connectionManager.on('shell:servicesUpdated', (payload: { services: Record<string, unknown>; icons?: Record<string, string>; servicesError?: string }) => {
-			this.broadcastServicesToAllEditors(payload);
-		});
-
 		const configChangeListener = vscode.workspace.onDidChangeConfiguration((event) => {
 			if (event.affectsConfiguration('rocketride.development.connectionMode') || event.affectsConfiguration('rocketride.deployment.connectionMode')) {
-				this.broadcastCloudConnectionConfigured();
+				this.publishCloudSetup();
 			}
 		});
+		// Seed the topic so a panel opening before any config change replays it.
+		this.publishCloudSetup();
 
-		this.disposables.push(eventListener, accountUpdateListener, envKeysChangedListener, connectionStateListener, servicesUpdatedListener, configChangeListener);
+		this.disposables.push(eventListener, accountUpdateListener, envKeysChangedListener, connectionStateListener, configChangeListener);
 	}
 
 	// =========================================================================
@@ -233,34 +234,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	// BROADCASTING
 	// =========================================================================
 
-	private broadcastServicesToAllEditors(payload: { services: Record<string, unknown>; icons?: Record<string, string>; servicesError?: string }): void {
-		for (const editorState of this.editorStates.values()) {
-			if (editorState.isReady && !editorState.isDisposed && editorState.webviewPanel.webview) {
-				editorState.webviewPanel.webview
-					.postMessage({
-						type: 'project:services',
-						services: payload.services,
-						icons: payload.icons ?? {},
-					})
-					.then(undefined, (err: unknown) => {
-						this.logger.error(`Failed to post services to webview: ${err}`);
-					});
-			}
-		}
-	}
-
-	private broadcastConnectionState(isConnected: boolean): void {
-		const client = this.connectionManager.getClient();
-		const subscribed = isSubscribed(client, PIPE_BUILDER_APP_ID);
-		for (const editorState of this.editorStates.values()) {
-			if (editorState.isReady && !editorState.isDisposed && editorState.webviewPanel.webview) {
-				editorState.webviewPanel.webview.postMessage({ type: 'shell:connectionChange', isConnected, isSubscribed: subscribed, serverHost: this.connectionManager.getHttpUrl() }).then(undefined, (err: unknown) => {
-					this.logger.error(`Failed to post connectionState to webview: ${err}`);
-				});
-			}
-		}
-	}
-
 	private isCloudConnectionConfigured(): boolean {
 		return hasCloudConnectionConfigured({
 			development: { connectionMode: vscode.workspace.getConfiguration('rocketride.development').get('connectionMode', 'local') },
@@ -268,15 +241,9 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		});
 	}
 
-	private broadcastCloudConnectionConfigured(): void {
-		const cloudConnectionConfigured = this.isCloudConnectionConfigured();
-		for (const editorState of this.editorStates.values()) {
-			if (editorState.isReady && !editorState.isDisposed && editorState.webviewPanel.webview) {
-				editorState.webviewPanel.webview.postMessage({ type: 'project:cloudConnectionConfigured', cloudConnectionConfigured }).then(undefined, (err: unknown) => {
-					this.logger.error(`Failed to post cloudConnectionConfigured to webview: ${err}`);
-				});
-			}
-		}
+	/** Cloud-setup facts are a retained topic — config-derived and global. */
+	private publishCloudSetup(): void {
+		this.busHost.retained.publish('pipeline:cloudSetup', { cloudConnectionConfigured: this.isCloudConnectionConfigured() });
 	}
 
 	private getPreferences(): Record<string, unknown> {
@@ -350,20 +317,10 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	private async broadcastEnvKeys(): Promise<void> {
 		const client = this.connectionManager.getClient();
 		if (!client) return;
-
-		let envKeys: string[];
 		try {
-			envKeys = await client.account.getEnvironmentKeys();
+			this.busHost.retained.publish('pipeline:env', { envKeys: await client.account.getEnvironmentKeys() });
 		} catch {
-			return;
-		}
-
-		for (const editorState of this.editorStates.values()) {
-			if (editorState.isReady && !editorState.isDisposed && editorState.webviewPanel.webview) {
-				editorState.webviewPanel.webview.postMessage({ type: 'project:envKeysUpdate', envKeys }).then(undefined, (err: unknown) => {
-					this.logger.error(`Failed to post envKeysUpdate to webview: ${err}`);
-				});
-			}
+			/* transient — the next envKeysChanged republishes */
 		}
 	}
 
