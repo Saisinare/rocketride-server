@@ -150,6 +150,9 @@ const ProjectWebview: React.FC = () => {
 	// Stable ref into the message fold below — the bus listeners deliver
 	// through it so the big switch stays the one fold for both carriers.
 	const handleMessageRef = useRef<(msg: ProjectHostToWebview) => void>(() => {});
+	// This panel's bus identity (the document URI) — host.pipeline.* ops
+	// carry it as `doc`. Stamped by pipeline:init before project:load.
+	const docRef = useRef<string>('');
 
 	// --- Framework state off the bus (mirror events + retained topics) --------
 	// Connection, services, env keys, and cloud-setup state all ride the
@@ -254,6 +257,9 @@ const ProjectWebview: React.FC = () => {
 
 	const handleMessage = useCallback((msg: ProjectHostToWebview) => {
 		switch (msg.type) {
+			case 'pipeline:init' as never:
+				docRef.current = (msg as unknown as { doc: string }).doc;
+				break;
 			case 'project:load': {
 				// Restore saved webview state if available (survives tab switches)
 				const saved = getStateRef.current();
@@ -543,19 +549,18 @@ const ProjectWebview: React.FC = () => {
 		[sendMessage]
 	);
 
-	const handlePipelineAction = useCallback(
-		(action: 'run' | 'stop' | 'restart', source?: string) => {
-			sendMessage({ type: 'status:pipelineAction', action, source });
-		},
-		[sendMessage]
-	);
+	const handlePipelineAction = useCallback((action: 'run' | 'stop' | 'restart', source?: string) => {
+		const cm = ConnectionManager.getInstance();
+		if (action === 'stop') {
+			if (source) cm.emitOp('host.pipeline.stop', { doc: docRef.current, source });
+			return;
+		}
+		cm.emitOp('host.pipeline.run', { doc: docRef.current, action, source });
+	}, []);
 
-	const handleMissingEnvVars = useCallback(
-		(keys: string[]) => {
-			sendMessage({ type: 'status:missingEnvVars', keys });
-		},
-		[sendMessage]
-	);
+	const handleMissingEnvVars = useCallback((keys: string[]) => {
+		ConnectionManager.getInstance().emitOp('host.pipeline.missingEnv', { keys });
+	}, []);
 
 	const handleViewStateChange = useCallback(
 		(vs: ViewState) => {
@@ -577,12 +582,9 @@ const ProjectWebview: React.FC = () => {
 		[sendMessage]
 	);
 
-	const handleOpenLink = useCallback(
-		(url: string, displayName?: string) => {
-			sendMessage({ type: 'project:openLink', url, displayName });
-		},
-		[sendMessage]
-	);
+	const handleOpenLink = useCallback((url: string, displayName?: string) => {
+		ConnectionManager.getInstance().emitOp('host.pipeline.openLink', { url, displayName });
+	}, []);
 
 	const handleOpenExternal = useCallback(
 		(url: string) => {
@@ -596,12 +598,14 @@ const ProjectWebview: React.FC = () => {
 	}, []);
 
 	const handleOpenCloudSetup = useCallback(() => {
-		sendMessage({ type: 'project:openCloudSetup' });
-	}, [sendMessage]);
+		// Focus the Development tab only — the prompt must not stage a
+		// connection-mode change the user never typed.
+		ConnectionManager.getInstance().emitOp('host.openPage', { page: 'settings', args: ['development'] });
+	}, []);
 
 	const handleSave = useCallback(() => {
-		sendMessage({ type: 'project:requestSave' });
-	}, [sendMessage]);
+		ConnectionManager.getInstance().emitOp('host.pipeline.save', { doc: docRef.current });
+	}, []);
 
 	// --- Checkout callbacks — brokered client.billing.* bus ops ---------------
 
@@ -999,7 +1003,7 @@ const ProjectWebview: React.FC = () => {
 						: {})}
 				/>
 			)}
-			{showCheckout && stripeKey && <CheckoutModal appName="RocketRide" appDescription="Visual AI pipeline editor: run and deploy pipelines on RocketRide Cloud." stripePublishableKey={stripeKey} onFetchPlans={handleFetchPlans} onCreateCheckout={handleCreateCheckout} onConfirmPending={handleConfirmPending} onSuccess={handleCheckoutSuccess} onClose={() => setShowCheckout(false)} onActionClick={(_plan: CheckoutPlan, action: PlanAction) => sendMessageRef.current({ type: 'project:openLink', url: action.type === 'mailto' ? `mailto:${action.url}${action.subject ? `?subject=${encodeURIComponent(action.subject)}` : ''}` : action.url, browser: true })} />}
+			{showCheckout && stripeKey && <CheckoutModal appName="RocketRide" appDescription="Visual AI pipeline editor: run and deploy pipelines on RocketRide Cloud." stripePublishableKey={stripeKey} onFetchPlans={handleFetchPlans} onCreateCheckout={handleCreateCheckout} onConfirmPending={handleConfirmPending} onSuccess={handleCheckoutSuccess} onClose={() => setShowCheckout(false)} onActionClick={(_plan: CheckoutPlan, action: PlanAction) => ConnectionManager.getInstance().emitOp('host.pipeline.openLink', { url: action.type === 'mailto' ? `mailto:${action.url}${action.subject ? `?subject=${encodeURIComponent(action.subject)}` : ''}` : action.url, browser: true })} />}
 			{showCheckout && !stripeKey && <CheckoutUnavailableNotice reason={stripeKeyReason} onClose={() => setShowCheckout(false)} />}
 		</>
 	);

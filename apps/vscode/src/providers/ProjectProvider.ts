@@ -37,6 +37,10 @@ import type { LogSessionWebviewToHost } from './types/logTypes';
 import { DeployLifecycle } from './project/deployLifecycle';
 import { openExternalLink } from './project/externalLink';
 import type { BusHost } from './toolhost/busHost';
+// Deep import on purpose — ext-host-safe .ts leaf (see busHost.ts).
+import { registerOpHandlers } from 'shell/src/ops/busOps';
+import type { OpImplTable } from 'shell/src/ops/busOps';
+import type { PipelineHostOpMap } from 'shared/ops/pipelineOps';
 
 // =============================================================================
 // CONSTANTS
@@ -98,6 +102,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	) {
 		this.registerCommands();
 		this.setupEventListeners();
+		this.registerPipelineOps();
 		// Drop an untitled pipeline's auto-backup once its editor closes: an
 		// explicit save reverts-and-closes it, and a discard just closes it, so
 		// only a full VS Code exit leaves the backup behind — which is exactly
@@ -368,6 +373,92 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	 * registered with supportsMultipleEditorsPerDocument: false, so at most
 	 * one live webview exists per document.
 	 */
+	/**
+	 * The pipeline page's host verbs (shared/ops/pipelineOps.ts), registered
+	 * at the root — `doc` (the document URI) addresses the panel.
+	 */
+	private registerPipelineOps(): void {
+		const stateFor = (doc: string): EditorState => {
+			const editorState = this.findLiveEditorState(doc);
+			if (!editorState) throw new Error(`No open pipeline editor for ${doc}`);
+			return editorState;
+		};
+		const impls: OpImplTable<PipelineHostOpMap> = {
+			'host.pipeline.run': (p) => this.runFromRealm(stateFor(p.doc), p.action, p.source),
+			'host.pipeline.stop': async (p) => {
+				const editorState = stateFor(p.doc);
+				await this.stopPipeline(p.source, editorState.document);
+			},
+			'host.pipeline.save': async (p) => {
+				// Same save flow as the Ctrl+S keybinding: in place for titled
+				// files, the native OS Save dialog for untitled ones. Reveal
+				// first so the revert-and-close inside the untitled branch
+				// targets this editor.
+				const editorState = stateFor(p.doc);
+				editorState.webviewPanel.reveal(undefined, false);
+				await savePipelineDocument(editorState.document);
+			},
+			'host.pipeline.missingEnv': async (p) => {
+				if (p.keys?.length) await handleMissingEnvVars(p.keys);
+			},
+			'host.pipeline.openLink': (p) => {
+				if (p.url) openExternalLink(p.url, p.displayName, p.browser);
+			},
+		};
+		registerOpHandlers<PipelineHostOpMap>(this.busHost.rootBus, impls);
+	}
+
+	/**
+	 * Run/restart with the host's policy: subscription gate (pushes
+	 * checkout:required to the panel), save-first (untitled documents drive
+	 * the OS Save dialog; cancelling cancels the run), and the save-for-run
+	 * suppression window pipelineFiles.isSaveForRun reads.
+	 */
+	private async runFromRealm(editorState: EditorState, _action: 'run' | 'restart', source?: string): Promise<void> {
+		const { document, webviewPanel } = editorState;
+		const runClient = this.connectionManager.getClient();
+		if (!runClient) {
+			vscode.window.showErrorMessage('Not connected to server');
+			return;
+		}
+		const sub = isSubscribed(runClient, PIPE_BUILDER_APP_ID);
+		if (!sub) {
+			void webviewPanel.webview.postMessage({ type: 'checkout:required' });
+			return;
+		}
+		const uriKey = document.uri.toString();
+		let savedKey: string | undefined;
+		this.savesForRun.add(uriKey);
+		try {
+			// Capture the text up front: the untitled save flow below closes
+			// the buffer, after which the document is disposed.
+			const text = document.getText();
+			let runTarget: vscode.Uri | undefined = document.uri;
+			if (document.isUntitled) {
+				webviewPanel.reveal(undefined, false);
+				runTarget = await savePipelineDocument(document);
+			} else {
+				await this.saveDocument(document, text);
+			}
+			if (runTarget) {
+				// The untitled save reopens the file under a NEW URI — the
+				// save-for-run suppression must follow it.
+				savedKey = runTarget.toString();
+				this.savesForRun.add(savedKey);
+				const parsed = JSON.parse(text);
+				const pipeName = path.basename(runTarget.fsPath, '.pipe');
+				await this.runPipeline({ pipeline: { ...parsed, source: source ?? parsed.source } }, pipeName);
+			}
+		} catch (error: unknown) {
+			const message = error instanceof Error ? error.message : String(error);
+			vscode.window.showErrorMessage(`Failed to run pipeline: ${message}`);
+		}
+		setTimeout(() => {
+			this.savesForRun.delete(uriKey);
+			if (savedKey) this.savesForRun.delete(savedKey);
+		}, 2000);
+	}
+
 	private findLiveEditorState(docKey: string): EditorState | undefined {
 		for (const editorState of this.editorStates.values()) {
 			if (!editorState.isDisposed && editorState.isReady && editorState.document.uri.toString() === docKey) {
@@ -488,6 +579,8 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			switch (data.type) {
 				case 'view:ready': {
 					editorState.isReady = true;
+					// The panel's bus identity — ops carry it as `doc`.
+					void webview.postMessage({ type: 'pipeline:init', doc: document.uri.toString() });
 
 					// Build project from document
 					const text = document.getText();
@@ -609,110 +702,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 						const msg = error instanceof Error ? error.message : String(error);
 						this.logger.error(`Fetching service definition for '${data.provider}': ${msg}`);
 						webview.postMessage({ type: 'project:nodeSchemaResponse', requestId: data.requestId, error: msg });
-					}
-					break;
-				}
-
-				case 'project:requestSave': {
-					// Same save flow as the Ctrl+S keybinding: in place for
-					// titled files, the native OS Save dialog (defaulted into the
-					// pipelines directory, .pipe filter) for untitled ones.
-					// Reveal first so the revert-and-close inside the untitled
-					// branch targets this editor.
-					try {
-						webviewPanel.reveal(undefined, false);
-						await savePipelineDocument(document);
-					} catch (error) {
-						vscode.window.showErrorMessage(`Failed to save pipeline: ${error instanceof Error ? error.message : String(error)}`);
-					}
-					break;
-				}
-
-				case 'project:openCloudSetup': {
-					// Focus the Development tab only. The prompt must not stage a connection-mode
-					// change the user never typed: `development.connectionMode` is workspace-global,
-					// and a later Save would tear down their running dev engine.
-					await vscode.commands.executeCommand('rocketride.page.settings.open', 'development');
-					break;
-				}
-
-				// Status messages
-				case 'status:pipelineAction': {
-					const action = data.action as 'run' | 'stop' | 'restart';
-					const source = data.source as string | undefined;
-					if (action === 'run' || action === 'restart') {
-						// Gate: check connection before running
-						const runClient = this.connectionManager.getClient();
-						if (!runClient) {
-							vscode.window.showErrorMessage('Not connected to server');
-							break;
-						}
-						// Gate: check subscription before running
-						const sub = isSubscribed(runClient, PIPE_BUILDER_APP_ID);
-						if (!sub) {
-							webview.postMessage({ type: 'checkout:required' });
-							break;
-						}
-						const uriKey = document.uri.toString();
-						let savedKey: string | undefined;
-						this.savesForRun.add(uriKey);
-						try {
-							// Capture the text up front: the untitled save flow below
-							// closes the buffer, after which the document is disposed.
-							const text = document.getText();
-							let runTarget: vscode.Uri | undefined = document.uri;
-							if (document.isUntitled) {
-								// saveDocument() cannot name an untitled buffer (identical
-								// content is a no-op), which would let the pipeline run
-								// nameless and unsaved. Drive the full untitled save flow
-								// (OS Save dialog) and run ONLY once it succeeded — a
-								// cancelled dialog cancels the run. Reveal first so the
-								// revert-and-close inside targets this editor (same rule
-								// as project:requestSave).
-								webviewPanel.reveal(undefined, false);
-								runTarget = await savePipelineDocument(document);
-							} else {
-								await this.saveDocument(document, text);
-							}
-							if (runTarget) {
-								// The untitled save reopens the file under a NEW URI —
-								// the save-for-run suppression must follow it, or the
-								// saved document's own change events escape the guard.
-								savedKey = runTarget.toString();
-								this.savesForRun.add(savedKey);
-								const parsed = JSON.parse(text);
-								const pipeName = path.basename(runTarget.fsPath, '.pipe');
-								await this.runPipeline({ pipeline: { ...parsed, source: source ?? parsed.source } }, pipeName);
-							}
-						} catch (error: unknown) {
-							const message = error instanceof Error ? error.message : String(error);
-							vscode.window.showErrorMessage(`Failed to run pipeline: ${message}`);
-						}
-						setTimeout(() => {
-							this.savesForRun.delete(uriKey);
-							if (savedKey) this.savesForRun.delete(savedKey);
-						}, 2000);
-					} else if (action === 'stop') {
-						if (source) {
-							await this.stopPipeline(source, document);
-						}
-					}
-					break;
-				}
-
-				// Missing env vars — webview detected ROCKETRIDE_* refs not in envKeys
-				case 'status:missingEnvVars': {
-					const keys = data.keys as string[];
-					if (keys?.length) {
-						await handleMissingEnvVars(keys);
-					}
-					break;
-				}
-
-				// Link opening
-				case 'project:openLink': {
-					if (data.url) {
-						openExternalLink(data.url as string, data.displayName as string | undefined, data.browser as boolean | undefined);
 					}
 					break;
 				}
