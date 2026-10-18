@@ -18,8 +18,6 @@
 
 import type { ViewState, TaskStatus } from 'shared/tools/pipelines/project/types';
 import type { ShellHostToWebview, ShellWebviewToHost } from './shellTypes';
-import type { DeployLifecycleHostToWebview, DeployLifecycleWebviewToHost, DeploymentHostToWebview, DeploymentWebviewToHost } from './deployTypes';
-import type { LogSessionHostToWebview, LogSessionWebviewToHost } from './logTypes';
 
 /** All messages the extension host can send to the ProjectWebview. */
 export type ProjectHostToWebview =
@@ -27,40 +25,22 @@ export type ProjectHostToWebview =
 	| { type: 'project:load'; project: any; viewState: ViewState; prefs: Record<string, unknown>; services: Record<string, any>; icons?: Record<string, string>; isConnected: boolean; cloudConnectionConfigured?: boolean; isSubscribed?: boolean; statuses?: Record<string, TaskStatus>; serverHost?: string; oauthReturnUrl?: string; isReadonly?: boolean; envKeys?: string[] }
 	| { type: 'project:oauthTokens'; tokens: string; state: string }
 	| { type: 'project:update'; project: any }
-	| { type: 'project:services'; services: Record<string, any>; icons?: Record<string, string> }
-	| { type: 'project:validateResponse'; requestId: number; result: any; error?: string }
-	| { type: 'project:nodeSchemaResponse'; requestId: number; service?: Record<string, any>; error?: string }
+	| { type: 'pipeline:init'; doc: string }
 	| { type: 'project:dirtyState'; isDirty: boolean; isNew: boolean }
 	| { type: 'project:initialPrefs'; prefs: Record<string, unknown> }
-	| { type: 'project:cloudConnectionConfigured'; cloudConnectionConfigured: boolean }
-	| { type: 'project:envKeysUpdate'; envKeys: string[] }
 	// Subscription gate pushes (the Subscribe overlay opens on these).
 	| { type: 'checkout:required' }
 	| { type: 'checkout:subscriptionUpdate'; isSubscribed: boolean }
-	// Deploy lifecycle pushes for the DEPLOY page (see deployTypes.ts).
-	| DeployLifecycleHostToWebview
-	// Deployment record drawer pushes (the drawer lives in this webview).
-	| DeploymentHostToWebview
-	// Run-log session replies/pushes (the DVR bridge).
-	| LogSessionHostToWebview;
+	// Publish is the one deploy verb still host-side (it snapshots the
+	// TextDocument); everything else rides client.deploy.* on the bus.
+	| { type: 'deploy:actionResult'; requestId: number; error?: string | null };
 
 /** All messages the ProjectWebview can send to the extension host. */
 export type ProjectWebviewToHost =
 	| ShellWebviewToHost
 	| { type: 'project:contentChanged'; project: any }
-	| { type: 'project:validate'; requestId: number; pipeline: any }
-	| { type: 'project:getNodeSchema'; requestId: number; provider: string }
-	| { type: 'project:requestSave' }
 	| { type: 'project:viewStateChange'; viewState: ViewState }
 	| { type: 'project:prefsChange'; prefs: Record<string, unknown> }
-	| { type: 'project:openLink'; url: string; displayName?: string; browser?: boolean }
 	| { type: 'project:openExternal'; url: string }
-	| { type: 'project:openCloudSetup' }
-	| { type: 'status:pipelineAction'; action: 'run' | 'stop' | 'restart'; source?: string }
-	| { type: 'status:missingEnvVars'; keys: string[] }
-	// Deploy lifecycle requests from the DEPLOY page (see deployTypes.ts).
-	| DeployLifecycleWebviewToHost
-	// Deployment record drawer requests.
-	| DeploymentWebviewToHost
-	// Run-log session requests (the DVR bridge).
-	| LogSessionWebviewToHost;
+	// Publish is the one deploy verb still host-side (see above).
+	| { type: 'deploy:publish'; requestId: number; comment?: string; deployTo?: string };

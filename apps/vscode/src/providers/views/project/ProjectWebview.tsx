@@ -118,12 +118,8 @@ const ProjectWebview: React.FC = () => {
 	const [deploymentData, setDeploymentData] = useState<DeploymentLoadPayload | null>(null);
 	const [deploymentError, setDeploymentError] = useState('');
 
-	// Run-log session round-trips (the DVR): pending promises keyed by
-	// requestId, live play callbacks keyed by session id — the SAME
-	// component-owned shape as every other protocol in this webview.
-	const pendingLogRequests = useRef<Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>>(new Map());
-	const logPlayCallbacks = useRef<Map<string, (item: { event: TaskEventMessage }) => void>>(new Map());
-	const logRequestCounter = useRef(0);
+	// Run-log session ids (the DVR) — sessions are brokered at the root; play
+	// items arrive on per-session realm-registered ops.
 	const logSessionCounter = useRef(0);
 
 	// --- Stable refs for message handler closures ----------------------------
@@ -360,19 +356,6 @@ const ProjectWebview: React.FC = () => {
 				}
 				break;
 			}
-			case 'logsession:result': {
-				const pending = pendingLogRequests.current.get(msg.requestId);
-				if (pending) {
-					pendingLogRequests.current.delete(msg.requestId);
-					clearTimeout(pending.timer);
-					if (msg.error) pending.reject(new Error(msg.error));
-					else pending.resolve(msg.result);
-				}
-				break;
-			}
-			case 'logsession:event':
-				logPlayCallbacks.current.get(msg.sessionId)?.(msg.item as { event: TaskEventMessage });
-				break;
 			case 'project:initialPrefs':
 				// Merge: the host broadcasts only the keys that changed, not the whole bag.
 				setPrefs((prev) => mergeProjectPreferences(prev, msg.prefs ?? {}));
@@ -636,57 +619,48 @@ const ProjectWebview: React.FC = () => {
 
 	// --- Run-log DVR bindings (logsession:* — identical contract to cloud) ----
 
-	/** One requestId-correlated log-session round-trip (logsession:result
-	    settles it; lost replies time out — the standard shape). */
-	const logRequest = useCallback((build: (requestId: number) => ProjectWebviewToHost): Promise<unknown> => {
-		return new Promise<unknown>((resolve, reject) => {
-			const requestId = ++logRequestCounter.current;
-			const timer = setTimeout(() => {
-				if (pendingLogRequests.current.has(requestId)) {
-					pendingLogRequests.current.delete(requestId);
-					reject(new Error('The server did not respond in time'));
-				}
-			}, DEPLOY_REQUEST_TIMEOUT_MS);
-			pendingLogRequests.current.set(requestId, { resolve, reject, timer });
-			sendMessageRef.current(build(requestId));
-		});
-	}, []);
-
 	/** Opens a run-log session: a real {@link TaskEventSession} whose every
 	    member speaks the logsession:* protocol — the components cannot tell
 	    which transport is underneath. teamId scopes to a deploy continuum. */
 	const openLogSession = useCallback(
 		(source: string, teamId?: string): TaskEventSession => {
-			const sessionId = `ls_${++logSessionCounter.current}`;
-			sendMessageRef.current({ type: 'logsession:open', sessionId, source, ...(teamId ? { teamId } : {}) });
+			// Realm-allocated id, globally unique (sessions are brokered at the
+			// root by id across every realm).
+			const sessionId = `ls_${Math.random().toString(36).slice(2, 10)}_${++logSessionCounter.current}`;
+			const cm = ConnectionManager.getInstance();
+			// Play items arrive on THIS realm's `log.event.<sessionId>` op —
+			// registration is the routing (and the delivery sink must exist
+			// before play's ack settles).
+			let offEvents: (() => void) | null = null;
+			cm.emitOp('client.log.openStream', { sessionId, projectId: projectIdRef.current, source, ...(teamId ? { teamId } : {}) });
+			const call = <T,>(method: 'seek' | 'getStatus' | 'getTrace', args: unknown[]): Promise<T> => cm.request('client.log.streamCall', { sessionId, method, args } as never, { timeoutMs: DEPLOY_REQUEST_TIMEOUT_MS }) as Promise<T>;
 			return {
-				seek: (pos) => logRequest((requestId) => ({ type: 'logsession:call', sessionId, requestId, method: 'seek', args: [pos] })) as Promise<void>,
-				getStatus: () => logRequest((requestId) => ({ type: 'logsession:call', sessionId, requestId, method: 'getStatus', args: [] })) as Promise<Record<string, unknown> | null>,
-				getTrace: (traceId) => logRequest((requestId) => ({ type: 'logsession:call', sessionId, requestId, method: 'getTrace', args: [traceId] })) as Promise<{ events: TaskEventMessage[] }>,
+				seek: (pos) => call<void>('seek', [pos]),
+				getStatus: () => call<Record<string, unknown> | null>('getStatus', []),
+				getTrace: (traceId) => call<{ events: TaskEventMessage[] }>('getTrace', [traceId]),
 				play: (pos, speed, cb) => {
-					// Register the delivery sink FIRST — items may arrive
-					// before the ack settles.
-					logPlayCallbacks.current.set(sessionId, cb);
-					return logRequest((requestId) => ({ type: 'logsession:play', sessionId, requestId, pos: pos === undefined ? null : pos, speed })) as Promise<void>;
+					offEvents?.();
+					offEvents = cm.handle(`log.event.${sessionId}`, (item) => cb(item as { event: TaskEventMessage }));
+					// LONG-LIVED by contract: the promise resolves at STREAM
+					// COMPLETION — give it the maximum timer budget (2^31-1 ms;
+					// larger overflows setTimeout and fires immediately).
+					return cm.request('client.log.streamPlay', { sessionId, pos: pos === undefined ? null : pos, speed } as never, { timeoutMs: 0x7fffffff }) as Promise<void>;
 				},
-				pause: () => {
-					sendMessageRef.current({ type: 'logsession:pause', sessionId });
-				},
+				pause: () => cm.emitOp('client.log.streamPause', { sessionId }),
 				// The dev page's hook feeds live events for near-live merging.
-				ingestLive: (message) => {
-					sendMessageRef.current({ type: 'logsession:ingest', sessionId, event: message });
-				},
+				ingestLive: (message) => cm.emitOp('client.log.streamIngest', { sessionId, event: message }),
 				closeEventStream: () => {
-					logPlayCallbacks.current.delete(sessionId);
-					sendMessageRef.current({ type: 'logsession:close', sessionId });
+					offEvents?.();
+					offEvents = null;
+					cm.emitOp('client.log.streamClose', { sessionId });
 				},
 			};
 		},
-		[logRequest]
+		[]
 	);
 
 	/** Chapters/timeline fetch for one source (session-independent). */
-	const fetchLogTimeline = useCallback((source: string, teamId?: string): Promise<TaskTimeline> => logRequest((requestId) => ({ type: 'logsession:chapters', requestId, source, ...(teamId ? { teamId } : {}) })) as Promise<TaskTimeline>, [logRequest]);
+	const fetchLogTimeline = useCallback((source: string, teamId?: string): Promise<TaskTimeline> => ConnectionManager.getInstance().request('client.log.chapters', { projectId: projectIdRef.current, source, ...(teamId ? { teamId } : {}) } as never, { timeoutMs: DEPLOY_REQUEST_TIMEOUT_MS }) as Promise<TaskTimeline>, []);
 
 	/** Dev-continuum DVR session factory for ProjectView's sections. */
 	const openEventStream = useCallback((stream: { source: string; runKind: 'dev' | 'deploy' }) => openLogSession(stream.source), [openLogSession]);
@@ -796,13 +770,13 @@ const ProjectWebview: React.FC = () => {
 									// Verbs ack, then THIS webview re-fetches the record.
 									onSetDisabled: async (disabled: boolean) => {
 										await deploymentActions.setDisabled(projectIdRef.current, openDeployment.teamId, disabled);
-										sendMessageRef.current({ type: 'deployment:fetch', teamId: openDeployment.teamId });
-										sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
+										loadDeployment(openDeployment.teamId);
+										void fetchDeployLifecycle();
 									},
 									onDeployVersion: async (version: number) => {
 										await deploymentActions.deployVersion(projectIdRef.current, openDeployment.teamId, version);
-										sendMessageRef.current({ type: 'deployment:fetch', teamId: openDeployment.teamId });
-										sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
+										loadDeployment(openDeployment.teamId);
+										void fetchDeployLifecycle();
 									},
 									...(deploymentData.canControl
 										? {
@@ -810,7 +784,7 @@ const ProjectWebview: React.FC = () => {
 													await deploymentActions.remove(projectIdRef.current, openDeployment.teamId);
 													// The record is gone — the drawer closes itself.
 													setOpenDeployment(null);
-													sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
+													void fetchDeployLifecycle();
 												},
 											}
 										: {}),
@@ -856,19 +830,19 @@ const ProjectWebview: React.FC = () => {
 									...(deploymentData.sourceConfig ? { sourceConfig: deploymentData.sourceConfig } : {}),
 									onSetSourceConfig: async (traceLevel: 'none' | 'metadata' | 'summary' | 'full' | null, debugOut: boolean) => {
 										await deploymentActions.setSourceConfig(projectIdRef.current, openDeployment.teamId, openDeployment.sourceId as string, traceLevel, debugOut);
-										sendMessageRef.current({ type: 'deployment:fetch', teamId: openDeployment.teamId, sourceId: openDeployment.sourceId });
+										loadDeployment(openDeployment.teamId, openDeployment.sourceId);
 									},
 									onSetSchedulePaused: async (paused: boolean) => {
 										await deploymentActions.setSchedulePaused(projectIdRef.current, openDeployment.teamId, openDeployment.sourceId as string, paused);
-										sendMessageRef.current({ type: 'deployment:fetch', teamId: openDeployment.teamId, sourceId: openDeployment.sourceId });
+										loadDeployment(openDeployment.teamId, openDeployment.sourceId);
 									},
 									onRunSource: async (sourceId) => {
 										await deploymentActions.runSource(projectIdRef.current, openDeployment.teamId, sourceId);
-										sendMessageRef.current({ type: 'deployment:fetch', teamId: openDeployment.teamId, sourceId: openDeployment.sourceId });
+										loadDeployment(openDeployment.teamId, openDeployment.sourceId);
 									},
 									onStopSource: async (sourceId) => {
 										await deploymentActions.stopSource(projectIdRef.current, openDeployment.teamId, sourceId);
-										sendMessageRef.current({ type: 'deployment:fetch', teamId: openDeployment.teamId, sourceId: openDeployment.sourceId });
+										loadDeployment(openDeployment.teamId, openDeployment.sourceId);
 									},
 								},
 							}

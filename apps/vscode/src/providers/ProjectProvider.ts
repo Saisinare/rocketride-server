@@ -31,8 +31,6 @@ import { isDeployRunBody } from '../shared/util/runClassification';
 import { handleMissingEnvVars } from '../shared/util/envVarCheck';
 import { isCloudConnectionConfigured as hasCloudConnectionConfigured } from '../shared/util/connectionModeAuth';
 import { savePipelineDocument } from '../shared/util/pipelineSave';
-import type { LogSessionWebviewToHost } from './types/logTypes';
-import { DeployLifecycle } from './project/deployLifecycle';
 import { openExternalLink } from './project/externalLink';
 import type { BusHost } from './toolhost/busHost';
 // Deep import on purpose — ext-host-safe .ts leaf (see busHost.ts).
@@ -82,8 +80,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	private editorStates: Map<vscode.WebviewPanel, EditorState> = new Map();
 	private connectionManager = ConnectionManager.getInstance();
 	private logger = getLogger();
-	/** Deployment drawer + run-log DVR transport (project/deployLifecycle.ts). */
-	private deployLifecycle = new DeployLifecycle(this.connectionManager);
 	private savesForRun: Set<string> = new Set();
 	private preferenceUpdateQueue: Promise<void> = Promise.resolve();
 	// OAuth tokens that arrived while no live webview existed for their
@@ -550,16 +546,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		// --- Handle messages from the webview (ProjectViewOutgoing) -----------
 
 		webview.onDidReceiveMessage(async (data) => {
-			// Run-log session protocol (the DVR bridge): proxy session calls
-			// onto real client.log streams; play items push back as events.
-			if (typeof data.type === 'string' && data.type.startsWith('logsession:')) {
-				try {
-					await this.deployLifecycle.handleLogSessionMessage(webview, editorState.projectId ?? '', data as LogSessionWebviewToHost);
-				} catch (error) {
-					this.logger.error(`[ProjectProvider] Log session message error: ${error}`);
-				}
-				return;
-			}
 			switch (data.type) {
 				case 'view:ready': {
 					editorState.isReady = true;
@@ -799,8 +785,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		// Clean up when panel is disposed
 		webviewPanel.onDidDispose(async () => {
 			detachRealm();
-			// Close any run-log sessions the DVR bridge left open.
-			this.deployLifecycle.disposeLogSessions(webview);
 			editorState.cachedStatuses = {};
 			editorState.isDisposed = true;
 			this.editorStates.delete(webviewPanel);

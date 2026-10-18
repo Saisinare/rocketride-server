@@ -124,6 +124,23 @@ export interface ClientOpMap extends ShellOpMap {
 	 *  over the one extension command (never a generic call passthrough). */
 	'client.listRunningTasks': ShellOpSpec<Record<string, never>, unknown>;
 
+	// ── Run-log sessions (the DVR) — stateful SDK streams brokered by id.
+	//    The REALM allocates the sessionId (globally unique) and registers
+	//    `log.event.<sessionId>` as ITS op; the broker's play loop emits
+	//    items into it (registration-is-routing — no new push machinery).
+	//    A reused id releases its old stream first (leak guard). ─────────────
+	'client.log.chapters': ShellOpSpec<{ projectId: string; source: string; teamId?: string }, unknown>;
+	'client.log.openStream': ShellOpSpec<{ sessionId: string; projectId: string; source: string; teamId?: string }, void>;
+	/** seek/getStatus/getTrace — gated on the runtime allowlist (the typed
+	 *  map gives NO runtime guarantee at a process boundary). */
+	'client.log.streamCall': ShellOpSpec<{ sessionId: string; method: 'seek' | 'getStatus' | 'getTrace'; args: unknown[] }, unknown>;
+	/** LONG-LIVED: resolves at STREAM COMPLETION, not at start — callers pass
+	 *  an explicit generous timeoutMs. pos=null means resume-from-position. */
+	'client.log.streamPlay': ShellOpSpec<{ sessionId: string; pos: number | 'live' | null; speed: number }, void>;
+	'client.log.streamPause': ShellOpSpec<{ sessionId: string }, void>;
+	'client.log.streamIngest': ShellOpSpec<{ sessionId: string; event: unknown }, void>;
+	'client.log.streamClose': ShellOpSpec<{ sessionId: string }, void>;
+
 	// ── Account (profile / org / members / teams / keys / env) ──────────────
 	'client.account.getProfile': ShellOpSpec<Record<string, never>, unknown>;
 	'client.account.updateProfile': ShellOpSpec<{ fields: Record<string, unknown> }, unknown>;
@@ -236,6 +253,15 @@ export function registerClientOps(bus: IOpBus, source: IClientOpsSource, options
 	// against ClientOpMap (params and result both derive from the op's spec):
 	// a duplicate name, an unknown name, a declared op with no
 	// implementation, or a drifted payload shape are all COMPILE errors.
+	// Run-log sessions this root brokers, by realm-allocated id. Closed
+	// explicitly (streamClose / reused-id guard); a realm dying without
+	// cleanup leaks one stream until its connection drops (server-side
+	// sessions are per-connection). Loosely typed like `client` above —
+	// every member reached is still allowlist-gated.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const logSessions = new Map<string, any>();
+	const LOG_SESSION_METHODS = ['seek', 'getStatus', 'getTrace'] as const;
+
 	const impls: { [K in keyof ClientOpMap]: (p: ShellOpParams<ClientOpMap, K>) => ShellOpResult<ClientOpMap, K> | Promise<ShellOpResult<ClientOpMap, K>> } = {
 		'client.getDashboard': () => client().getDashboard(),
 		'client.listTasks': (p) => client().listTasks(p),
@@ -289,6 +315,41 @@ export function registerClientOps(bus: IOpBus, source: IClientOpsSource, options
 		'client.deploy.setSourceConfig': (p) => client().deploy.setSourceConfig(p.projectId, p.sourceId, p.teamId, { ...(p.traceLevel ? { traceLevel: p.traceLevel } : {}), ...(p.debugOut !== undefined ? { debugOut: p.debugOut } : {}) }),
 		'client.deploy.preview': (p) => client().deploy.preview(p.cron, p.count),
 		'client.listRunningTasks': () => client().call('rrext_get_tasks'),
+		'client.log.chapters': (p) => client().log.chapters({ projectId: p.projectId, source: p.source, ...(p.teamId ? { teamId: p.teamId } : {}) }),
+		'client.log.openStream': (p) => {
+			// A reused session id must release its old stream first — the
+			// overwrite would otherwise leak the stream and its monitor.
+			logSessions.get(p.sessionId)?.closeEventStream();
+			logSessions.set(p.sessionId, client().log.openEventStream({ projectId: p.projectId, source: p.source, ...(p.teamId ? { teamId: p.teamId } : {}) }));
+		},
+		'client.log.streamCall': async (p) => {
+			const session = logSessions.get(p.sessionId);
+			if (!session) throw new Error('Session is closed');
+			if (!(LOG_SESSION_METHODS as readonly string[]).includes(p.method)) {
+				throw new Error(`Unsupported session method: ${p.method}`);
+			}
+			return (session[p.method] as (...a: unknown[]) => Promise<unknown>)(...p.args);
+		},
+		'client.log.streamPlay': async (p) => {
+			const session = logSessions.get(p.sessionId);
+			if (!session) throw new Error('Session is closed');
+			// Items emit into the realm-registered `log.event.<sessionId>` op;
+			// the promise resolves at stream completion (the caller's generous
+			// timeout owns the lifetime).
+			await session.play(p.pos === null ? undefined : p.pos, p.speed, (item: unknown) => {
+				bus.emitOp(`log.event.${p.sessionId}`, item);
+			});
+		},
+		'client.log.streamPause': (p) => {
+			logSessions.get(p.sessionId)?.pause();
+		},
+		'client.log.streamIngest': (p) => {
+			logSessions.get(p.sessionId)?.ingestLive(p.event as never);
+		},
+		'client.log.streamClose': (p) => {
+			logSessions.get(p.sessionId)?.closeEventStream();
+			logSessions.delete(p.sessionId);
+		},
 		'client.account.getProfile': () => client().account.getProfile(),
 		'client.account.updateProfile': (p) => client().account.updateProfile(p.fields),
 		'client.account.setDevTeam': (p) => client().account.setDevTeam(p.teamId),
