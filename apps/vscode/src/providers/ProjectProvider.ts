@@ -187,46 +187,22 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	// =========================================================================
 
 	private handleEvent(event: GenericEvent): void {
-		// Deployment-change invalidations carry their identity as projectId
-		// (a server event, not a stamped task body) — relay to the project's
-		// editors so the drawer can re-fetch, then stop (nothing below
-		// applies to a non-task event).
-		if (event.event === 'apaevt_deploy') {
-			const deployProject = (event.body as { projectId?: string } | undefined)?.projectId;
-			for (const editorState of this.editorStates.values()) {
-				if (editorState.isDisposed || !editorState.isReady) continue;
-				if (deployProject && editorState.projectId !== deployProject) continue;
-				editorState.webviewPanel.webview.postMessage({ type: 'shell:event', event });
-			}
-			return;
-		}
-
+		// The realms receive the event firehose THEMSELVES (mirror.event →
+		// realm-local shell:event; the webview's own filters are complete),
+		// so nothing is relayed here. The host keeps exactly one fold: the
+		// status cache that seeds project:load's canvas and answers the
+		// sidebar's getTaskStatus.
 		const projectId = event.body?.project_id;
-		if (!projectId) return;
-
-		if (event.event === 'apaevt_status_update') {
-			// The status cache feeds the DEV canvas on load — deploy-run
-			// statuses (delivered here whenever a team-scoped subscription is
-			// open) must not enter it.
-			const source = event.body?.source;
-			if (source && !isDeployRunBody(event.body)) {
-				for (const editorState of this.editorStates.values()) {
-					if (!editorState.isDisposed && editorState.projectId === projectId) {
-						editorState.cachedStatuses[source] = event.body as TaskStatus;
-					}
+		if (!projectId || event.event !== 'apaevt_status_update') return;
+		// Deploy-run statuses (delivered whenever a team-scoped subscription
+		// is open) must not enter the DEV canvas cache.
+		const source = event.body?.source;
+		if (source && !isDeployRunBody(event.body)) {
+			for (const editorState of this.editorStates.values()) {
+				if (!editorState.isDisposed && editorState.projectId === projectId) {
+					editorState.cachedStatuses[source] = event.body as TaskStatus;
 				}
 			}
-		}
-
-		// Forward EVERY stamped task event for this project — the server stamps
-		// project_id + source into all task-scoped bodies at its forward choke
-		// point, so identity is a pure body test. The webview's live log,
-		// trace, and run-active timeline consume output/lifecycle events too;
-		// a status/flow-only whitelist left them permanently incomplete.
-		for (const editorState of this.editorStates.values()) {
-			if (editorState.isDisposed || !editorState.isReady) continue;
-			if (editorState.projectId !== projectId) continue;
-			editorState.webviewPanel.webview.postMessage({ type: 'shell:event', event });
 		}
 	}
 

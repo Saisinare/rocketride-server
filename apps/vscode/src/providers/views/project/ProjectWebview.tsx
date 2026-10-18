@@ -147,6 +147,10 @@ const ProjectWebview: React.FC = () => {
 	const pendingNodeSchemas = useRef<Map<number, { resolve: (v: Record<string, any> | undefined) => void; reject: (e: Error) => void }>>(new Map());
 	const nodeSchemaCounter = useRef(0);
 
+	// Stable ref into the message fold below — the bus listeners deliver
+	// through it so the big switch stays the one fold for both carriers.
+	const handleMessageRef = useRef<(msg: ProjectHostToWebview) => void>(() => {});
+
 	// --- Framework state off the bus (mirror events + retained topics) --------
 	// Connection, services, env keys, and cloud-setup state all ride the
 	// bus's generic lanes now — no typed host pushes.
@@ -170,6 +174,11 @@ const ProjectWebview: React.FC = () => {
 		applyConnection();
 		applyServices(cm.getCachedServices() as { services: Record<string, unknown>; icons?: Record<string, string> } | null);
 		const offs = [
+			// The engine event stream arrives realm-locally (mirror.event →
+			// shell:event) — feed the same fold the typed push used to.
+			cm.on('shell:event', (payload) => {
+				handleMessageRef.current({ type: 'shell:event', event: (payload as { event?: unknown })?.event ?? payload } as ProjectHostToWebview);
+			}),
 			cm.on('shell:statusChange', applyConnection),
 			cm.on('shell:servicesUpdated', (payload) => applyServices(payload as { services: Record<string, unknown>; icons?: Record<string, string> })),
 			cm.subscribe('pipeline:env', (snap) => {
@@ -435,6 +444,9 @@ const ProjectWebview: React.FC = () => {
 	const { sendMessage, getState, setState } = useMessaging<ProjectWebviewToHost, ProjectHostToWebview, ViewState>({
 		onMessage: handleMessage,
 	});
+	useEffect(() => {
+		handleMessageRef.current = handleMessage;
+	}, [handleMessage]);
 	useEffect(() => {
 		sendMessageRef.current = sendMessage;
 	}, [sendMessage]);
