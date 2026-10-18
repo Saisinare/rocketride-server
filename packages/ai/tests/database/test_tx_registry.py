@@ -582,17 +582,65 @@ class _SlowRollback:
         return getattr(self._trans, name)
 
 
-def _close_all_waits_for(reg, slow):
-    """Run close_all() on another thread; it must stay pending until the rollback is released."""
-    closer = threading.Thread(target=reg.close_all)
-    closer.start()
-    closer.join(timeout=0.3)
+def _in_thread(target, *args):
+    """Start target on a thread; return it with a list that collects anything it raised."""
+    errors = []
+
+    def body():
+        try:
+            target(*args)
+        except BaseException as exc:  # reported by the test, not lost with the thread
+            errors.append(exc)
+
+    thread = threading.Thread(target=body)
+    thread.start()
+    return thread, errors
+
+
+class _ReportingLock:
+    """Wraps a session lock: sets `reached` just before an acquire that may block."""
+
+    def __init__(self, lock, reached):
+        self._lock = lock
+        self._reached = reached
+
+    def __enter__(self):
+        self._reached.set()
+        return self._lock.__enter__()
+
+    def __exit__(self, *exc):
+        return self._lock.__exit__(*exc)
+
+
+def _close_all_waits_for(reg, slow, *, on_session=None):
+    """close_all() must block where it should until the rollback is released.
+
+    The checkpoint is where close_all() waits: joining the sweeper, or, with
+    `on_session`, that session's lock. A signal there, not a sleep, proves it
+    got that far before the rollback is let go.
+    """
+    reached = threading.Event()
+    if on_session is not None:
+        on_session.lock = _ReportingLock(on_session.lock, reached)
+    else:
+        sweeper = reg._sweeper
+        join = sweeper.join
+
+        def reporting_join(timeout=None):
+            reached.set()
+            return join(timeout)
+
+        sweeper.join = reporting_join
+
+    closer, errors = _in_thread(reg.close_all)
+    assert reached.wait(timeout=5.0), 'close_all() never reached the point where it waits'
     assert closer.is_alive(), 'close_all() returned while the rollback was still in flight'
     assert slow.done == []
 
     slow.release.set()
     closer.join(timeout=5.0)
     assert not closer.is_alive(), 'close_all() did not return once the rollback finished'
+    assert errors == [], f'close_all() raised: {errors!r}'
     assert slow.done == [True]
 
 
@@ -626,17 +674,18 @@ def test_close_all_waits_for_an_in_flight_rollback_on_another_thread():
     try:
         sid = reg.begin()
         reg.execute(sid, 'INSERT INTO t (v) VALUES ($1)', ['in flight'])
-        slow = reg._sessions[sid].trans = _SlowRollback(reg._sessions[sid].trans)
+        held = reg._sessions[sid]
+        slow = held.trans = _SlowRollback(held.trans)
 
-        caller = threading.Thread(target=reg.rollback, args=(sid,))
-        caller.start()
+        caller, caller_errors = _in_thread(reg.rollback, sid)
         assert slow.started.wait(timeout=5.0), 'rollback() never reached the transaction'
         assert sid in reg._sessions  # still registered mid-rollback, and held there by the checkpoint
 
-        _close_all_waits_for(reg, slow)
+        _close_all_waits_for(reg, slow, on_session=held)
         assert sid not in reg._sessions
         caller.join(timeout=5.0)
         assert not caller.is_alive()
+        assert caller_errors == [], f'rollback() raised: {caller_errors!r}'
     finally:
         if slow is not None:
             slow.release.set()
