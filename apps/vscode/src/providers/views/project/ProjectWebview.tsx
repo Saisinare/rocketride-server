@@ -33,6 +33,7 @@ import { DeploymentRecordPanel, TeamDeploymentRecordPanel } from 'shared/compone
 import type { DeploySnapshot } from 'shared/components/deploy-panel';
 import { createBridgedPrefsStore, useGridConfigAnswering, ConnectionManager } from 'shell';
 import { PIPE_BUILDER_APP_ID } from '../../../shared/types';
+import { fetchDeployLifecycle as fetchLifecycleOp, fetchDeployment as fetchDeploymentOp, deploymentActions, toWireTeamId } from './deployOps';
 import { useMessaging } from '../hooks/useMessaging';
 import { useStripeKey } from '../hooks/useStripeKey';
 import { CheckoutUnavailableNotice } from '../components';
@@ -101,14 +102,9 @@ const ProjectWebview: React.FC = () => {
 	// it; begin/end flip it. Ref advances synchronously for event bursts.
 	const [deployRunsByTeam, setDeployRunsByTeam] = useState<Record<string, Record<string, boolean>>>({});
 	const deployRunsRef = useRef<Record<string, Record<string, boolean>>>({});
-	// Outstanding fetchDeployLifecycle promises — deploy:data is the full
-	// snapshot (not requestId'd), so ONE push settles every waiter.
-	const pendingLifecycleFetches = useRef<Array<{ resolve: (s: DeploySnapshot) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>>([]);
-	// Pending publish/deploy round-trips keyed by requestId.
+	// Pending publish round-trips keyed by requestId — publish is the ONE
+	// deploy verb still host-side (it needs the TextDocument).
 	const pendingDeployActions = useRef<Map<number, { resolve: () => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>>(new Map());
-	// Pending artifact fetches (the version cards' record drawer) keyed by
-	// requestId — value-resolving, unlike the void action acks above.
-	const pendingArtifactFetches = useRef<Map<number, { resolve: (pipeline: Record<string, unknown>) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>>(new Map());
 	const deployRequestCounter = useRef(0);
 
 	// Deployment record DRAWER (the Add Node model: a component this webview
@@ -121,8 +117,6 @@ const ProjectWebview: React.FC = () => {
 	}, [openDeployment]);
 	const [deploymentData, setDeploymentData] = useState<DeploymentLoadPayload | null>(null);
 	const [deploymentError, setDeploymentError] = useState('');
-	const pendingDeploymentRequests = useRef<Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>>(new Map());
-	const deploymentRequestCounter = useRef(0);
 
 	// Run-log session round-trips (the DVR): pending promises keyed by
 	// requestId, live play callbacks keyed by session id — the SAME
@@ -355,30 +349,6 @@ const ProjectWebview: React.FC = () => {
 				setSubscribed((msg as any).isSubscribed);
 				if ((msg as any).isSubscribed) setShowCheckout(false);
 				break;
-			case 'deploy:data': {
-				// LIVE rows for badges/where-live, and the settlement of every
-				// outstanding registry-snapshot fetch — one push answers all.
-				setDeployTeams(msg.teams);
-				setTeamDeployments(msg.deployments);
-				const waiting = pendingLifecycleFetches.current;
-				pendingLifecycleFetches.current = [];
-				for (const waiter of waiting) {
-					clearTimeout(waiter.timer);
-					waiter.resolve({ versions: msg.versions });
-				}
-				break;
-			}
-			case 'deploy:artifactResult': {
-				// Settle the pending artifact fetch for this correlation id.
-				const pending = pendingArtifactFetches.current.get(msg.requestId);
-				if (pending) {
-					pendingArtifactFetches.current.delete(msg.requestId);
-					clearTimeout(pending.timer);
-					if (msg.error || !msg.pipeline) pending.reject(new Error(msg.error || 'Artifact fetch failed'));
-					else pending.resolve(msg.pipeline);
-				}
-				break;
-			}
 			case 'deploy:actionResult': {
 				// Settle the pending publish/deploy promise for this correlation id.
 				const pending = pendingDeployActions.current.get(msg.requestId);
@@ -387,42 +357,6 @@ const ProjectWebview: React.FC = () => {
 					clearTimeout(pending.timer);
 					if (msg.error) pending.reject(new Error(msg.error));
 					else pending.resolve();
-				}
-				break;
-			}
-			case 'deployment:load': {
-				// Stale-drawer guard: only the OPEN record's pushes apply
-				// (sourceId absent on both sides for the team record).
-				if (msg.teamId !== openDeploymentRef.current?.teamId || (msg.sourceId ?? null) !== (openDeploymentRef.current?.sourceId ?? null)) break;
-				const { type: _ignored, teamId: _team, ...payload } = msg;
-				setDeploymentData(payload as DeploymentLoadPayload);
-				setDeploymentError('');
-				break;
-			}
-			case 'deployment:error': {
-				// Same record guard as deployment:load — a stale source fetch's
-				// error must not land on a different drawer of the same team.
-				if (msg.teamId !== openDeploymentRef.current?.teamId || (msg.sourceId ?? null) !== (openDeploymentRef.current?.sourceId ?? null)) break;
-				setDeploymentError(msg.error);
-				break;
-			}
-			case 'deployment:actionResult': {
-				const pending = pendingDeploymentRequests.current.get(msg.requestId);
-				if (pending) {
-					pendingDeploymentRequests.current.delete(msg.requestId);
-					clearTimeout(pending.timer);
-					if (msg.error) pending.reject(new Error(msg.error));
-					else pending.resolve(undefined);
-				}
-				break;
-			}
-			case 'deployment:previewResult': {
-				const pending = pendingDeploymentRequests.current.get(msg.requestId);
-				if (pending) {
-					pendingDeploymentRequests.current.delete(msg.requestId);
-					clearTimeout(pending.timer);
-					if (msg.error) pending.reject(new Error(msg.error));
-					else pending.resolve(msg.result);
 				}
 				break;
 			}
@@ -439,15 +373,6 @@ const ProjectWebview: React.FC = () => {
 			case 'logsession:event':
 				logPlayCallbacks.current.get(msg.sessionId)?.(msg.item as { event: TaskEventMessage });
 				break;
-			case 'deployment:validateResult': {
-				const pending = pendingDeploymentRequests.current.get(msg.requestId);
-				if (pending) {
-					pendingDeploymentRequests.current.delete(msg.requestId);
-					clearTimeout(pending.timer);
-					pending.resolve(msg.result);
-				}
-				break;
-			}
 			case 'project:initialPrefs':
 				// Merge: the host broadcasts only the keys that changed, not the whole bag.
 				setPrefs((prev) => mergeProjectPreferences(prev, msg.prefs ?? {}));
@@ -589,21 +514,14 @@ const ProjectWebview: React.FC = () => {
 	// ProjectView composes the DeployPanel itself (capability-fed);
 	// this webview supplies the closures over the deploy:* message protocol.
 
-	/** Registry snapshot fetch — posts deploy:fetch; the next deploy:data
-	    push settles it (and every other outstanding waiter). */
-	const fetchDeployLifecycle = useCallback((): Promise<DeploySnapshot> => {
-		return new Promise<DeploySnapshot>((resolve, reject) => {
-			// A lost reply rejects — the panel keeps its last-known data.
-			const timer = setTimeout(() => {
-				const at = pendingLifecycleFetches.current.findIndex((waiter) => waiter.resolve === resolve);
-				if (at >= 0) {
-					pendingLifecycleFetches.current.splice(at, 1);
-					reject(new Error('The server did not respond in time'));
-				}
-			}, DEPLOY_REQUEST_TIMEOUT_MS);
-			pendingLifecycleFetches.current.push({ resolve, reject, timer });
-			sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
-		});
+	/** Registry snapshot fetch — the realm's own client.deploy.* calls now
+	    (each caller awaits ITS result; the old deploy:data push settled every
+	    outstanding waiter at once). Applies the LIVE rows as it resolves. */
+	const fetchDeployLifecycle = useCallback(async (): Promise<DeploySnapshot> => {
+		const snapshot = await fetchLifecycleOp(projectIdRef.current);
+		setDeployTeams(snapshot.teams);
+		setTeamDeployments(snapshot.deployments);
+		return { versions: snapshot.versions };
 		// isConnected is a deliberate dep: a reconnect mints a new fetcher
 		// identity, which makes the panel re-fetch (its mount effect keys on it).
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -626,23 +544,11 @@ const ProjectWebview: React.FC = () => {
 		});
 	}, []);
 
-	/** Fetch one immutable artifact (the version cards' record drawer). */
+	/** Fetch one immutable artifact (the version cards' record drawer). The
+	    registry stores the saved pipeline document verbatim, so the raw
+	    artifact record IS the IProject the record drawer renders. */
 	const fetchDeployArtifact = useCallback((version: number): Promise<IProject | undefined> => {
-		return new Promise<Record<string, unknown>>((resolve, reject) => {
-			// Step 1: allocate the correlation id and arm the timeout guard.
-			const requestId = ++deployRequestCounter.current;
-			const timer = setTimeout(() => {
-				if (pendingArtifactFetches.current.has(requestId)) {
-					pendingArtifactFetches.current.delete(requestId);
-					reject(new Error('The server did not respond in time'));
-				}
-			}, DEPLOY_REQUEST_TIMEOUT_MS);
-			// Step 2: register the resolver and post the message.
-			pendingArtifactFetches.current.set(requestId, { resolve, reject, timer });
-			sendMessageRef.current({ type: 'deploy:artifact', requestId, projectId: projectIdRef.current, version });
-			// The registry stores the saved pipeline document verbatim, so the
-			// raw artifact record IS the IProject the record drawer renders.
-		}).then((artifact) => artifact as unknown as IProject);
+		return deploymentActions.artifact(projectIdRef.current, version).then((artifact) => artifact as unknown as IProject);
 	}, []);
 
 	/** Publish the SAVED document (the host snapshots it; only metadata travels). */
@@ -653,23 +559,49 @@ const ProjectWebview: React.FC = () => {
 		[deployRequest]
 	);
 
-	/** Point a team at a version (promotion and rollback alike). */
+	/** Point a team at a version (promotion and rollback alike). The caller
+	    owns the refresh now — the old host re-push settled stale waiters. */
 	const handleDeployVersion = useCallback(
 		async (version: number, teamId: string): Promise<void> => {
-			await deployRequest((requestId) => ({ type: 'deploy:deploy', requestId, projectId: projectIdRef.current, version, teamId }));
+			await deploymentActions.deployVersion(projectIdRef.current, teamId, version);
+			void fetchDeployLifecycle();
 		},
-		[deployRequest]
+		[fetchDeployLifecycle]
 	);
 
 	/** Where-live / version-badge click → a deployment record drawer (this
 	    webview owns its record panels, the grid-view pattern): the TEAM
 	    record without a sourceId, one source's record with it. */
+	const loadDeployment = useCallback((teamId: string, sourceId?: string): void => {
+		// The drawer's run state is push-driven: the team-scoped task monitor's
+		// events trigger the re-fetches (brokered refcounts dedupe; released
+		// per-connection server-side, matching open-again-later usage).
+		void ConnectionManager.getInstance().request('client.addMonitor', { key: { projectId: projectIdRef.current, source: '*', teamId: toWireTeamId(teamId) }, types: ['task'] } as never).catch(() => {});
+		fetchDeploymentOp(projectIdRef.current, teamId, sourceId).then(
+			(payload) => {
+				// Stale-drawer guard: only the OPEN record's result applies.
+				const open = openDeploymentRef.current;
+				if (open?.teamId !== teamId || (sourceId ?? null) !== (open?.sourceId ?? null)) return;
+				setDeploymentData(payload);
+				setDeploymentError('');
+			},
+			(error: unknown) => {
+				const open = openDeploymentRef.current;
+				if (open?.teamId !== teamId || (sourceId ?? null) !== (open?.sourceId ?? null)) return;
+				setDeploymentError(error instanceof Error ? error.message : String(error));
+			}
+		);
+	}, []);
+
 	const handleOpenDeployment = useCallback((teamId: string, sourceId?: string): void => {
 		setDeploymentData(null);
 		setDeploymentError('');
+		// Set the ref SYNCHRONOUSLY so a fast fetch cannot lose the guard race
+		// against the state effect.
+		openDeploymentRef.current = { teamId, ...(sourceId ? { sourceId } : {}) };
 		setOpenDeployment({ teamId, ...(sourceId ? { sourceId } : {}) });
-		sendMessageRef.current({ type: 'deployment:fetch', teamId, ...(sourceId ? { sourceId } : {}) });
-	}, []);
+		loadDeployment(teamId, sourceId);
+	}, [loadDeployment]);
 
 	// The open drawer refreshes on PUSH, not on a cadence: apaevt_deploy
 	// invalidations and this team's task lifecycle events (relayed through
@@ -681,9 +613,9 @@ const ProjectWebview: React.FC = () => {
 			deployRefetchTimer.current = null;
 			const open = openDeploymentRef.current;
 			if (!open) return;
-			sendMessageRef.current({ type: 'deployment:fetch', teamId: open.teamId, ...(open.sourceId ? { sourceId: open.sourceId } : {}) });
+			loadDeployment(open.teamId, open.sourceId);
 		}, DEPLOYMENT_REFETCH_COALESCE_MS);
-	}, []);
+	}, [loadDeployment]);
 	useEffect(
 		() => () => {
 			if (deployRefetchTimer.current) clearTimeout(deployRefetchTimer.current);
@@ -697,22 +629,6 @@ const ProjectWebview: React.FC = () => {
 	useEffect(() => {
 		setDeployLiveEvents([]);
 	}, [openDeployment?.teamId, openDeployment?.sourceId]);
-
-	/** One requestId-correlated deployment round-trip (actionResult /
-	    previewResult / validateResult settle it; lost replies time out). */
-	const deploymentRequest = useCallback((build: (requestId: number) => ProjectWebviewToHost): Promise<unknown> => {
-		return new Promise<unknown>((resolve, reject) => {
-			const requestId = ++deploymentRequestCounter.current;
-			const timer = setTimeout(() => {
-				if (pendingDeploymentRequests.current.has(requestId)) {
-					pendingDeploymentRequests.current.delete(requestId);
-					reject(new Error('The server did not respond in time'));
-				}
-			}, DEPLOY_REQUEST_TIMEOUT_MS);
-			pendingDeploymentRequests.current.set(requestId, { resolve, reject, timer });
-			sendMessageRef.current(build(requestId));
-		});
-	}, []);
 
 	/** The provider owns the TextDocument; deploy:publish saves host-side —
 	    the panel just needs a resolvable save step for its flow. */
@@ -831,22 +747,22 @@ const ProjectWebview: React.FC = () => {
 							// as the record drawer (teamId is on every message); the rows
 							// refresh via deploy:fetch once the mutation resolves.
 							onDeploySetDisabled: async (teamId: string, disabled: boolean) => {
-								await deploymentRequest((requestId) => ({ type: 'deployment:setDisabled', teamId, requestId, disabled }));
-								sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
+								await deploymentActions.setDisabled(projectIdRef.current, teamId, disabled);
+								void fetchDeployLifecycle();
 							},
 							onDeployRemove: async (teamId: string) => {
-								await deploymentRequest((requestId) => ({ type: 'deployment:remove', teamId, requestId }));
-								sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
+								await deploymentActions.remove(projectIdRef.current, teamId);
+								void fetchDeployLifecycle();
 							},
 							onDeploySetSchedule: async (teamId: string, sourceId: string, cron: string | null, ttl: number | null) => {
-								await deploymentRequest((requestId) => ({ type: 'deployment:setSchedule', teamId, requestId, sourceId, cron, ttl }));
-								sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
+								await deploymentActions.setSchedule(projectIdRef.current, teamId, sourceId, cron, ttl);
+								void fetchDeployLifecycle();
 							},
 							onDeploySetSchedulePaused: async (teamId: string, sourceId: string, paused: boolean) => {
-								await deploymentRequest((requestId) => ({ type: 'deployment:setSchedulePaused', teamId, requestId, sourceId, paused }));
-								sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
+								await deploymentActions.setSchedulePaused(projectIdRef.current, teamId, sourceId, paused);
+								void fetchDeployLifecycle();
 							},
-							onDeployPreviewSchedule: async (cron: string, count: number) => (await deploymentRequest((requestId) => ({ type: 'deployment:preview', teamId: '', requestId, cron, count }))) as SchedulePreviewResultDTO,
+							onDeployPreviewSchedule: async (cron: string, count: number) => (await deploymentActions.preview(cron, count)) as SchedulePreviewResultDTO,
 							fetchDeployArtifact,
 							onSaveDocument: handleDeploySaveDocument,
 						}
@@ -879,19 +795,19 @@ const ProjectWebview: React.FC = () => {
 									onOpenSource: (sourceId: string) => handleOpenDeployment(openDeployment.teamId, sourceId),
 									// Verbs ack, then THIS webview re-fetches the record.
 									onSetDisabled: async (disabled: boolean) => {
-										await deploymentRequest((requestId) => ({ type: 'deployment:setDisabled', teamId: openDeployment.teamId, requestId, disabled }));
+										await deploymentActions.setDisabled(projectIdRef.current, openDeployment.teamId, disabled);
 										sendMessageRef.current({ type: 'deployment:fetch', teamId: openDeployment.teamId });
 										sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
 									},
 									onDeployVersion: async (version: number) => {
-										await deploymentRequest((requestId) => ({ type: 'deployment:deployVersion', teamId: openDeployment.teamId, requestId, version }));
+										await deploymentActions.deployVersion(projectIdRef.current, openDeployment.teamId, version);
 										sendMessageRef.current({ type: 'deployment:fetch', teamId: openDeployment.teamId });
 										sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
 									},
 									...(deploymentData.canControl
 										? {
 												onRemove: async () => {
-													await deploymentRequest((requestId) => ({ type: 'deployment:remove', teamId: openDeployment.teamId, requestId }));
+													await deploymentActions.remove(projectIdRef.current, openDeployment.teamId);
 													// The record is gone — the drawer closes itself.
 													setOpenDeployment(null);
 													sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
@@ -919,7 +835,7 @@ const ProjectWebview: React.FC = () => {
 									servicesJson: deploymentData.servicesJson as never,
 									handleValidatePipeline: (async (pipelineToValidate: unknown) => {
 										try {
-											return (await deploymentRequest((requestId) => ({ type: 'deployment:validate', teamId: openDeployment.teamId, requestId, pipeline: pipelineToValidate }))) as { errors: unknown[]; warnings: unknown[] };
+											return deploymentActions.validate(pipelineToValidate as Record<string, unknown>);
 										} catch {
 											return { errors: [], warnings: [] };
 										}
@@ -939,19 +855,19 @@ const ProjectWebview: React.FC = () => {
 									...(deploymentData.sourcePaused !== undefined ? { sourcePaused: deploymentData.sourcePaused } : {}),
 									...(deploymentData.sourceConfig ? { sourceConfig: deploymentData.sourceConfig } : {}),
 									onSetSourceConfig: async (traceLevel: 'none' | 'metadata' | 'summary' | 'full' | null, debugOut: boolean) => {
-										await deploymentRequest((requestId) => ({ type: 'deployment:setSourceConfig', teamId: openDeployment.teamId, requestId, sourceId: openDeployment.sourceId as string, traceLevel, debugOut }));
+										await deploymentActions.setSourceConfig(projectIdRef.current, openDeployment.teamId, openDeployment.sourceId as string, traceLevel, debugOut);
 										sendMessageRef.current({ type: 'deployment:fetch', teamId: openDeployment.teamId, sourceId: openDeployment.sourceId });
 									},
 									onSetSchedulePaused: async (paused: boolean) => {
-										await deploymentRequest((requestId) => ({ type: 'deployment:setSchedulePaused', teamId: openDeployment.teamId, requestId, sourceId: openDeployment.sourceId as string, paused }));
+										await deploymentActions.setSchedulePaused(projectIdRef.current, openDeployment.teamId, openDeployment.sourceId as string, paused);
 										sendMessageRef.current({ type: 'deployment:fetch', teamId: openDeployment.teamId, sourceId: openDeployment.sourceId });
 									},
 									onRunSource: async (sourceId) => {
-										await deploymentRequest((requestId) => ({ type: 'deployment:runSource', teamId: openDeployment.teamId, requestId, sourceId }));
+										await deploymentActions.runSource(projectIdRef.current, openDeployment.teamId, sourceId);
 										sendMessageRef.current({ type: 'deployment:fetch', teamId: openDeployment.teamId, sourceId: openDeployment.sourceId });
 									},
 									onStopSource: async (sourceId) => {
-										await deploymentRequest((requestId) => ({ type: 'deployment:stopSource', teamId: openDeployment.teamId, requestId, sourceId }));
+										await deploymentActions.stopSource(projectIdRef.current, openDeployment.teamId, sourceId);
 										sendMessageRef.current({ type: 'deployment:fetch', teamId: openDeployment.teamId, sourceId: openDeployment.sourceId });
 									},
 								},

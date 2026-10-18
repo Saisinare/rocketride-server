@@ -21,9 +21,8 @@ import type { TaskStatus } from 'shared/tools/pipelines/project/types';
 import { ConnectionManager } from '../connection/connection';
 import { CloudAuthProvider } from '../auth/CloudAuthProvider';
 import { ConfigManager } from '../config';
-import type { PipelineConfig, RocketRideClient } from 'rocketride';
+import type { PipelineConfig } from 'rocketride';
 import { getLogger } from '../shared/util/output';
-import { icons } from '../shared/util/icons';
 // Deep import on purpose — see SidebarProvider: the barrel drags view types
 // into the extension-host compile; parse.ts is pure.
 import { parsePipelineContent } from 'shared/tools/pipelines/parse';
@@ -32,7 +31,6 @@ import { isDeployRunBody } from '../shared/util/runClassification';
 import { handleMissingEnvVars } from '../shared/util/envVarCheck';
 import { isCloudConnectionConfigured as hasCloudConnectionConfigured } from '../shared/util/connectionModeAuth';
 import { savePipelineDocument } from '../shared/util/pipelineSave';
-import type { DeploymentWebviewToHost } from './types/deployTypes';
 import type { LogSessionWebviewToHost } from './types/logTypes';
 import { DeployLifecycle } from './project/deployLifecycle';
 import { openExternalLink } from './project/externalLink';
@@ -326,10 +324,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		for (const editorState of this.editorStates.values()) {
 			editorState.cachedStatuses = {};
 		}
-		// Team task monitors are per-connection server-side — a reconnect
-		// starts clean, so drop the registration memory and re-register on
-		// the next drawer fetch.
-		this.deployLifecycle.clearTaskMonitors();
 	}
 
 	// =========================================================================
@@ -556,16 +550,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		// --- Handle messages from the webview (ProjectViewOutgoing) -----------
 
 		webview.onDidReceiveMessage(async (data) => {
-			// Deployment record drawer protocol: the drawer inside THIS webview
-			// drives one team deployment; identity = panel project + msg team.
-			if (typeof data.type === 'string' && data.type.startsWith('deployment:')) {
-				try {
-					await this.deployLifecycle.handleDeploymentMessage(webview, editorState.projectId ?? '', data as DeploymentWebviewToHost);
-				} catch (error) {
-					this.logger.error(`[ProjectProvider] Deployment message error: ${error}`);
-				}
-				return;
-			}
 			// Run-log session protocol (the DVR bridge): proxy session calls
 			// onto real client.log streams; play items push back as events.
 			if (typeof data.type === 'string' && data.type.startsWith('logsession:')) {
@@ -747,28 +731,9 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				// — no checkout:* request handling here. checkout:required and
 				// checkout:subscriptionUpdate remain host-originated pushes.
 
-				// Deploy lifecycle — snapshot request from the DEPLOY page
-				case 'deploy:fetch': {
-					await this.deployLifecycle.sendDeployData(webview, editorState.projectId);
-					break;
-				}
-
-				// Deploy lifecycle — one immutable artifact for the version drawer
-				case 'deploy:artifact': {
-					try {
-						const deployClient = this.connectionManager.getClient();
-						if (!deployClient) throw new Error('Not connected to server');
-						const pipeline = await deployClient.deploy.artifact((data.projectId as string) || editorState.projectId || '', data.version as number);
-						webview.postMessage({ type: 'deploy:artifactResult', requestId: data.requestId, pipeline });
-					} catch (error) {
-						const msg = error instanceof Error ? error.message : String(error);
-						this.logger.error(`[ProjectProvider] Artifact fetch failed: ${msg}`);
-						webview.postMessage({ type: 'deploy:artifactResult', requestId: data.requestId, error: msg });
-					}
-					break;
-				}
-
-				// Deploy lifecycle — publish the SAVED document as the next version
+				// Deploy lifecycle — publish stays HOST-side (it needs the
+				// TextDocument); everything else rides client.deploy.* in the
+				// realm (views/project/deployOps.ts).
 				case 'deploy:publish': {
 					try {
 						const deployClient = this.connectionManager.getClient();
@@ -799,29 +764,12 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 								document.uri.path,
 						};
 						await deployClient.deploy.add({ pipeline, ...(data.comment ? { comment: data.comment as string } : {}), ...(data.deployTo ? { deployTo: data.deployTo as string } : {}) });
+						// The realm refreshes its own lifecycle rows on resolve —
+						// no re-push (the old one settled STALE waiters).
 						webview.postMessage({ type: 'deploy:actionResult', requestId: data.requestId });
-						// Re-push the lifecycle so the strip/history show the new truth.
-						await this.deployLifecycle.sendDeployData(webview, editorState.projectId);
 					} catch (error) {
 						const msg = error instanceof Error ? error.message : String(error);
 						this.logger.error(`[ProjectProvider] Publish failed: ${msg}`);
-						webview.postMessage({ type: 'deploy:actionResult', requestId: data.requestId, error: msg });
-					}
-					break;
-				}
-
-				// Deploy lifecycle — point a team at a version (promotion/rollback)
-				case 'deploy:deploy': {
-					try {
-						const deployClient = this.connectionManager.getClient();
-						if (!deployClient) throw new Error('Not connected to server');
-						await deployClient.deploy.deploy((data.projectId as string) || editorState.projectId || '', data.version as number, data.teamId as string);
-						webview.postMessage({ type: 'deploy:actionResult', requestId: data.requestId });
-						// Re-push the lifecycle so badges/where-live show the new truth.
-						await this.deployLifecycle.sendDeployData(webview, editorState.projectId);
-					} catch (error) {
-						const msg = error instanceof Error ? error.message : String(error);
-						this.logger.error(`[ProjectProvider] Deploy failed: ${msg}`);
 						webview.postMessage({ type: 'deploy:actionResult', requestId: data.requestId, error: msg });
 					}
 					break;
