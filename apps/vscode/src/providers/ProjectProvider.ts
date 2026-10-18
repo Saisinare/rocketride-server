@@ -15,7 +15,6 @@
  */
 
 import * as vscode from 'vscode';
-import { readPrefsSnapshot, writePref } from './PrefsBag';
 import * as path from 'path';
 import { GenericEvent, ConnectionState, PIPE_BUILDER_APP_ID } from '../shared/types';
 import type { TaskStatus } from 'shared/tools/pipelines/project/types';
@@ -572,7 +571,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		// The editor is also a bus realm: shell components inside it (checkout,
 		// stripe key) use request('client.*')/host.* ops over the `__rrbus`
 		// envelope, which never collides with the typed project:* messages.
-		const detachRealm = this.busHost.attachWebview(webview, 'page:project');
+		const detachRealm = this.busHost.attachWebview(webview, `page:project/${document.uri.toString()}`);
 
 		// --- Handle messages from the webview (ProjectViewOutgoing) -----------
 
@@ -600,10 +599,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			switch (data.type) {
 				case 'view:ready': {
 					editorState.isReady = true;
-
-					// Seed the realm's prefs store FIRST (grid layouts answer
-					// synchronously from it — see useGridConfigAnswering).
-					void editorState.webviewPanel.webview.postMessage({ type: 'prefs:init', values: readPrefsSnapshot(this.context) });
 
 					// Build project from document
 					const text = document.getText();
@@ -889,10 +884,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				}
 
 				// View state change — not persisted in VS Code
-				case 'prefs:set':
-					writePref(this.context, data.key, data.value, data.scope);
-					break;
-
 				case 'project:viewStateChange': {
 					// Update layouts (per-document defaults for future opens)
 					if (data.viewState) {

@@ -151,14 +151,21 @@ const ProjectWebview: React.FC = () => {
 
 	const sendMessageRef = useRef<(msg: ProjectWebviewToHost) => void>(() => {});
 
-	// This realm's prefs store (hydrate-once, host-seeded via prefs:init);
+	// This realm's prefs store — hydrated once from the host's memento bag
+	// over the bus (host.prefs.*; the same lane every framework page uses);
 	// grid layouts answer synchronously from it, so DataGrid persistence
 	// works in this webview exactly as in the web shell.
 	const prefsBridgeRef = useRef<ReturnType<typeof createBridgedPrefsStore> | null>(null);
 	if (!prefsBridgeRef.current) {
-		prefsBridgeRef.current = createBridgedPrefsStore((key, value, scope) => sendMessageRef.current({ type: 'prefs:set', key, value, scope }));
+		prefsBridgeRef.current = createBridgedPrefsStore((key, value, scope) => ConnectionManager.getInstance().emitOp('host.prefs.set', { key, value, scope }));
 	}
 	useGridConfigAnswering(prefsBridgeRef.current.store);
+	useEffect(() => {
+		void ConnectionManager.getInstance().request('host.prefs.snapshot', {} as never).then(
+			(snap) => prefsBridgeRef.current?.seed(snap as Record<string, unknown>),
+			() => prefsBridgeRef.current?.seed({})
+		);
+	}, []);
 	const getStateRef = useRef<() => ViewState | null>(() => null);
 
 	const handleMessage = useCallback((msg: ProjectHostToWebview) => {
@@ -283,9 +290,6 @@ const ProjectWebview: React.FC = () => {
 				break;
 			case 'project:cloudConnectionConfigured':
 				setCloudConnectionConfigured(msg.cloudConnectionConfigured);
-				break;
-			case 'prefs:init':
-				prefsBridgeRef.current?.seed(msg.values);
 				break;
 			case 'shell:connectionChange':
 				if (msg.isConnected) {

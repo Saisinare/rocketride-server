@@ -63,6 +63,12 @@ node scripts/build.js docs:check                     # export drift gate (CI-enf
   `src/shared/util/output.ts` (the Output-channel logger — never
   `console.*`); throw plain `Error` with a user-readable message. Docs-site
   theme components (`docs/docusaurus`) are exempt by design.
+- **Shell/webview communication rides the shell bus** (three lanes:
+  realm-local events, `request`/`handle` ops, retained `publish`/`subscribe`
+  topics — `packages/shell/src/ops/`). A `requestId` field in a webview
+  protocol is a bug report: hand-rolled request/response correlation means
+  the message should be a bus op (the bridge correlates). New webview
+  surfaces attach as bus realms; per-page postMessage protocols are legacy.
 
 ## Documentation rules
 
