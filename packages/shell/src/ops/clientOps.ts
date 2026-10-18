@@ -102,6 +102,24 @@ export interface ClientOpMap extends ShellOpMap {
 	// ── Account (env autocomplete) ───────────────────────────────────────────
 	'client.getEnvironmentKeys': ShellOpSpec<Record<string, never>, unknown>;
 
+	// ── Deploy lifecycle (publish/deploy/schedules — team-scoped) ────────────
+	'client.deploy.list': ShellOpSpec<Record<string, never>, unknown>;
+	'client.deploy.versions': ShellOpSpec<{ projectId: string }, unknown>;
+	'client.deploy.get': ShellOpSpec<{ projectId: string; teamId: string }, unknown>;
+	'client.deploy.artifact': ShellOpSpec<{ projectId: string; version: number }, unknown>;
+	'client.deploy.history': ShellOpSpec<{ projectId: string; teamId?: string }, unknown>;
+	'client.deploy.deploy': ShellOpSpec<{ projectId: string; version: number; teamId: string }, unknown>;
+	'client.deploy.disable': ShellOpSpec<{ projectId: string; teamId: string }, unknown>;
+	'client.deploy.enable': ShellOpSpec<{ projectId: string; teamId: string }, unknown>;
+	'client.deploy.remove': ShellOpSpec<{ projectId: string; teamId: string }, unknown>;
+	'client.deploy.run': ShellOpSpec<{ projectId: string; sourceId: string; teamId: string }, unknown>;
+	/** cron=null clears the schedule; ttl rides options. */
+	'client.deploy.setSchedule': ShellOpSpec<{ projectId: string; sourceId: string; cron: string | null; teamId: string; ttl?: number }, unknown>;
+	'client.deploy.pauseSchedule': ShellOpSpec<{ projectId: string; sourceId: string; teamId: string }, unknown>;
+	'client.deploy.resumeSchedule': ShellOpSpec<{ projectId: string; sourceId: string; teamId: string }, unknown>;
+	'client.deploy.setSourceConfig': ShellOpSpec<{ projectId: string; sourceId: string; teamId: string; traceLevel?: string; debugOut?: boolean }, unknown>;
+	'client.deploy.preview': ShellOpSpec<{ cron: string; count: number }, unknown>;
+
 	// ── Account (profile / org / members / teams / keys / env) ──────────────
 	'client.account.getProfile': ShellOpSpec<Record<string, never>, unknown>;
 	'client.account.updateProfile': ShellOpSpec<{ fields: Record<string, unknown> }, unknown>;
@@ -251,6 +269,21 @@ export function registerClientOps(bus: IOpBus, source: IClientOpsSource, options
 		'client.cprofileThreads': (p) => client().cprofileThreads(p.target ?? null),
 		'client.getService': (p) => client().getService(p.service),
 		'client.getEnvironmentKeys': () => client().account.getEnvironmentKeys(),
+		'client.deploy.list': () => client().deploy.list(),
+		'client.deploy.versions': (p) => client().deploy.versions(p.projectId),
+		'client.deploy.get': (p) => client().deploy.get(p.projectId, p.teamId),
+		'client.deploy.artifact': (p) => client().deploy.artifact(p.projectId, p.version),
+		'client.deploy.history': (p) => client().deploy.history(p.projectId, p.teamId !== undefined ? { teamId: p.teamId } : undefined),
+		'client.deploy.deploy': (p) => client().deploy.deploy(p.projectId, p.version, p.teamId),
+		'client.deploy.disable': (p) => client().deploy.disable(p.projectId, p.teamId),
+		'client.deploy.enable': (p) => client().deploy.enable(p.projectId, p.teamId),
+		'client.deploy.remove': (p) => client().deploy.remove(p.projectId, p.teamId),
+		'client.deploy.run': (p) => client().deploy.run(p.projectId, p.sourceId, p.teamId),
+		'client.deploy.setSchedule': (p) => client().deploy.setSchedule(p.projectId, p.sourceId, p.cron, p.teamId, { ...(p.ttl !== null && p.ttl !== undefined ? { ttl: p.ttl } : {}) }),
+		'client.deploy.pauseSchedule': (p) => client().deploy.pauseSchedule(p.projectId, p.sourceId, p.teamId),
+		'client.deploy.resumeSchedule': (p) => client().deploy.resumeSchedule(p.projectId, p.sourceId, p.teamId),
+		'client.deploy.setSourceConfig': (p) => client().deploy.setSourceConfig(p.projectId, p.sourceId, p.teamId, { ...(p.traceLevel ? { traceLevel: p.traceLevel } : {}), ...(p.debugOut !== undefined ? { debugOut: p.debugOut } : {}) }),
+		'client.deploy.preview': (p) => client().deploy.preview(p.cron, p.count),
 		'client.account.getProfile': () => client().account.getProfile(),
 		'client.account.updateProfile': (p) => client().account.updateProfile(p.fields),
 		'client.account.setDevTeam': (p) => client().account.setDevTeam(p.teamId),
