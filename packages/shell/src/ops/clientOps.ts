@@ -43,7 +43,7 @@
 
 import { registerOpHandlers } from './busOps';
 import type { IOpBus } from './busOps';
-import type { ShellOpMap, ShellOpSpec } from './busOps';
+import type { ShellOpMap, ShellOpSpec, ShellOpParams, ShellOpResult } from './busOps';
 
 /** A monitor key as the SDK takes it. */
 export type ClientMonitorKey = { token: string } | { projectId: string; source: string; teamId?: string; pipeId?: number; runKind?: 'dev' | 'deploy' };
@@ -210,11 +210,11 @@ export function registerClientOps(bus: IOpBus, source: IClientOpsSource, options
 		return c;
 	};
 
-	// One implementation per op, keyed by the op name itself and typed
-	// against ClientOpMap: a duplicate name, an unknown name, or a declared
-	// op with no implementation are all COMPILE errors.
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const impls: { [K in keyof ClientOpMap]: (p: any) => unknown } = {
+	// One implementation per op, keyed by the op name itself and FULLY typed
+	// against ClientOpMap (params and result both derive from the op's spec):
+	// a duplicate name, an unknown name, a declared op with no
+	// implementation, or a drifted payload shape are all COMPILE errors.
+	const impls: { [K in keyof ClientOpMap]: (p: ShellOpParams<ClientOpMap, K>) => ShellOpResult<ClientOpMap, K> | Promise<ShellOpResult<ClientOpMap, K>> } = {
 		'client.getDashboard': () => client().getDashboard(),
 		'client.listTasks': (p) => client().listTasks(p),
 		'client.listConnections': (p) => client().listConnections(p),

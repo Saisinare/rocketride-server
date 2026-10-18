@@ -106,7 +106,7 @@ function bridgedPair() {
 	const router = createBusRouter(rootBus);
 	const [rootEnd, realmEnd] = createLocalEndpointPair();
 	const detachRealm = router.addRealm(rootEnd, 'test-realm');
-	const detachBridge = attachRealmToRoot(realmBus, realmEnd);
+	const detachBridge = attachRealmToRoot(realmBus, realmEnd).detach;
 	return { rootBus, realmBus, router, detachRealm, detachBridge };
 }
 

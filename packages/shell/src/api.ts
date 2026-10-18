@@ -99,6 +99,7 @@ import { typedPrefs, scopedPrefs, createBridgedPrefsStore, usePref } from './com
 import { ToolHostProvider, useToolHost, createLoopbackPeer } from './components/workspace/toolHost';
 import { createOpBus, typedBusOps, registerOpHandlers, BusNoHandlerError, DEFAULT_BUS_REQUEST_TIMEOUT_MS } from './ops/busOps';
 import { attachRealmToRoot, createBusRouter, createLocalEndpointPair, DEFAULT_SUMMON_TIMEOUT_MS } from './ops/busBridge';
+import { createRetainedRegistry, localRetainedPort } from './ops/retained';
 import { registerClientOps } from './ops/clientOps';
 import { useGridConfigAnswering } from './components/data-grid/gridConfigAnswering';
 import { createToolRelay, hostConnectionPayload, TOOL_RELAY_BUFFER_LIMIT } from './components/workspace/toolRelay';
@@ -233,9 +234,11 @@ export { toolDocUri, parseToolDocUri, activeDocKeyFor, TOOL_DOC_PREFIX } from '.
 export { createOpBus, typedBusOps, registerOpHandlers, BusNoHandlerError, DEFAULT_BUS_REQUEST_TIMEOUT_MS } from './ops/busOps';
 export type { ShellOpMap, ShellOpSpec, ShellOpParams, ShellOpResult, IOpBus, IBusForwarder, IBusRequestOptions, ITypedBusOps, BusOpHandler, OpImplTable } from './ops/busOps';
 export { attachRealmToRoot, createBusRouter, createLocalEndpointPair, DEFAULT_SUMMON_TIMEOUT_MS } from './ops/busBridge';
+export { createRetainedRegistry, localRetainedPort } from './ops/retained';
+export type { IRetainedRegistry, IRetainedPort, RetainedSubscriber } from './ops/retained';
 export { registerClientOps } from './ops/clientOps';
 export type { ClientOpMap, ClientMonitorKey, IClientOpsSource, IClientOpsOptions } from './ops/clientOps';
-export type { IBusEndpoint, IBusRouter, IBusRouterOptions, SummonLookup } from './ops/busBridge';
+export type { IBusEndpoint, IBusRouter, IBusRouterOptions, SummonLookup, IRealmAttachment } from './ops/busBridge';
 
 // Top-level shell + sidebar component prop types
 export type { ShellProps } from './components/layout/Shell';
@@ -610,6 +613,8 @@ export const shellApi = {
 	get createBusRouter() { return createBusRouter; },
 	get createLocalEndpointPair() { return createLocalEndpointPair; },
 	get DEFAULT_SUMMON_TIMEOUT_MS() { return DEFAULT_SUMMON_TIMEOUT_MS; },
+	get createRetainedRegistry() { return createRetainedRegistry; },
+	get localRetainedPort() { return localRetainedPort; },
 	get registerClientOps() { return registerClientOps; },
 	get useIframeBridge() { return useIframeBridge; },
 	get useSubscriptions() { return useSubscriptions; },

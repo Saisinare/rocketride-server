@@ -1,31 +1,29 @@
 // =============================================================================
 // MIT License
 // Copyright (c) 2026 Aparavi Software AG
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
 // =============================================================================
 
-import React, { useState, useRef, useMemo, useCallback, CSSProperties } from 'react';
-import { useMessaging } from '../hooks/useMessaging';
+/**
+ * SettingsWebview — the Settings framework page as a shell bus realm.
+ *
+ * Configuration dashboard for the extension: connection settings with
+ * cloud/local mode support, pipeline defaults, engine lifecycle, and
+ * integrations. Everything the page needs from the host rides the bus:
+ * settings via `host.settings.*`, staged cloud auth via `host.cloud.*`,
+ * engine installs/status via `host.engine.*`, the server probe via
+ * `host.server.probe`, and checkout via the brokered `client.billing.*`
+ * ops. Results answer each call directly — there is no message switch, no
+ * resolver table, and no echo-routing.
+ *
+ * NOTE (scope): the VS Code and cloud settings surfaces are intentionally
+ * different UIs today — unifying them is a later sprint. This page migrated
+ * MECHANICS only.
+ */
+
+import React, { useState, useEffect, useRef, useMemo, useCallback, CSSProperties } from 'react';
+import { ConnectionManager } from 'shell';
 import { ConnectionSettings } from './ConnectionSettings';
 import { PipelineSettings } from './PipelineSettings';
-// EnvVariablesSettings removed — env is now managed in the Account page
 import { IntegrationSettings } from './IntegrationSettings';
 import { DeploySettings } from './DeploySettings';
 import { MessageDisplay } from './MessageDisplay';
@@ -35,6 +33,8 @@ import type { ViewMenu } from 'shell';
 import { TabPanel } from 'shell';
 import type { ITabPanelPanel } from 'shell';
 import type { ServiceStatus, DockerStatus, VersionOption } from '../components/panels/shared';
+import { PIPE_BUILDER_APP_ID } from '../../../shared/types';
+import type { SettingsData as SharedSettingsData, SettingsConnectionMode, SettingsPayload, SettingsOpenArgs, CloudAuthStatus, EngineVersionItem as SharedEngineVersionItem, EngineVersionsPayload, EngineStatusPayload, EngineControlResult, EngineProgress, ServerProbeResult } from 'shared/ops/settingsOps';
 
 import 'shell/themes/rocketride-default.css';
 import '../../../themes/rocketride-vscode.css';
@@ -43,9 +43,19 @@ import '../../styles/root.css';
 // ============================================================================
 // TYPE DEFINITIONS
 // ============================================================================
+// The form's wire shapes are declared with the ops (shared/ops/settingsOps);
+// they are re-exported here under their established names because the whole
+// panel tree (ConnectionConfig, CloudPanel, ...) imports them from this
+// module.
 
 /** Available connection modes for dev/deploy targets. */
-export type ConnectionMode = 'cloud' | 'docker' | 'service' | 'onprem' | 'local';
+export type ConnectionMode = SettingsConnectionMode;
+
+/** Root settings object persisted by the extension (the ops wire shape). */
+export type SettingsData = SharedSettingsData;
+
+/** A version entry returned from the GitHub releases API. */
+export type EngineVersionItem = SharedEngineVersionItem;
 
 const SETTINGS_TAB_IDS = ['development', 'deployment', 'pipeline', 'integrations'] as const;
 type SettingsTabId = typeof SETTINGS_TAB_IDS[number];
@@ -54,151 +64,11 @@ function isSettingsTabId(value: unknown): value is SettingsTabId {
 	return typeof value === 'string' && (SETTINGS_TAB_IDS as readonly string[]).includes(value);
 }
 
-/**
- * Per-group (development or deployment) connection configuration.
- * Null connectionMode means "use the other group's target" (shared mode).
- */
-export interface ConnectionGroupSettings {
-	/** Active connection mode, or null when sharing the other group's target. */
-	connectionMode: ConnectionMode | null;
-	/** Server URL for cloud/onprem modes. */
-	hostUrl: string;
-	/** Cloud mode: connect to `cloudUrl` instead of the default cloud. */
-	useCustomServer: boolean;
-	/** Cloud mode: the custom server address (used when useCustomServer). */
-	cloudUrl: string;
-	/** Cloud mode: the default cloud server (the setting's package.json
-	 * default, sent by the host — the webview bakes no address). */
-	defaultCloudUrl: string;
-	/** Whether the secret store already has an API key for this group. */
-	hasApiKey: boolean;
-	/** User-entered API key (cleared after save to secret storage). */
-	apiKey: string;
-	/** Local engine settings (applies to local mode only). */
-	local: {
-		engineVersion: string;
-	};
-}
-
-/** Root settings object persisted by the extension. */
-export interface SettingsData {
-	development: ConnectionGroupSettings;
-	deployment: ConnectionGroupSettings;
-	/** Workspace-relative path where pipeline files are stored. */
-	defaultPipelinePath: string;
-	/** How pipelines behave after file changes: auto-restart, manual, or prompt the user. */
-	pipelineRestartBehavior: 'auto' | 'manual' | 'prompt';
-	/** Default idle-timeout (seconds) for runs without a per-pipeline override; 0 = no timeout. */
-	pipelineTtl: number;
-	/** Default trace verbosity for runs without a per-pipeline override. */
-	pipelineTraceLevel: 'none' | 'metadata' | 'summary' | 'full';
-	/** Additional command-line arguments passed to each pipeline task via `.use`. */
-	taskArguments: string;
-	/** Enable full debug output for pipeline tasks (--trace=debugOut via `.use` args). */
-	pipelineDebugOutput: boolean;
-	envVars?: Record<string, string>;
-	/** Auto-install RocketRide docs for detected coding agents. */
-	autoAgentIntegration: boolean;
-	integrationCopilot: boolean;
-	integrationClaudeCode: boolean;
-	integrationCursor: boolean;
-	integrationWindsurf: boolean;
-	integrationClaudeMd: boolean;
-	integrationAgentsMd: boolean;
-}
-
-/** A version entry returned from the GitHub releases API. */
-export interface EngineVersionItem {
-	tag_name: string;
-	prerelease: boolean;
-}
-
 /** Message displayed in the status banner (inline or global). */
 export interface MessageData {
 	level: 'success' | 'error' | 'info' | 'warning';
 	message: string;
 }
-
-/**
- * Messages the extension host sends **to** this webview.
- * Additional message types (cloud:status, ioProgress, ioResult, etc.) are
- * handled via `as any` casts because the discriminated union only covers
- * the core types — engine/IO messages are added dynamically.
- */
-export type SettingsIncomingMessage =
-	| {
-			type: 'settings:loaded';
-			settings: SettingsData;
-			isSubscribed?: boolean;
-	  }
-	| {
-			type: 'settings:showMessage';
-			level: 'success' | 'error' | 'info' | 'warning';
-			message: string;
-			/** 'development' routes to inline test banner; 'save' indicates successful settings save. */
-			context?: 'development' | 'save';
-	  }
-	| {
-			type: 'versions:loaded';
-			versions: EngineVersionItem[];
-	  }
-	| {
-			type: 'settings:subscriptionStatus';
-			isSubscribed: boolean;
-	  }
-	// Declared, not cast: WelcomeWebview carries the identical variant, and
-	// the two surfaces read ONE host payload — a typed shape is what keeps
-	// them from drifting apart field by field.
-	| {
-			type: 'cloud:status';
-			signedIn: boolean;
-			userName: string;
-			signedInUrl?: string;
-			waitlisted?: boolean;
-			waitlistedName?: string;
-			pendingSignIn?: boolean;
-			pendingSignOut?: boolean;
-			pendingUserName?: string;
-			pendingUrl?: string;
-	  };
-
-/** Messages this webview sends **to** the extension host. */
-export type SettingsOutgoingMessage =
-	| {
-			type: 'view:ready';
-	  }
-	| {
-			type: 'settings:save';
-			settings: SettingsData;
-	  }
-	| {
-			type: 'settings:clearCredentials';
-	  }
-	| {
-			type: 'versions:fetch';
-	  }
-	| {
-			/** Ask the host for the current cloud auth state (a cloud:status reply). */
-			type: 'cloud:getStatus';
-	  }
-	| {
-			/**
-			 * Start the OAuth sign-in. `cloudUrl` carries the FORM's current
-			 * effective server (the custom-server checkbox + URL may be unsaved)
-			 * — the host exchanges the OAuth code against exactly this server.
-			 * Form-less senders (sidebar, welcome) omit it and the host falls
-			 * back to the saved configuration.
-			 */
-			type: 'cloud:signIn';
-			cloudUrl?: string;
-	  }
-	| {
-			type: 'cloud:signOut';
-	  }
-	| {
-			/** Discard any staged (uncommitted) cloud sign-in/sign-out. */
-			type: 'cloud:clearPending';
-	  };
 
 // ============================================================================
 // SHARED STYLES — reused by ConnectionSettings, DeploySettings, and panels
@@ -442,64 +312,64 @@ const authErrorBannerStyles = {
 };
 
 // ============================================================================
+// DEFAULT FORM STATE (pre-hydration)
+// ============================================================================
+
+const DEFAULT_SETTINGS: SettingsData = {
+	development: {
+		connectionMode: 'local',
+		hostUrl: 'http://localhost:5565',
+		useCustomServer: false,
+		cloudUrl: '',
+		defaultCloudUrl: '',
+		hasApiKey: false,
+		apiKey: '',
+		local: { engineVersion: 'latest' },
+	},
+	deployment: {
+		connectionMode: null,
+		hostUrl: '',
+		useCustomServer: false,
+		cloudUrl: '',
+		defaultCloudUrl: '',
+		hasApiKey: false,
+		apiKey: '',
+		local: { engineVersion: 'latest' },
+	},
+	defaultPipelinePath: 'pipelines',
+	pipelineRestartBehavior: 'prompt',
+	pipelineTtl: 900,
+	// Must match package.json's rocketride.pipelineTraceLevel default.
+	pipelineTraceLevel: 'full',
+	taskArguments: '',
+	pipelineDebugOutput: false,
+	envVars: {},
+	autoAgentIntegration: true,
+	integrationCopilot: false,
+	integrationClaudeCode: false,
+	integrationCursor: false,
+	integrationWindsurf: false,
+	integrationClaudeMd: false,
+	integrationAgentsMd: false,
+};
+
+// ============================================================================
 // MAIN SETTINGS VIEW COMPONENT
 // ============================================================================
 
 /**
- * Settings - Configuration dashboard for VS Code extension webview
- *
- * Provides settings management interface with multiple configuration sections.
- * Communicates with VS Code extension via useMessaging for persistence and validation.
- *
- * Features:
- * - Connection settings with cloud/local mode support
- * - Pipeline configuration with default paths
- * - Local engine settings for self-hosted instances
- * - Pipeline execution defaults (restart behavior, idle timeout, trace level)
- * - Real-time validation and feedback messaging
+ * Settings — the extension's configuration dashboard, served by the
+ * page-frame bundle as a socketless bus realm.
  */
 export const Settings: React.FC = () => {
+	const cm = ConnectionManager.getInstance();
+	const req = useCallback(<T,>(op: string, params?: unknown): Promise<T> => cm.request(op, (params ?? {}) as never) as Promise<T>, [cm]);
+
 	// ========================================================================
 	// STATE MANAGEMENT
 	// ========================================================================
 
-	const [settings, setSettings] = useState<SettingsData>({
-		development: {
-			connectionMode: 'local',
-			hostUrl: 'http://localhost:5565',
-			useCustomServer: false,
-			cloudUrl: '',
-			defaultCloudUrl: '',
-			hasApiKey: false,
-			apiKey: '',
-			local: { engineVersion: 'latest' },
-		},
-		deployment: {
-			connectionMode: null,
-			hostUrl: '',
-			useCustomServer: false,
-			cloudUrl: '',
-			defaultCloudUrl: '',
-			hasApiKey: false,
-			apiKey: '',
-			local: { engineVersion: 'latest' },
-		},
-		defaultPipelinePath: 'pipelines',
-		pipelineRestartBehavior: 'prompt',
-		pipelineTtl: 900,
-		// Must match package.json's rocketride.pipelineTraceLevel default.
-		pipelineTraceLevel: 'full',
-		taskArguments: '',
-		pipelineDebugOutput: false,
-		envVars: {},
-		autoAgentIntegration: true,
-		integrationCopilot: false,
-		integrationClaudeCode: false,
-		integrationCursor: false,
-		integrationWindsurf: false,
-		integrationClaudeMd: false,
-		integrationAgentsMd: false,
-	});
+	const [settings, setSettings] = useState<SettingsData>(DEFAULT_SETTINGS);
 	const [message, setMessage] = useState<MessageData | null>(null);
 	const [testMessage, setTestMessage] = useState<MessageData | null>(null);
 	const [engineVersions, setEngineVersions] = useState<EngineVersionItem[]>([]);
@@ -508,12 +378,11 @@ export const Settings: React.FC = () => {
 	// Per-group cloud probe results. `isSaas` keeps its LAST value while a
 	// re-probe is in flight so the auth UI doesn't flicker away on every
 	// keystroke in the URL field; undefined = never probed ("Checking...").
-	// Each result is routed by the echoed hostUrl, so the dev and deploy
-	// panels can probe different targets without clobbering each other.
+	// Each probe answers its own request — a per-group sequence drops a stale
+	// result that lands after a newer probe was issued.
 	const [devProbe, setDevProbe] = useState<{ isSaas?: boolean; unreachable: boolean }>({ unreachable: false });
 	const [deployProbe, setDeployProbe] = useState<{ isSaas?: boolean; unreachable: boolean }>({ unreachable: false });
-	/** The URL each group's panel most recently asked to probe. */
-	const probeUrlRef = useRef<{ development?: string; deployment?: string }>({});
+	const probeSeqRef = useRef<{ development: number; deployment: number }>({ development: 0, deployment: 0 });
 
 	// Cloud auth state
 	const [cloudSignedIn, setCloudSignedIn] = useState(false);
@@ -531,13 +400,6 @@ export const Settings: React.FC = () => {
 	// panel applies only on Save, so it participates in dirty tracking.
 	const [cloudPending, setCloudPending] = useState<{ signIn: boolean; signOut: boolean; userName: string; url: string }>({ signIn: false, signOut: false, userName: '', url: '' });
 
-	// Checkout modal state
-	const checkoutResolvers = useRef<{
-		plans?: { resolve: (v: CheckoutPlan[]) => void; reject: (e: Error) => void };
-		session?: { resolve: (v: { clientSecret: string; subscriptionId: string }) => void; reject: (e: Error) => void };
-		confirm?: { resolve: () => void; reject: (e: Error) => void };
-	}>({});
-
 	// Docker state
 	const [dockerStatus, setDockerStatus] = useState<DockerStatus>({ state: 'not-installed', version: null, publishedAt: null, imageTag: null });
 	const [dockerProgress, setDockerProgress] = useState<string | null>(null);
@@ -554,8 +416,6 @@ export const Settings: React.FC = () => {
 	const [serviceBusy, setServiceBusy] = useState(false);
 	const [serviceAction, setServiceAction] = useState<'install' | 'update' | 'remove' | 'start' | 'stop' | null>(null);
 	const [serviceSelectedVersion, setServiceSelectedVersion] = useState('latest');
-	const [sudoPromptVisible, setSudoPromptVisible] = useState(false);
-	const [sudoPasswordInput, setSudoPasswordInput] = useState('');
 
 	// Auth error banner — shown when the settings page opens due to an auth failure
 	const [authError, setAuthError] = useState<string | null>(null);
@@ -566,210 +426,118 @@ export const Settings: React.FC = () => {
 	// Dirty-state tracking — the footer Save/Cancel appear only when the user has edited something
 	const [dirty, setDirty] = useState(false);
 	const savedSettingsRef = useRef<SettingsData | null>(null);
-	const pendingSaveSnapshotRef = useRef<SettingsData | null>(null);
+
+	// Busy flags cross the push handlers' closures — refs keep them current.
+	const dockerBusyRef = useRef(dockerBusy);
+	dockerBusyRef.current = dockerBusy;
+	const serviceBusyRef = useRef(serviceBusy);
+	serviceBusyRef.current = serviceBusy;
 
 	// ========================================================================
-	// WEBVIEW MESSAGING
+	// BUS WIRING — initial pulls + push handlers
 	// ========================================================================
 
-	const { sendMessage, isReady: _isReady } = useMessaging<SettingsOutgoingMessage, SettingsIncomingMessage>({
-		onMessage: (message) => {
-			switch (message.type) {
-				case 'settings:loaded':
-					setSettings(message.settings);
-					// Deep-clone for cancel/reset so future edits don't mutate the snapshot
-					savedSettingsRef.current = JSON.parse(JSON.stringify(message.settings));
-					setDirty(false);
-					// Subscription status is included in the settingsLoaded payload
-					if (message.isSubscribed !== undefined) {
-						setSubscribed(message.isSubscribed);
-					}
-					// Pre-fetch versions from GitHub (cached on backend, shared across all modes)
-					setEngineVersionsLoading(true);
-					sendMessage({ type: 'versions:fetch' });
-					// Hydrate cloud auth status so the Cloud panel renders correctly
-					sendMessage({ type: 'cloud:getStatus' });
-					break;
+	const fetchVersions = useCallback((): void => {
+		setEngineVersionsLoading(true);
+		req<EngineVersionsPayload>('host.engine.versions').then(
+			(v) => {
+				setEngineVersions(v.releases);
+				setDockerTags(v.dockerTags);
+				setEngineVersionsLoading(false);
+			},
+			() => setEngineVersionsLoading(false)
+		);
+	}, [req]);
 
-				case 'versions:loaded' as any:
-					setEngineVersions((message as any).versions ?? []);
-					setEngineVersionsLoading(false);
-					break;
+	const applySettingsPayload = useCallback((payload: SettingsPayload): void => {
+		setSettings(payload.settings);
+		// Deep-clone for cancel/reset so future edits don't mutate the snapshot
+		savedSettingsRef.current = JSON.parse(JSON.stringify(payload.settings));
+		setDirty(false);
+		setSubscribed(payload.isSubscribed);
+	}, []);
 
-				case 'cloud:status': {
-					setCloudSignedIn(message.signedIn);
-					setCloudUserName(message.userName || '');
-					setCloudSignedInUrl(message.signedInUrl || '');
-					setCloudWaitlisted(Boolean(message.waitlisted));
-					setCloudWaitlistedName(message.waitlistedName || '');
-					const pendingSignIn = Boolean(message.pendingSignIn);
-					const pendingSignOut = Boolean(message.pendingSignOut);
-					setCloudPending({ signIn: pendingSignIn, signOut: pendingSignOut, userName: message.pendingUserName || '', url: message.pendingUrl || '' });
-					// A staged auth change is an unsaved edit — surface the
-					// Save/Cancel footer so the user can commit or revert it.
-					if (pendingSignIn || pendingSignOut) setDirty(true);
-					break;
+	const applyCloudStatus = useCallback((status: CloudAuthStatus): void => {
+		setCloudSignedIn(status.signedIn);
+		setCloudUserName(status.userName || '');
+		setCloudSignedInUrl(status.signedInUrl || '');
+		setCloudWaitlisted(Boolean(status.waitlisted));
+		setCloudWaitlistedName(status.waitlistedName || '');
+		setCloudPending({ signIn: status.pendingSignIn, signOut: status.pendingSignOut, userName: status.pendingUserName || '', url: status.pendingUrl || '' });
+		// A staged auth change is an unsaved edit — surface the Save/Cancel
+		// footer so the user can commit or revert it.
+		if (status.pendingSignIn || status.pendingSignOut) setDirty(true);
+	}, []);
+
+	const applyOpenArgs = useCallback((args: SettingsOpenArgs): void => {
+		if (isSettingsTabId(args.focus)) setActiveTab(args.focus);
+		if (args.authError) setAuthError(args.authError);
+	}, []);
+
+	useEffect(() => {
+		// Initial hydration: settings, cloud auth, engine status, open args,
+		// and the version catalogs (host-cached, so the eager fetch is cheap).
+		req<SettingsPayload>('host.settings.get').then(applySettingsPayload, () => {});
+		req<CloudAuthStatus>('host.cloud.status').then(applyCloudStatus, () => {});
+		req<EngineStatusPayload>('host.engine.status').then((p) => {
+			setServiceStatus(p.service as ServiceStatus);
+			setDockerStatus(p.docker as DockerStatus);
+		}, () => {});
+		req<SettingsOpenArgs>('host.settings.getOpenArgs').then(applyOpenArgs, () => {});
+		fetchVersions();
+
+		// Pushes from the host.
+		const offs = [
+			// Settings were saved (by any surface) — refresh to authoritative state.
+			cm.handle('host.settings.changed', (p) => applySettingsPayload(p as SettingsPayload)),
+			// The open command fired again while this page is live.
+			cm.handle('host.settings.openArgs', (p) => applyOpenArgs(p as SettingsOpenArgs)),
+			// Any cloud auth change (stored or staged).
+			cm.handle('host.cloud.statusChanged', (p) => applyCloudStatus(p as CloudAuthStatus)),
+			// The host's 3s poll — external state changes (NSSM, Docker Desktop).
+			cm.handle('host.engine.statusChanged', (p) => {
+				const payload = p as EngineStatusPayload;
+				setServiceStatus(payload.service as ServiceStatus);
+				setDockerStatus(payload.docker as DockerStatus);
+				if (!serviceBusyRef.current) setServiceProgress(null);
+				if (!dockerBusyRef.current) setDockerProgress(null);
+			}),
+			// Streamed install/update progress (replaces any previous error).
+			cm.handle('host.engine.progress', (p) => {
+				const { mode, message: progressMsg } = p as EngineProgress;
+				if (mode === 'service') {
+					setServiceProgress(progressMsg);
+					setServiceError(null);
+				} else if (mode === 'docker') {
+					setDockerProgress(progressMsg);
+					setDockerError(null);
 				}
-
-				case 'settings:subscriptionStatus':
-					setSubscribed(message.isSubscribed);
-					break;
-
-				// -- Checkout flow responses ------------------------------------
-				case 'checkout:plansResult' as any: {
-					const r = checkoutResolvers.current.plans;
-					if (r) {
-						checkoutResolvers.current.plans = undefined;
-						if ((message as any).error) r.reject(new Error((message as any).error));
-						else r.resolve((message as any).plans ?? []);
-					}
-					break;
-				}
-				case 'checkout:sessionResult' as any: {
-					const r = checkoutResolvers.current.session;
-					if (r) {
-						checkoutResolvers.current.session = undefined;
-						if ((message as any).error) r.reject(new Error((message as any).error));
-						else r.resolve({ clientSecret: (message as any).clientSecret, subscriptionId: (message as any).subscriptionId });
-					}
-					break;
-				}
-				case 'checkout:confirmResult' as any: {
-					const r = checkoutResolvers.current.confirm;
-					if (r) {
-						checkoutResolvers.current.confirm = undefined;
-						if ((message as any).error) r.reject(new Error((message as any).error));
-						else r.resolve();
-					}
-					break;
-				}
-
-				case 'settings:setFocus' as any: {
-					const { focus } = message as unknown as { focus?: unknown };
-					if (!isSettingsTabId(focus)) break;
-					setActiveTab(focus);
-					break;
-				}
-
-				case 'settings:authError' as any:
-					setAuthError((message as any).message || 'Authentication failed');
-					break;
-
-				case 'service:serverInfo' as any: {
-					const caps: string[] = (message as any).capabilities || [];
-					const unreachable = Boolean((message as any).unreachable);
-					const url = (message as any).hostUrl as string | undefined;
-					const next = { isSaas: unreachable ? undefined : caps.includes('saas'), unreachable };
-					// Route by the echoed URL to the group(s) that probed it.
-					if (probeUrlRef.current.development === url) setDevProbe(next);
-					if (probeUrlRef.current.deployment === url) setDeployProbe(next);
-					break;
-				}
-
-				case 'settings:showMessage': {
-					const msg = { level: message.level, message: message.message };
-					const clearAfter = message.level === 'success' ? 5000 : undefined;
-
-					// Route to inline test banner vs. global banner based on context
-					if (message.context === 'development') {
-						setTestMessage(msg);
-						if (clearAfter) setTimeout(() => setTestMessage(null), clearAfter);
-					} else {
-						setMessage(msg);
-						if (clearAfter) setTimeout(() => setMessage(null), clearAfter);
-						// On successful save acknowledgement: update the saved snapshot
-						// so Cancel reverts to the newly saved values
-						if (message.level === 'success' && message.context === 'save') {
-							savedSettingsRef.current = pendingSaveSnapshotRef.current ?? (JSON.parse(JSON.stringify(settings)) as SettingsData);
-							pendingSaveSnapshotRef.current = null;
-							setDirty(false);
-						}
-					}
-					break;
-				}
-
-				// Status polling — actual OS/Docker daemon state
-				case 'docker:status' as any:
-					setDockerStatus((message as any).status);
-					if (!dockerBusy) setDockerProgress(null);
-					break;
-				case 'service:status' as any:
-					setServiceStatus((message as any).status);
-					if (!serviceBusy) setServiceProgress(null);
-					break;
-				case 'docker:versionsLoaded' as any:
-					setDockerTags((message as any).tags || []);
-					break;
-				case 'service:needsSudo' as any:
-					setSudoPromptVisible(true);
-					break;
-
-				// ioProgress: streamed progress updates during install/update/remove.
-				// Clears any previous error so the progress message replaces it.
-				case 'io:progress' as any: {
-					const mode = (message as any).mode;
-					const progressMsg = (message as any).message;
-					if (mode === 'service') {
-						setServiceProgress(progressMsg);
-						setServiceError(null);
-					} else if (mode === 'docker') {
-						setDockerProgress(progressMsg);
-						setDockerError(null);
-					}
-					break;
-				}
-
-				// ioResult: final outcome of an ioControl command.
-				// Resets busy/action/progress state and surfaces errors.
-				case 'io:result' as any: {
-					const mode = (message as any).mode;
-					const command = (message as any).command;
-					const success = (message as any).success;
-					const error = (message as any).error;
-
-					// 'test' commands display results inline via testMessage
-					// rather than resetting engine busy state
-					if (command === 'test') {
-						const msg: MessageData = success ? { level: 'success', message: 'Connection successful!' } : { level: 'error', message: error || 'Connection failed' };
-						setTestMessage(msg);
-						// Clear the auth error banner on successful test connection
-						if (success) {
-							setAuthError(null);
-							setTimeout(() => setTestMessage(null), 5000);
-						}
-						break;
-					}
-
-					if (mode === 'service') {
-						setServiceBusy(false);
-						setServiceAction(null);
-						setServiceProgress(null);
-						setSudoPromptVisible(false);
-						setSudoPasswordInput('');
-						if (!success && error) setServiceError(error);
-					} else if (mode === 'docker') {
-						setDockerBusy(false);
-						setDockerAction(null);
-						setDockerProgress(null);
-						if (!success && error) setDockerError(error);
-					}
-					break;
-				}
-			}
-		},
-	});
+			}),
+		];
+		return () => offs.forEach((off) => off());
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
 
 	// ========================================================================
 	// EVENT HANDLERS
 	// ========================================================================
 
 	/**
-	 * Save all settings to extension storage
+	 * Save all settings. The host persists atomically, commits any staged
+	 * cloud auth change, reconciles engines in the background, and broadcasts
+	 * `host.settings.changed`; resolution is the success signal.
 	 */
 	const handleSaveSettings = (): void => {
 		const snapshot = JSON.parse(JSON.stringify(settings)) as SettingsData;
-		pendingSaveSnapshotRef.current = snapshot;
-		sendMessage({ type: 'settings:save', settings: snapshot });
+		req<void>('host.settings.save', { settings: snapshot }).then(
+			() => {
+				savedSettingsRef.current = snapshot;
+				setDirty(false);
+				setMessage({ level: 'success', message: 'Settings saved successfully!' });
+				setTimeout(() => setMessage(null), 5000);
+			},
+			(error: unknown) => setMessage({ level: 'error', message: `Failed to save settings: ${error instanceof Error ? error.message : String(error)}` })
+		);
 	};
 
 	/** Revert to last-saved settings and clear dirty state — including any
@@ -778,38 +546,66 @@ export const Settings: React.FC = () => {
 		if (savedSettingsRef.current) {
 			setSettings(JSON.parse(JSON.stringify(savedSettingsRef.current)));
 		}
-		sendMessage({ type: 'cloud:clearPending' });
+		cm.emitOp('host.cloud.clearPending', {});
 		setDirty(false);
-	}, [sendMessage]);
+	}, [cm]);
 
 	/**
-	 * Test connection via ioControl. On-prem passes hostUrl/apiKey as params;
-	 * service/docker use their known defaults on the backend.
+	 * Test connection via host.engine.control. On-prem passes hostUrl/apiKey
+	 * as params; service/docker use their known defaults on the backend. The
+	 * result answers this call directly.
 	 */
 	const handleTestConnection = (mode: string, params?: Record<string, unknown>): void => {
 		setTestMessage(null);
-		sendMessage({ type: 'io:control', mode, command: 'test', params } as any);
+		req<EngineControlResult>('host.engine.control', { mode, command: 'test', params }).then(
+			(result) => {
+				setTestMessage(result.success ? { level: 'success', message: 'Connection successful!' } : { level: 'error', message: result.error || 'Connection failed' });
+				if (result.success) {
+					// Clear the auth error banner on successful test connection
+					setAuthError(null);
+					setTimeout(() => setTestMessage(null), 5000);
+				}
+			},
+			(error: unknown) => setTestMessage({ level: 'error', message: error instanceof Error ? error.message : String(error) })
+		);
 	};
 
 	/**
 	 * Probe a group's cloud target for SaaS compatibility. The previous
-	 * result stays on screen until the fresh one arrives (no flicker).
+	 * result stays on screen until the fresh one arrives (no flicker); a
+	 * stale result (an older probe resolving late) is dropped by sequence.
 	 */
 	const handleProbeCloudServer = (group: 'development' | 'deployment', cloudUrl: string): void => {
-		probeUrlRef.current[group] = cloudUrl;
-		sendMessage({ type: 'service:probeServerInfo', hostUrl: cloudUrl } as any);
+		const seq = ++probeSeqRef.current[group];
+		const setProbe = group === 'development' ? setDevProbe : setDeployProbe;
+		req<ServerProbeResult>('host.server.probe', { hostUrl: cloudUrl }).then(
+			(info) => {
+				if (probeSeqRef.current[group] !== seq) return;
+				const unreachable = Boolean(info.unreachable);
+				setProbe({ isSaas: unreachable ? undefined : (info.capabilities || []).includes('saas'), unreachable });
+			},
+			() => {
+				if (probeSeqRef.current[group] !== seq) return;
+				setProbe({ isSaas: undefined, unreachable: true });
+			}
+		);
 	};
 
 	/**
 	 * Clear stored credentials
 	 */
 	const handleClearCredentials = (): void => {
-		// Clear the API key from local state and send clear message
+		// Clear the API key from local state and ask the host to delete it
 		setSettings((prev) => ({
 			...prev,
 			development: { ...prev.development, apiKey: '', hasApiKey: false },
 		}));
-		sendMessage({ type: 'settings:clearCredentials' });
+		req<{ hasApiKey: boolean }>('host.settings.clearCredentials').then(
+			(r) => {
+				if (r.hasApiKey) setMessage({ level: 'error', message: 'API Key may not have been fully cleared - please try again' });
+			},
+			(error: unknown) => setMessage({ level: 'error', message: `Failed to clear API key: ${error instanceof Error ? error.message : String(error)}` })
+		);
 	};
 
 	/**
@@ -850,14 +646,13 @@ export const Settings: React.FC = () => {
 			const { development, deployment, ...topLevel } = changes;
 			Object.assign(next, topLevel);
 
-			// Side effects: fetch engine versions when switching to local mode
+			// Side effects: refresh versions when switching to any mode that
+			// needs them. The host caches results, so repeated calls are cheap.
 			const devMode = changes.development?.connectionMode;
 			const depMode = changes.deployment?.connectionMode;
-			// Refresh versions when switching to any mode that needs them.
-			// The handler caches results, so repeated calls are cheap.
 			const needsVersions = ['local', 'service', 'docker'];
 			if ((devMode && needsVersions.includes(devMode)) || (depMode && needsVersions.includes(depMode))) {
-				sendMessage({ type: 'versions:fetch' });
+				fetchVersions();
 			}
 
 			return next;
@@ -880,14 +675,15 @@ export const Settings: React.FC = () => {
 	 * Factory for docker/service action handlers.
 	 *
 	 * Returns a zero-arg callback that sets the mode's busy/action state,
-	 * attaches the selected version (for install/update), and sends an
-	 * `ioControl` message to the extension host. The host streams back
-	 * `ioProgress` updates and a final `ioResult` to clear busy state.
+	 * attaches the selected version (for install/update), and requests
+	 * `host.engine.control`. Progress streams in on `host.engine.progress`;
+	 * the request's own result clears the busy state.
 	 */
 	const makeEngineHandler = (mode: 'docker' | 'service', actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => () => {
 		const setBusy = mode === 'docker' ? setDockerBusy : setServiceBusy;
 		const setAction = mode === 'docker' ? setDockerAction : setServiceAction;
 		const setError = mode === 'docker' ? setDockerError : setServiceError;
+		const setProgress = mode === 'docker' ? setDockerProgress : setServiceProgress;
 		const selectedVersion = mode === 'docker' ? dockerSelectedVersion : serviceSelectedVersion;
 
 		setBusy(true);
@@ -898,22 +694,20 @@ export const Settings: React.FC = () => {
 		if (actionType === 'install' || actionType === 'update') {
 			params.version = selectedVersion;
 		}
-		sendMessage({ type: 'io:control', mode, command: actionType, params } as any);
+		const finish = (error?: string): void => {
+			setBusy(false);
+			setAction(null);
+			setProgress(null);
+			if (error) setError(error);
+		};
+		req<EngineControlResult>('host.engine.control', { mode, command: actionType, params }).then(
+			(result) => finish(result.success ? undefined : result.error || 'Operation failed'),
+			(error: unknown) => finish(error instanceof Error ? error.message : String(error))
+		);
 	};
 
 	const makeDockerHandler = (actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => makeEngineHandler('docker', actionType);
 	const makeServiceHandler = (actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => makeEngineHandler('service', actionType);
-
-	const handleSudoSubmit = (): void => {
-		const password = sudoPasswordInput;
-		setSudoPasswordInput('');
-		setSudoPromptVisible(false);
-		sendMessage({ type: 'service:sudoPassword', password } as any);
-	};
-
-	// ========================================================================
-	// RENDER
-	// ========================================================================
 
 	// ========================================================================
 	// TAB DEFINITIONS
@@ -932,37 +726,48 @@ export const Settings: React.FC = () => {
 		[]
 	);
 
-	// ── Checkout callbacks (passed to CloudPanel) ──────────────────────
+	// ── Checkout callbacks (passed to CloudPanel) — brokered billing ops ────
 	const handleFetchPlans = useCallback((): Promise<CheckoutPlan[]> => {
-		return new Promise((resolve, reject) => {
-			checkoutResolvers.current.plans = { resolve, reject };
-			sendMessage({ type: 'checkout:fetchPlans' } as any);
-		});
-	}, [sendMessage]);
+		return req<CheckoutPlan[]>('client.billing.getProductPrices', { appId: PIPE_BUILDER_APP_ID });
+	}, [req]);
 
 	const handleCreateCheckout = useCallback(
 		(priceId: string): Promise<{ clientSecret: string; subscriptionId: string }> => {
-			return new Promise((resolve, reject) => {
-				checkoutResolvers.current.session = { resolve, reject };
-				sendMessage({ type: 'checkout:createSession', priceId } as any);
-			});
+			const orgId = cm.getAccountInfo()?.organization?.id;
+			if (!orgId) return Promise.reject(new Error('No organisation found'));
+			return req<{ clientSecret: string; subscriptionId: string }>('client.billing.createCheckoutSession', { orgId, appId: PIPE_BUILDER_APP_ID, priceId });
 		},
-		[sendMessage]
+		[cm, req]
 	);
 
 	const handleConfirmPending = useCallback(
-		(subscriptionId: string, priceId: string): Promise<void> => {
-			return new Promise((resolve, reject) => {
-				checkoutResolvers.current.confirm = { resolve, reject };
-				sendMessage({ type: 'checkout:confirmPending', subscriptionId, priceId } as any);
-			});
+		async (subscriptionId: string, priceId: string): Promise<void> => {
+			await req('client.billing.confirmPending', { appId: PIPE_BUILDER_APP_ID, subscriptionId, priceId });
 		},
-		[sendMessage]
+		[req]
 	);
 
 	const handleCheckoutSuccess = useCallback(() => {
 		setSubscribed(true);
 	}, []);
+
+	// ── Cloud auth actions — staged on the host, status arrives on the push.
+	// Sign-in targets the form's CURRENT effective server — the saved config
+	// lags until Save, and exchanging the OAuth code against the wrong server
+	// mints the wrong session.
+	const handleCloudSignIn = (group: 'development' | 'deployment'): void => {
+		const g = settings[group];
+		cm.emitOp('host.cloud.signIn', { cloudUrl: (g.useCustomServer && g.cloudUrl) || g.defaultCloudUrl });
+	};
+	const handleCloudSignOut = (): void => cm.emitOp('host.cloud.signOutStaged', {});
+	const handleCloudUndoPending = (): void => cm.emitOp('host.cloud.clearPending', {});
+
+	// Sudo flow retired with the postMessage protocol (the host never asked).
+	const noSudo = { sudoPromptVisible: false, sudoPasswordInput: '', onSudoPasswordChange: () => {}, onSudoSubmit: () => {} };
+
+	// ========================================================================
+	// RENDER
+	// ========================================================================
 
 	const panels: Record<string, ITabPanelPanel> = useMemo(
 		() => ({
@@ -983,13 +788,10 @@ export const Settings: React.FC = () => {
 							cloudSignedInUrl={cloudSignedInUrl}
 							cloudWaitlisted={cloudWaitlisted}
 							cloudWaitlistedName={cloudWaitlistedName}
-							// Sign-in targets the form's CURRENT effective server — the
-							// saved config lags until Save, and exchanging the OAuth code
-							// against the wrong server mints the wrong session.
-							onCloudSignIn={() => sendMessage({ type: 'cloud:signIn', cloudUrl: (settings.development.useCustomServer && settings.development.cloudUrl) || settings.development.defaultCloudUrl })}
-							onCloudSignOut={() => sendMessage({ type: 'cloud:signOut' })}
+							onCloudSignIn={() => handleCloudSignIn('development')}
+							onCloudSignOut={handleCloudSignOut}
 							cloudPending={cloudPending}
-							onCloudUndoPending={() => sendMessage({ type: 'cloud:clearPending' })}
+							onCloudUndoPending={handleCloudUndoPending}
 							onProbeCloudServer={(url) => handleProbeCloudServer('development', url)}
 							isSaas={devProbe.isSaas}
 							probeUnreachable={devProbe.unreachable}
@@ -1019,10 +821,7 @@ export const Settings: React.FC = () => {
 							onServiceRemove={makeServiceHandler('remove')}
 							onServiceStart={makeServiceHandler('start')}
 							onServiceStop={makeServiceHandler('stop')}
-							sudoPromptVisible={sudoPromptVisible}
-							sudoPasswordInput={sudoPasswordInput}
-							onSudoPasswordChange={setSudoPasswordInput}
-							onSudoSubmit={handleSudoSubmit}
+							{...noSudo}
 							isSubscribed={subscribed}
 							onFetchPlans={handleFetchPlans}
 							onCreateCheckout={handleCreateCheckout}
@@ -1049,13 +848,10 @@ export const Settings: React.FC = () => {
 							cloudSignedInUrl={cloudSignedInUrl}
 							cloudWaitlisted={cloudWaitlisted}
 							cloudWaitlistedName={cloudWaitlistedName}
-							// Sign-in targets the form's CURRENT effective server — the
-							// saved config lags until Save, and exchanging the OAuth code
-							// against the wrong server mints the wrong session.
-							onCloudSignIn={() => sendMessage({ type: 'cloud:signIn', cloudUrl: (settings.deployment.useCustomServer && settings.deployment.cloudUrl) || settings.deployment.defaultCloudUrl })}
-							onCloudSignOut={() => sendMessage({ type: 'cloud:signOut' })}
+							onCloudSignIn={() => handleCloudSignIn('deployment')}
+							onCloudSignOut={handleCloudSignOut}
 							cloudPending={cloudPending}
-							onCloudUndoPending={() => sendMessage({ type: 'cloud:clearPending' })}
+							onCloudUndoPending={handleCloudUndoPending}
 							onProbeCloudServer={(url) => handleProbeCloudServer('deployment', url)}
 							isSaas={deployProbe.isSaas}
 							probeUnreachable={deployProbe.unreachable}
@@ -1085,10 +881,7 @@ export const Settings: React.FC = () => {
 							onServiceRemove={makeServiceHandler('remove')}
 							onServiceStart={makeServiceHandler('start')}
 							onServiceStop={makeServiceHandler('stop')}
-							sudoPromptVisible={sudoPromptVisible}
-							sudoPasswordInput={sudoPasswordInput}
-							onSudoPasswordChange={setSudoPasswordInput}
-							onSudoSubmit={handleSudoSubmit}
+							{...noSudo}
 							isSubscribed={subscribed}
 							onFetchPlans={handleFetchPlans}
 							onCreateCheckout={handleCreateCheckout}
@@ -1115,7 +908,8 @@ export const Settings: React.FC = () => {
 				),
 			},
 		}),
-		[settings, message, testMessage, engineVersions, engineVersionsLoading, devProbe, deployProbe, cloudSignedIn, cloudUserName, cloudSignedInUrl, cloudWaitlisted, cloudWaitlistedName, cloudPending, subscribed, dockerStatus, dockerProgress, dockerError, dockerBusy, dockerAction, dockerVersionOptions, dockerSelectedVersion, serviceStatus, serviceProgress, serviceError, serviceBusy, serviceAction, serviceVersionOptions, serviceSelectedVersion, sudoPromptVisible, sudoPasswordInput]
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[settings, message, testMessage, engineVersions, engineVersionsLoading, devProbe, deployProbe, cloudSignedIn, cloudUserName, cloudSignedInUrl, cloudWaitlisted, cloudWaitlistedName, cloudPending, subscribed, dockerStatus, dockerProgress, dockerError, dockerBusy, dockerAction, dockerSelectedVersion, serviceStatus, serviceProgress, serviceError, serviceBusy, serviceAction, serviceSelectedVersion, dockerTags]
 	);
 
 	return (
@@ -1173,3 +967,5 @@ export const Settings: React.FC = () => {
 		</div>
 	);
 };
+
+export default Settings;

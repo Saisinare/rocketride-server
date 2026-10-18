@@ -547,7 +547,7 @@ const SidebarProvider: React.FC = () => {
 		close: (key: string) => getDocs()?.discardDocument(toolDocUri(toolId, key)),
 	}), []);
 	const channelFor = useCallback((toolId: string) => getToolChannel(toolId, 'sidebar'), []);
-	const { builtinItems, builtinStoreRows, focusTool: handleFocusTool, deactivateReplacedTab } = useToolStrip({
+	const { builtinItems, builtinStoreRows, focusTool: handleFocusTool, deactivateReplacedTab, announceBuiltinSelected } = useToolStrip({
 		host: 'rocket',
 		services: toolServices,
 		prefsStore,
@@ -601,10 +601,14 @@ const SidebarProvider: React.FC = () => {
 	const handleSidebarModeChange = useCallback(
 		(mode: SidebarMode) => {
 			deactivateReplacedTab(prevSidebarModeRef.current, mode);
+			// Builtins mount in the strip itself — their activation (the
+			// single-pane contract) rides the selection; MF pins get theirs
+			// via SidebarChrome's onFocusTool.
+			announceBuiltinSelected(mode);
 			setSidebarMode(mode);
 			updatePrefs({ sidebarMode: mode });
 		},
-		[updatePrefs, deactivateReplacedTab]
+		[updatePrefs, deactivateReplacedTab, announceBuiltinSelected]
 	);
 
 	// The shell workbench rail (AppLayout sidebarMode 'vscode'/'cursor') owns
@@ -631,10 +635,12 @@ const SidebarProvider: React.FC = () => {
 		prevShellViewRef.current = id;
 		if (!id || id === prev) return;
 		// Deactivation for the rail container a tool tab just lost, FIRST —
-		// then the successor's activation (inside handleFocusTool).
-		if (prev?.startsWith('tool:')) deactivateReplacedTab(prev, id);
+		// then the successor's activation (reveal for MF pins via
+		// handleFocusTool; builtins mount in place, event only).
+		if (prev !== undefined) deactivateReplacedTab(prev, id);
 		if (prev !== undefined && id.startsWith('tool:')) handleFocusTool(id.slice('tool:'.length));
-	}, [shellView?.activeViewId, handleFocusTool]);
+		if (prev !== undefined) announceBuiltinSelected(id);
+	}, [shellView?.activeViewId, handleFocusTool, deactivateReplacedTab, announceBuiltinSelected]);
 
 	// Frame → rail: focusing a tool's document highlights its rail container
 	// (the VS Code host's onPanelFocused → setModeExternal, in-tree). The

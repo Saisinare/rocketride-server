@@ -1,61 +1,39 @@
 // =============================================================================
 // MIT License
 // Copyright (c) 2026 Aparavi Software AG
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
 // =============================================================================
 
 /**
- * WelcomeWebview — first-run onboarding page shown in a VS Code webview.
+ * WelcomeWebview — first-run onboarding as a shell bus realm.
  *
  * Presents a branded split-panel layout: branding/features on the left,
  * simplified connection configuration on the right. Uses the same
  * ConnectionConfig component as the full Settings page but in `simplified`
  * mode (fewer fields, single "Save & Connect" action).
  *
- * Message flow mirrors SettingsWebview: the extension host sends
- * settingsLoaded/showMessage/ioProgress/ioResult, and the webview
- * responds with saveAndConnect/ioControl/cloud:signIn/etc.
+ * Everything host-side rides the bus: settings via `host.settings.*`
+ * (`save` with `connect: true` is the Save & Connect — the host initializes
+ * connections and reconciles engines before resolving, and this page then
+ * retires itself via `host.closePage`), staged cloud auth via `host.cloud.*`,
+ * engine lifecycle via `host.engine.*`, and the server probe via
+ * `host.server.probe`. The logos ship in the bundle — no branding payload.
  */
 
-import React, { useState, CSSProperties } from 'react';
-import { useMessaging } from '../hooks/useMessaging';
+import React, { useState, useEffect, useRef, useCallback, CSSProperties } from 'react';
+import { ConnectionManager } from 'shell';
 import { useTheme } from '../hooks/useTheme';
 import { commonStyles } from 'shell';
 import { ConnectionConfig } from '../components/ConnectionConfig';
 import { MessageDisplay } from '../settings/MessageDisplay';
 import type { SettingsData, ConnectionMode, EngineVersionItem, MessageData } from '../settings/SettingsWebview';
+import type { SettingsPayload, CloudAuthStatus, EngineVersionsPayload, EngineStatusPayload, EngineControlResult, EngineProgress, ServerProbeResult } from 'shared/ops/settingsOps';
 import type { ServiceStatus, DockerStatus, VersionOption } from '../components/panels/shared';
+import logoDark from '../../../../rocketride-dark-icon.png';
+import logoLight from '../../../../rocketride-light-icon.png';
 
 import 'shell/themes/rocketride-default.css';
 import '../../../themes/rocketride-vscode.css';
 import '../../styles/root.css';
-
-// =============================================================================
-// TYPE DEFINITIONS
-// =============================================================================
-
-interface WelcomeExtraSettings {}
-
-type IncomingMessage = { type: 'settings:loaded'; settings: SettingsData & WelcomeExtraSettings; logoDarkUri?: string; logoLightUri?: string } | { type: 'settings:showMessage'; level: 'success' | 'error' | 'info' | 'warning'; message: string } | { type: 'versions:loaded'; versions: EngineVersionItem[] } | { type: 'cloud:status'; signedIn: boolean; userName: string; signedInUrl?: string; waitlisted?: boolean; waitlistedName?: string; pendingSignIn?: boolean; pendingSignOut?: boolean; pendingUserName?: string; pendingUrl?: string } | { type: 'service:serverInfo'; hostUrl?: string; capabilities?: string[]; version?: string; unreachable?: boolean } | { type: 'docker:status'; status: DockerStatus } | { type: 'docker:versionsLoaded'; tags: string[] } | { type: 'service:status'; status: ServiceStatus } | { type: 'service:needsSudo' } | { type: 'io:progress'; mode: string; command: string; message: string } | { type: 'io:result'; mode: string; command: string; success: boolean; error?: string };
-
-type OutgoingMessage = { type: string; [key: string]: unknown };
 
 // =============================================================================
 // STYLES
@@ -170,13 +148,11 @@ const DEFAULT_SETTINGS: SettingsData = {
 
 export const Welcome: React.FC = () => {
 	const theme = useTheme();
+	const cm = ConnectionManager.getInstance();
+	const req = useCallback(<T,>(op: string, params?: unknown): Promise<T> => cm.request(op, (params ?? {}) as never) as Promise<T>, [cm]);
 
 	// Settings state
 	const [settings, setSettings] = useState<SettingsData>(DEFAULT_SETTINGS);
-
-	// Branding
-	const [logoDarkUri, setLogoDarkUri] = useState<string | undefined>();
-	const [logoLightUri, setLogoLightUri] = useState<string | undefined>();
 
 	// Messages
 	const [message, setMessage] = useState<MessageData | null>(null);
@@ -185,10 +161,12 @@ export const Welcome: React.FC = () => {
 	// Engine versions
 	const [engineVersions, setEngineVersions] = useState<EngineVersionItem[]>([]);
 	const [engineVersionsLoading, setEngineVersionsLoading] = useState(false);
+	const [dockerTags, setDockerTags] = useState<string[]>([]);
 
 	// Cloud probe result — `isSaas` keeps its last value during a re-probe
 	// (no flicker); undefined = never probed ("Checking...").
 	const [probe, setProbe] = useState<{ isSaas?: boolean; unreachable: boolean }>({ unreachable: false });
+	const probeSeqRef = useRef(0);
 
 	// Cloud auth
 	const [cloudSignedIn, setCloudSignedIn] = useState(false);
@@ -205,7 +183,6 @@ export const Welcome: React.FC = () => {
 	const [dockerError, setDockerError] = useState<string | null>(null);
 	const [dockerBusy, setDockerBusy] = useState(false);
 	const [dockerAction, setDockerAction] = useState<'install' | 'update' | 'remove' | 'start' | 'stop' | null>(null);
-	const [dockerTags, setDockerTags] = useState<string[]>([]);
 	const [dockerSelectedVersion, setDockerSelectedVersion] = useState('latest');
 
 	// Service state
@@ -215,124 +192,75 @@ export const Welcome: React.FC = () => {
 	const [serviceBusy, setServiceBusy] = useState(false);
 	const [serviceAction, setServiceAction] = useState<'install' | 'update' | 'remove' | 'start' | 'stop' | null>(null);
 	const [serviceSelectedVersion, setServiceSelectedVersion] = useState('latest');
-	const [sudoPromptVisible, setSudoPromptVisible] = useState(false);
-	const [sudoPasswordInput, setSudoPasswordInput] = useState('');
 
 	// Hover state
 	const [hoveredLink, setHoveredLink] = useState<string | null>(null);
 
-	const { sendMessage } = useMessaging<OutgoingMessage, IncomingMessage>({
-		onMessage: (msg) => {
-			switch (msg.type) {
-				case 'settings:loaded':
-					setSettings(msg.settings);
-					if (msg.logoDarkUri) setLogoDarkUri(msg.logoDarkUri);
-					if (msg.logoLightUri) setLogoLightUri(msg.logoLightUri);
-					if (msg.settings.development.connectionMode === 'local') {
-						setEngineVersionsLoading(true);
-						sendMessage({ type: 'versions:fetch' });
-					}
-					sendMessage({ type: 'cloud:getStatus' });
-					break;
+	// Busy flags cross the push handlers' closures — refs keep them current.
+	const dockerBusyRef = useRef(dockerBusy);
+	dockerBusyRef.current = dockerBusy;
+	const serviceBusyRef = useRef(serviceBusy);
+	serviceBusyRef.current = serviceBusy;
 
-				case 'settings:showMessage': {
-					const data = { level: msg.level, message: msg.message };
-					setMessage(data);
-					if (msg.level === 'success') setTimeout(() => setMessage(null), 5000);
-					break;
+	// =========================================================================
+	// BUS WIRING — initial pulls + push handlers
+	// =========================================================================
+
+	const fetchVersions = useCallback((): void => {
+		setEngineVersionsLoading(true);
+		req<EngineVersionsPayload>('host.engine.versions').then(
+			(v) => {
+				setEngineVersions(v.releases);
+				setDockerTags(v.dockerTags);
+				setEngineVersionsLoading(false);
+			},
+			() => setEngineVersionsLoading(false)
+		);
+	}, [req]);
+
+	const applyCloudStatus = useCallback((status: CloudAuthStatus): void => {
+		setCloudSignedIn(status.signedIn);
+		setCloudUserName(status.userName || '');
+		setCloudSignedInUrl(status.signedInUrl || '');
+		setCloudWaitlisted(Boolean(status.waitlisted));
+		setCloudWaitlistedName(status.waitlistedName || '');
+		setCloudPending({ signIn: status.pendingSignIn, signOut: status.pendingSignOut, userName: status.pendingUserName || '', url: status.pendingUrl || '' });
+	}, []);
+
+	useEffect(() => {
+		req<SettingsPayload>('host.settings.get').then((payload) => {
+			setSettings(payload.settings);
+			if (payload.settings.development.connectionMode === 'local') fetchVersions();
+		}, () => {});
+		req<CloudAuthStatus>('host.cloud.status').then(applyCloudStatus, () => {});
+		req<EngineStatusPayload>('host.engine.status').then((p) => {
+			setServiceStatus(p.service as ServiceStatus);
+			setDockerStatus(p.docker as DockerStatus);
+		}, () => {});
+
+		const offs = [
+			cm.handle('host.cloud.statusChanged', (p) => applyCloudStatus(p as CloudAuthStatus)),
+			cm.handle('host.engine.statusChanged', (p) => {
+				const payload = p as EngineStatusPayload;
+				setServiceStatus(payload.service as ServiceStatus);
+				setDockerStatus(payload.docker as DockerStatus);
+				if (!serviceBusyRef.current) setServiceProgress(null);
+				if (!dockerBusyRef.current) setDockerProgress(null);
+			}),
+			cm.handle('host.engine.progress', (p) => {
+				const { mode, message: progressMsg } = p as EngineProgress;
+				if (mode === 'service') {
+					setServiceProgress(progressMsg);
+					setServiceError(null);
+				} else if (mode === 'docker') {
+					setDockerProgress(progressMsg);
+					setDockerError(null);
 				}
-
-				case 'versions:loaded':
-					setEngineVersions((msg as any).versions);
-					setEngineVersionsLoading(false);
-					break;
-
-				case 'cloud:status':
-					setCloudSignedIn(msg.signedIn);
-					setCloudUserName(msg.userName || '');
-					setCloudSignedInUrl(msg.signedInUrl || '');
-					setCloudWaitlisted(Boolean(msg.waitlisted));
-					setCloudWaitlistedName(msg.waitlistedName || '');
-					setCloudPending({
-						signIn: Boolean(msg.pendingSignIn),
-						signOut: Boolean(msg.pendingSignOut),
-						userName: msg.pendingUserName || '',
-						url: msg.pendingUrl || '',
-					});
-					break;
-
-				// Status polling — actual OS/Docker daemon state
-				case 'docker:status':
-					setDockerStatus((msg as any).status);
-					if (!dockerBusy) setDockerProgress(null);
-					break;
-				case 'service:status':
-					setServiceStatus((msg as any).status);
-					if (!serviceBusy) setServiceProgress(null);
-					break;
-				case 'docker:versionsLoaded':
-					setDockerTags((msg as any).tags || []);
-					break;
-				case 'service:needsSudo':
-					setSudoPromptVisible(true);
-					break;
-
-				// Unified ioControl progress — shows download/install status
-				case 'io:progress': {
-					const mode = (msg as any).mode;
-					const progressMsg = (msg as any).message;
-					if (mode === 'service') {
-						setServiceProgress(progressMsg);
-						setServiceError(null);
-					} else if (mode === 'docker') {
-						setDockerProgress(progressMsg);
-						setDockerError(null);
-					}
-					break;
-				}
-
-				// Unified ioControl result — clears busy state for the mode
-				case 'io:result': {
-					const mode = (msg as any).mode;
-					const command = (msg as any).command;
-					const success = (msg as any).success;
-					const error = (msg as any).error;
-
-					// Test results show inline via testMessage
-					if (command === 'test') {
-						const data: MessageData = success
-							? { level: 'success', message: 'Connection successful!' }
-							: { level: 'error', message: error || 'Connection failed' };
-						setTestMessage(data);
-						if (success) setTimeout(() => setTestMessage(null), 5000);
-						break;
-					}
-
-					if (mode === 'service') {
-						setServiceBusy(false);
-						setServiceAction(null);
-						setServiceProgress(null);
-						setSudoPromptVisible(false);
-						setSudoPasswordInput('');
-						if (!success && error) setServiceError(error);
-					} else if (mode === 'docker') {
-						setDockerBusy(false);
-						setDockerAction(null);
-						setDockerProgress(null);
-						if (!success && error) setDockerError(error);
-					}
-					break;
-				}
-
-				case 'service:serverInfo': {
-					const caps: string[] = msg.capabilities || [];
-					const unreachable = Boolean(msg.unreachable);
-					setProbe({ isSaas: unreachable ? undefined : caps.includes('saas'), unreachable });
-					break;
-				}
-			}
-		},
-	});
+			}),
+		];
+		return () => offs.forEach((off) => off());
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
 
 	// =========================================================================
 	// HANDLERS
@@ -374,11 +302,10 @@ export const Welcome: React.FC = () => {
 			// Side effects for mode switching
 			const devMode = changes.development?.connectionMode;
 			if (devMode === 'local' && prev.development.connectionMode !== 'local') {
-				setEngineVersionsLoading(true);
-				sendMessage({ type: 'versions:fetch' });
+				fetchVersions();
 			}
 			if (devMode === 'cloud' && prev.development.connectionMode !== 'cloud') {
-				sendMessage({ type: 'cloud:getStatus' });
+				req<CloudAuthStatus>('host.cloud.status').then(applyCloudStatus, () => {});
 			}
 
 			return next;
@@ -396,34 +323,61 @@ export const Welcome: React.FC = () => {
 		handleSettingsChange({ development: groupUpdates } as Partial<SettingsData>);
 	};
 
+	/**
+	 * Save & Connect: the host persists the form, commits any staged cloud
+	 * auth, initializes connections, and reconciles engines before resolving
+	 * — then this page retires itself.
+	 */
 	const handleSaveAndConnect = () => {
-		sendMessage({ type: 'settings:saveAndConnect', settings });
+		req<void>('host.settings.save', { settings, connect: true }).then(
+			() => cm.emitOp('host.closePage', { page: 'welcome' }),
+			(error: unknown) => setMessage({ level: 'error', message: `Failed to save settings: ${error instanceof Error ? error.message : String(error)}` })
+		);
 	};
 
 	const handleProbeCloudServer = (cloudUrl: string) => {
-		// The previous result stays on screen until the fresh one arrives.
-		sendMessage({ type: 'service:probeServerInfo', hostUrl: cloudUrl } as any);
+		// The previous result stays on screen until the fresh one arrives; a
+		// stale result (an older probe resolving late) is dropped by sequence.
+		const seq = ++probeSeqRef.current;
+		req<ServerProbeResult>('host.server.probe', { hostUrl: cloudUrl }).then(
+			(info) => {
+				if (probeSeqRef.current !== seq) return;
+				const unreachable = Boolean(info.unreachable);
+				setProbe({ isSaas: unreachable ? undefined : (info.capabilities || []).includes('saas'), unreachable });
+			},
+			() => {
+				if (probeSeqRef.current !== seq) return;
+				setProbe({ isSaas: undefined, unreachable: true });
+			}
+		);
 	};
 
 	/**
-	 * Send a test connection request via ioControl.
-	 * On-prem passes hostUrl/apiKey as params; docker/service use backend defaults.
+	 * Test connection via host.engine.control. On-prem passes hostUrl/apiKey
+	 * as params; docker/service use backend defaults.
 	 */
 	const handleTestConnection = (mode: string, params?: Record<string, unknown>) => {
 		setTestMessage(null);
-		sendMessage({ type: 'io:control', mode, command: 'test', params } as any);
+		req<EngineControlResult>('host.engine.control', { mode, command: 'test', params }).then(
+			(result) => {
+				setTestMessage(result.success ? { level: 'success', message: 'Connection successful!' } : { level: 'error', message: result.error || 'Connection failed' });
+				if (result.success) setTimeout(() => setTestMessage(null), 5000);
+			},
+			(error: unknown) => setTestMessage({ level: 'error', message: error instanceof Error ? error.message : String(error) })
+		);
 	};
 
 	/**
 	 * Factory for docker/service lifecycle actions.
 	 * Sets busy/action state, attaches the selected version for install/update,
-	 * and dispatches an ioControl message. The host streams ioProgress updates
-	 * and sends a final ioResult to clear busy state.
+	 * and requests host.engine.control. Progress streams in on the push; the
+	 * request's own result clears busy state.
 	 */
 	const makeEngineHandler = (mode: 'docker' | 'service', actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => () => {
 		const setBusy = mode === 'docker' ? setDockerBusy : setServiceBusy;
 		const setAction = mode === 'docker' ? setDockerAction : setServiceAction;
 		const setError = mode === 'docker' ? setDockerError : setServiceError;
+		const setProgress = mode === 'docker' ? setDockerProgress : setServiceProgress;
 		const selectedVersion = mode === 'docker' ? dockerSelectedVersion : serviceSelectedVersion;
 
 		setBusy(true);
@@ -434,24 +388,30 @@ export const Welcome: React.FC = () => {
 		if (actionType === 'install' || actionType === 'update') {
 			params.version = selectedVersion;
 		}
-		sendMessage({ type: 'io:control', mode, command: actionType, params } as any);
+		const finish = (error?: string): void => {
+			setBusy(false);
+			setAction(null);
+			setProgress(null);
+			if (error) setError(error);
+		};
+		req<EngineControlResult>('host.engine.control', { mode, command: actionType, params }).then(
+			(result) => finish(result.success ? undefined : result.error || 'Operation failed'),
+			(error: unknown) => finish(error instanceof Error ? error.message : String(error))
+		);
 	};
 
 	const makeDockerHandler = (actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => makeEngineHandler('docker', actionType);
 	const makeServiceHandler = (actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => makeEngineHandler('service', actionType);
 
-	const handleSudoSubmit = () => {
-		const password = sudoPasswordInput;
-		setSudoPasswordInput('');
-		setSudoPromptVisible(false);
-		sendMessage({ type: 'service:sudoPassword', password });
-	};
+	// Sudo flow retired with the postMessage protocol (the host never asked).
+	const noSudo = { sudoPromptVisible: false, sudoPasswordInput: '', onSudoPasswordChange: () => {}, onSudoSubmit: () => {} };
 
 	const dockerVersionOptions: VersionOption[] = [{ value: 'latest', label: '<Latest>' }, { value: 'prerelease', label: '<Prerelease>' }, ...dockerTags.filter((t) => t !== 'latest' && t !== 'prerelease').map((t) => ({ value: t, label: t }))];
 
 	const serviceVersionOptions: VersionOption[] = [{ value: 'latest', label: '<Latest>' }, { value: 'prerelease', label: '<Prerelease>' }, ...engineVersions.map((v) => ({ value: v.tag_name, label: v.tag_name.replace(/^server-/, '') }))];
 
-	const logoUri = theme === 'dark' ? logoLightUri : logoDarkUri;
+	// Logos ship in the bundle — pick by theme (light logo on dark surfaces).
+	const logoUri = theme === 'dark' ? logoLight : logoDark;
 
 	// =========================================================================
 	// RENDER
@@ -497,7 +457,7 @@ export const Welcome: React.FC = () => {
 								onMouseLeave={() => setHoveredLink(null)}
 								onClick={(e) => {
 									e.preventDefault();
-									sendMessage({ type: 'settings:openExternal', url });
+									cm.emitOp('host.openExternal', { url });
 								}}
 							>
 								{label}
@@ -527,10 +487,10 @@ export const Welcome: React.FC = () => {
 						// Sign-in targets the form's CURRENT effective server, same as
 						// the Settings page — the simplified panel exposes no custom
 						// server UI, so this is normally the default cloud.
-						onCloudSignIn={() => sendMessage({ type: 'cloud:signIn', cloudUrl: (settings.development.useCustomServer && settings.development.cloudUrl) || settings.development.defaultCloudUrl })}
-						onCloudSignOut={() => sendMessage({ type: 'cloud:signOut' })}
+						onCloudSignIn={() => cm.emitOp('host.cloud.signIn', { cloudUrl: (settings.development.useCustomServer && settings.development.cloudUrl) || settings.development.defaultCloudUrl })}
+						onCloudSignOut={() => cm.emitOp('host.cloud.signOutStaged', {})}
 						cloudPending={cloudPending}
-						onCloudUndoPending={() => sendMessage({ type: 'cloud:clearPending' })}
+						onCloudUndoPending={() => cm.emitOp('host.cloud.clearPending', {})}
 						onProbeCloudServer={handleProbeCloudServer}
 						isSaas={probe.isSaas}
 						probeUnreachable={probe.unreachable}
@@ -570,10 +530,7 @@ export const Welcome: React.FC = () => {
 						onServiceRemove={makeServiceHandler('remove')}
 						onServiceStart={makeServiceHandler('start')}
 						onServiceStop={makeServiceHandler('stop')}
-						sudoPromptVisible={sudoPromptVisible}
-						sudoPasswordInput={sudoPasswordInput}
-						onSudoPasswordChange={setSudoPasswordInput}
-						onSudoSubmit={handleSudoSubmit}
+						{...noSudo}
 					/>
 
 					{/* Agent integration */}
@@ -604,7 +561,9 @@ export const Welcome: React.FC = () => {
 							onMouseLeave={() => setHoveredLink(null)}
 							onClick={(e) => {
 								e.preventDefault();
-								sendMessage({ type: 'settings:open' });
+								// Hand off to the full Settings page and retire this one.
+								cm.emitOp('host.openPage', { page: 'settings' });
+								cm.emitOp('host.closePage', { page: 'welcome' });
 							}}
 						>
 							Advanced Settings
@@ -615,3 +574,5 @@ export const Welcome: React.FC = () => {
 		</div>
 	);
 };
+
+export default Welcome;

@@ -25,7 +25,7 @@
 // BUS OPS — the shell bus's addressed-operation lane
 // =============================================================================
 //
-// The shell bus has exactly two message classes:
+// The shell bus has exactly three lanes; THIS file is the second:
 //
 //   - EVENTS: `emit('ns:event')` — realm-local broadcast, fire-and-forget
 //     (ConnectionManager's event lane; unchanged).
@@ -33,6 +33,8 @@
 //     addressed operation routed to WHOEVER REGISTERED THE NAME, wherever
 //     that handler lives (this realm, the framework root, or another
 //     realm's controller, via the bridge in busBridge.ts).
+//   - RETAINED TOPICS: `publish`/`subscribe`/`read` — cross-realm state with
+//     last-value replay, layered ABOVE this file (see retained.ts).
 //
 // REGISTRATION IS THE ALLOWLIST IS THE ROUTING ENTRY. There is no generic
 // passthrough anywhere: an op exists because someone registered it, and an
@@ -50,8 +52,8 @@
 //
 // In-realm state is just the handler registry. Correlation tables exist
 // ONLY where a transport is crossed (busBridge.ts) — an in-realm request is
-// a direct async call. Retention, buffering, summon, and replay are NOT bus
-// concerns; they belong to the layers above (the devtool relay policy, the
+// a direct async call. Retention, buffering, summon, and replay are NOT
+// op-lane concerns; they belong to the layers above (retained.ts, the
 // router's summon table).
 // =============================================================================
 
@@ -78,7 +80,6 @@ export interface ShellOpSpec<P, R> {
  * The interface key is the wire name, so a typo'd string or drifted payload
  * shape fails to compile at both ends.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface ShellOpMap {}
 
 /** The params type of one op in a map. */
@@ -169,11 +170,12 @@ export interface IOpBus {
  */
 /**
  * An implementation table for (a subset of) an op map: one function per op
- * name, name-checked against the map. THE one way every domain registers —
+ * name, FULLY typed against the map — params and result both derive from the
+ * op's ShellOpSpec, so a drifted payload shape or wrong return type fails to
+ * compile in the table itself. THE one way every domain registers —
  * clientOps, hostOps, and host-specific override tables all ride this.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type OpImplTable<M extends ShellOpMap> = Partial<{ [K in keyof M]: (params: any) => unknown }>;
+export type OpImplTable<M extends ShellOpMap> = Partial<{ [K in keyof M]: (params: ShellOpParams<M, K>) => ShellOpResult<M, K> | Promise<ShellOpResult<M, K>> }>;
 
 /**
  * Registers an implementation table on a bus. Per entry: skipped when the

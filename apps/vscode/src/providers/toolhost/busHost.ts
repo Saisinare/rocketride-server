@@ -33,6 +33,8 @@ import * as vscode from 'vscode';
 import { createOpBus, registerOpHandlers } from 'shell/src/ops/busOps';
 import type { IOpBus } from 'shell/src/ops/busOps';
 import { createBusRouter } from 'shell/src/ops/busBridge';
+import { createRetainedRegistry } from 'shell/src/ops/retained';
+import type { IRetainedRegistry } from 'shell/src/ops/retained';
 import type { ClientOpMap } from 'shell/src/ops/clientOps';
 import type { IBusEndpoint, IBusRouter, SummonLookup } from 'shell/src/ops/busBridge';
 import type { ConnectionManager } from '../../connection/connection';
@@ -62,8 +64,12 @@ export class BusHost {
 	 *  config change so it can be toggled without a reload. */
 	private traceEnabled = vscode.workspace.getConfiguration('rocketride').get<boolean>('debug.busTrace', false);
 
+	/** The root's retained-topic registry — THE authority every realm's
+	 *  publish/subscribe/read resolves against. */
+	public readonly retained: IRetainedRegistry = createRetainedRegistry();
+
 	constructor(public readonly connectionManager: ConnectionManager, summon?: SummonLookup) {
-		this.router = createBusRouter(this.rootBus, summon ? { summon } : {});
+		this.router = createBusRouter(this.rootBus, { retained: this.retained, ...(summon ? { summon } : {}) });
 		this.disposables.push(vscode.workspace.onDidChangeConfiguration((e) => {
 			if (e.affectsConfiguration('rocketride.debug.busTrace')) {
 				this.traceEnabled = vscode.workspace.getConfiguration('rocketride').get<boolean>('debug.busTrace', false);
@@ -125,57 +131,49 @@ export class BusHost {
 
 	/**
 	 * Starts the mirror feed: connection status, account info, and the
-	 * services cache broadcast to every realm on change (and the full set on
-	 * demand via `mirror.sync` — a fresh realm pulls once at attach).
+	 * services cache PUBLISHED as retained topics — the registry replays the
+	 * current snapshot to every late subscriber (a fresh realm needs no pull),
+	 * and each realm's ConnectionManager folds the deliveries into its
+	 * synchronous readers (installMirrorSubscriptions).
 	 *
-	 * PER-TOPIC: each state family broadcasts on its OWN op, from its own
-	 * trigger events — the services blob (the heaviest payload) never rides
-	 * a status tick, and account only crosses when it actually changed.
+	 * PER-TOPIC: each state family publishes from its own trigger events —
+	 * the services blob (the heaviest payload) never rides a status tick,
+	 * and account only crosses when it actually changed.
 	 */
 	public startMirrors(): void {
-		const pushStatus = (): void => this.router.broadcastEmitOp('mirror.status', this.statusTopic());
+		const pushStatus = (): void => this.retained.publish('shell:status', this.statusTopic());
 		for (const event of ['shell:statusChange', 'shell:connected', 'shell:disconnected'] as const) {
 			this.connectionManager.on(event, pushStatus);
 			this.disposables.push({ dispose: () => this.connectionManager.off(event, pushStatus) });
 		}
-		const pushAccount = (): void => this.router.broadcastEmitOp('mirror.account', this.accountTopic());
+		const pushAccount = (): void => this.retained.publish('shell:account', this.connectionManager.getClient()?.getAccountInfo() ?? null);
 		this.connectionManager.on('shell:accountUpdate', pushAccount);
 		this.disposables.push({ dispose: () => this.connectionManager.off('shell:accountUpdate', pushAccount) });
-		const pushServices = (): void => this.router.broadcastEmitOp('mirror.services', this.servicesTopic());
+		const pushServices = (): void => this.retained.publish('shell:services', this.connectionManager.getCachedServices() ?? null);
 		this.connectionManager.on('shell:servicesUpdated', pushServices);
 		this.disposables.push({ dispose: () => this.connectionManager.off('shell:servicesUpdated', pushServices) });
-		// Engine events forward as a mirror too — realms fold task/status
-		// events off their local bus exactly as they did off their own socket.
+		// Seed the topics so realms attaching before the first trigger event
+		// still replay a current snapshot.
+		pushStatus();
+		pushAccount();
+		pushServices();
+		// Engine events are a STREAM, not state — they stay on the broadcast
+		// lane; realms fold task/status events off their local bus exactly as
+		// they did off their own socket.
 		const onEvent = (event: unknown): void => {
 			this.router.broadcastEmitOp('mirror.event', { event });
 		};
 		this.connectionManager.on('shell:event', onEvent);
 		this.disposables.push({ dispose: () => this.connectionManager.off('shell:event', onEvent) });
-
-		// A fresh realm asks once for the current snapshot.
-		this.rootBus.handle('mirror.sync', () => this.mirrorSnapshot());
 	}
 
-	// ── Per-topic payloads; mirror.sync returns their union (one pull shape,
-	//    same partial contract — primeMirror takes either). ─────────────────
+	/** The 'shell:status' snapshot (consumed by CM installMirrorSubscriptions). */
 	private statusTopic(): Record<string, unknown> {
 		return {
 			connected: this.connectionManager.isConnected(),
 			status: this.connectionManager.getConnectionStatus(),
 			engineHttpUrl: (this.connectionManager.getHttpUrl() || '').replace(/\/$/, ''),
 		};
-	}
-
-	private accountTopic(): Record<string, unknown> {
-		return { account: this.connectionManager.getClient()?.getAccountInfo() ?? null };
-	}
-
-	private servicesTopic(): Record<string, unknown> {
-		return { services: this.connectionManager.getCachedServices() ?? null };
-	}
-
-	private mirrorSnapshot(): Record<string, unknown> {
-		return { ...this.statusTopic(), ...this.accountTopic(), ...this.servicesTopic() };
 	}
 
 	// =========================================================================

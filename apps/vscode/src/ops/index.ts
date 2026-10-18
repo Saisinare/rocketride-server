@@ -18,6 +18,9 @@ import { registerClientOps } from 'shell/src/ops/clientOps';
 import type { BusHost } from '../providers/toolhost/busHost';
 import { registerVscodeClientOverrides } from './clientOverrides';
 import { registerVscodeHostOps } from './hostOps';
+import { registerVscodeSettingsOps } from './settingsOps';
+import { registerVscodeAppDevOps } from './appdevOps';
+import type { ISettingsOpsController } from './settingsOps';
 
 /**
  * Registers every op this host serves:
@@ -27,9 +30,13 @@ import { registerVscodeHostOps } from './hostOps';
  * 3. The SHARED `client.*` table against the primary connection's client,
  *    with this host's policy options.
  * 4. The `host.*` implementations (browser-open, Stripe probe, prefs,
- *    env slots) + the env-slot change feed.
+ *    env slots, open/close page) + the env-slot change feed.
+ * 5. The settings/cloud/engine family (Welcome + Settings pages).
+ *
+ * @returns The settings controller the extension wires to the Welcome and
+ *          Settings FrameworkProvider lifecycle hooks.
  */
-export function registerVscodeOps(busHost: BusHost, context: vscode.ExtensionContext): void {
+export function registerVscodeOps(busHost: BusHost, context: vscode.ExtensionContext): ISettingsOpsController {
 	busHost.registerMonitorBroker();
 	registerVscodeClientOverrides(busHost.rootBus, busHost.connectionManager);
 	registerClientOps(busHost.rootBus, busHost.connectionManager, {
@@ -40,6 +47,15 @@ export function registerVscodeOps(busHost: BusHost, context: vscode.ExtensionCon
 	registerVscodeHostOps(busHost.rootBus, {
 		context,
 		connectionManager: busHost.connectionManager,
+		broadcast: (op, params) => busHost.broadcastEmitOp(op, params),
+	});
+	registerVscodeAppDevOps(busHost.rootBus, {
+		context,
+		connectionManager: busHost.connectionManager,
+		broadcast: (op, params) => busHost.broadcastEmitOp(op, params),
+	});
+	return registerVscodeSettingsOps(busHost.rootBus, {
+		context,
 		broadcast: (op, params) => busHost.broadcastEmitOp(op, params),
 	});
 }

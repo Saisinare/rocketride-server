@@ -6,7 +6,7 @@
 /**
  * App scaffolder — the non-interactive engine behind `rocketride.app.create`.
  *
- * The New App wizard (NewAppProvider webview) collects the app-name slug,
+ * The New App wizard (the newapp framework page) collects the app-name slug,
  * display name, and frame options, assembles the app id from the resolved
  * developer id, and calls scaffoldApp(). Scaffolding validates at submit
  * time (the wizard panel is modeless — its form state may be stale), writes

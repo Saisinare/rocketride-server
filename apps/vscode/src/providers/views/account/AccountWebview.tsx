@@ -25,7 +25,7 @@ import { AccountProvider, CheckoutFlow, ConnectionManager, createBridgedPrefsSto
 import type { ConnectResult } from 'rocketride';
 import { attachBusRealm } from '../hooks/busRealm';
 import { CheckoutUnavailableNotice } from '../components/CheckoutUnavailableNotice';
-import type { StripeKeyUnavailableReason } from '../../types/checkoutTypes';
+import type { StripeKeyReason as StripeKeyUnavailableReason } from 'shared/ops/hostOps';
 
 attachBusRealm();
 

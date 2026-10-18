@@ -603,10 +603,10 @@ export class ConnectionManager extends EventEmitter {
 	/**
 	 * Cancels any pending debounced config-change handler.
 	 *
-	 * Called by SettingsProvider and WelcomeProvider after applyAllSettings()
-	 * but before reconcile, so the debounced handler (which fires from the
-	 * welcomeDismissed write) doesn't race with the reconciler's engine
-	 * restart and CM reconnection sequence.
+	 * Called by the settings save op (ops/settingsOps.ts) after
+	 * applyAllSettings() but before reconcile, so the debounced handler
+	 * (which fires from the welcomeDismissed write) doesn't race with the
+	 * reconciler's engine restart and CM reconnection sequence.
 	 */
 	public cancelPendingConfigChange(): void {
 		if (this.configChangeTimeout) {

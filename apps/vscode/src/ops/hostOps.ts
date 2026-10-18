@@ -44,7 +44,7 @@ export function registerVscodeHostOps(bus: IOpBus, deps: IVscodeHostOpsDeps): vo
 
 	const impls: OpImplTable<HostOpMap> = {
 		'host.openExternal': async (p) => {
-			await vscode.env.openExternal(vscode.Uri.parse(assertExternalUrl(p.url as string)));
+			await vscode.env.openExternal(vscode.Uri.parse(assertExternalUrl(p.url)));
 		},
 		'host.stripeKey': async () => {
 			const client = connectionManager.getClient();
@@ -54,13 +54,19 @@ export function registerVscodeHostOps(bus: IOpBus, deps: IVscodeHostOpsDeps): vo
 		},
 		'host.prefs.snapshot': async () => readPrefsSnapshot(context),
 		'host.prefs.set': async (p) => {
-			await writePref(context, p.key as string, p.value, p.scope === 'global' ? 'global' : 'workspace');
+			await writePref(context, p.key, p.value, p.scope === 'global' ? 'global' : 'workspace');
 		},
 		'host.envSlots': async () => envSlotsPayload(connectionManager),
 		// `popup` is meaningless here — VS Code has no window-modal surface,
 		// so an overlay request degrades to the page (by design).
 		'host.openPage': async (p) => {
-			if (!FrameworkProvider.openPage(p.page as string, (p.args as unknown[]) ?? [])) {
+			if (!FrameworkProvider.openPage(p.page, p.args ?? [])) {
+				throw new Error(`Unknown framework page: ${p.page}`);
+			}
+		},
+		// A page that is not open is a no-op; only an unknown NAME rejects.
+		'host.closePage': async (p) => {
+			if (!FrameworkProvider.closePage(p.page)) {
 				throw new Error(`Unknown framework page: ${p.page}`);
 			}
 		},

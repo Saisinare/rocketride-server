@@ -24,6 +24,31 @@ import type { BusHost } from './busHost';
 /** The one HTML bundle every framework page shares (see views/page-frame). */
 const FRAME_HTML = 'page-frame.html';
 
+/**
+ * Reads the shared page-frame HTML and injects nonce + webview URIs + THE
+ * PAGE NAME (a body data attribute — present before any script runs, so the
+ * bundle mounts the right component with no handshake). Optional `args` are
+ * stamped the same way (`data-rr-args`, JSON) for pages that open with an
+ * identity (e.g. a dev tool's app id) — per-instance state, not a protocol.
+ *
+ * Exported for host surfaces that own MULTIPLE panels of one page (the
+ * dev-tool details pages); FrameworkProvider's singleton panel uses it too.
+ */
+export function renderPageFrameHtml(context: vscode.ExtensionContext, webview: vscode.Webview, page: string, args?: unknown): string {
+	const nonce = crypto.randomBytes(32).toString('base64url');
+	const htmlPath = vscode.Uri.joinPath(context.extensionUri, 'webview', FRAME_HTML);
+
+	let htmlContent = readFileSync(htmlPath.fsPath, 'utf8');
+	htmlContent = htmlContent.replace(/\{\{nonce\}\}/g, nonce).replace(/\{\{cspSource\}\}/g, webview.cspSource);
+	const argsAttr = args === undefined ? '' : ` data-rr-args="${JSON.stringify(args).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}"`;
+	htmlContent = htmlContent.replace('<body', `<body data-rr-page="${page}"${argsAttr}`);
+	return htmlContent.replace(/(?:src|href)="(\/static\/[^"]+)"/g, (match: string, relativePath: string): string => {
+		const cleanPath = relativePath.startsWith('/') ? relativePath.substring(1) : relativePath;
+		const resourceUri = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'webview', cleanPath));
+		return match.replace(relativePath, resourceUri.toString());
+	});
+}
+
 /** One framework page's wiring. */
 export interface IFrameworkProviderOptions {
 	/** The page's registry name — stamped into the served HTML and resolved
@@ -40,6 +65,11 @@ export interface IFrameworkProviderOptions {
 	 *  with the command's arguments — e.g. the Environment page's
 	 *  missing-keys prefill. */
 	onOpen?: (args: unknown[]) => void;
+	/** Optional hook fired when the panel goes away. `userClosed` is true
+	 *  for a user exit (tab X, host.closePage) and false when the host is
+	 *  shutting down — pages that treat closing as a decision (Welcome's
+	 *  dismissal, Settings' staged-credential discard) need the difference. */
+	onClose?: (userClosed: boolean) => void;
 }
 
 /**
@@ -47,20 +77,32 @@ export interface IFrameworkProviderOptions {
  * pages serve the SAME page-frame bundle; only the stamped name differs.
  */
 export class FrameworkProvider {
-	/** page name → open — the `host.openPage` directory (self-registered). */
-	private static readonly directory = new Map<string, (args: unknown[]) => void>();
+	/** page name → surface — the `host.openPage`/`host.closePage` directory
+	 *  (self-registered). */
+	private static readonly directory = new Map<string, { open: (args: unknown[]) => void; close: () => void }>();
 
 	/** Opens a page by registry name. @returns False for an unknown page. */
 	public static openPage(page: string, args: unknown[] = []): boolean {
-		const open = FrameworkProvider.directory.get(page);
-		if (!open) return false;
-		open(args);
+		const entry = FrameworkProvider.directory.get(page);
+		if (!entry) return false;
+		entry.open(args);
+		return true;
+	}
+
+	/** Closes a page's panel if open. @returns False for an unknown page. */
+	public static closePage(page: string): boolean {
+		const entry = FrameworkProvider.directory.get(page);
+		if (!entry) return false;
+		entry.close();
 		return true;
 	}
 
 	private panel: vscode.WebviewPanel | null = null;
 	private detachRealm: (() => void) | null = null;
 	private disposables: vscode.Disposable[] = [];
+	/** True while THIS provider is being disposed (host shutdown) — the
+	 *  panel's dispose then is not a user exit. */
+	private shuttingDown = false;
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -72,7 +114,7 @@ export class FrameworkProvider {
 			this.show();
 		};
 		const cmd = vscode.commands.registerCommand(options.command, (...args: unknown[]) => open(args));
-		FrameworkProvider.directory.set(options.page, open);
+		FrameworkProvider.directory.set(options.page, { open, close: () => this.panel?.dispose() });
 		this.disposables.push(cmd, { dispose: () => FrameworkProvider.directory.delete(options.page) });
 		context.subscriptions.push(cmd);
 	}
@@ -100,40 +142,27 @@ export class FrameworkProvider {
 			this.detachRealm?.();
 			this.detachRealm = null;
 			this.panel = null;
+			this.options.onClose?.(!this.shuttingDown);
 		});
 	}
 
-	/**
-	 * Reads the shared page-frame HTML and injects nonce + webview URIs +
-	 * THE PAGE NAME (a body data attribute — present before any script runs,
-	 * so the bundle mounts the right component with no handshake).
-	 */
+	/** Serves the shared frame, falling back to a readable error page. */
 	private getHtmlForWebview(webview: vscode.Webview): string {
-		const nonce = crypto.randomBytes(32).toString('base64url');
-		const htmlPath = vscode.Uri.joinPath(this.context.extensionUri, 'webview', FRAME_HTML);
-
 		try {
-			let htmlContent = readFileSync(htmlPath.fsPath, 'utf8');
-			htmlContent = htmlContent.replace(/\{\{nonce\}\}/g, nonce).replace(/\{\{cspSource\}\}/g, webview.cspSource);
-			htmlContent = htmlContent.replace('<body', `<body data-rr-page="${this.options.page}"`);
-			return htmlContent.replace(/(?:src|href)="(\/static\/[^"]+)"/g, (match: string, relativePath: string): string => {
-				const cleanPath = relativePath.startsWith('/') ? relativePath.substring(1) : relativePath;
-				const resourceUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'webview', cleanPath));
-				return match.replace(relativePath, resourceUri.toString());
-			});
+			return renderPageFrameHtml(this.context, webview, this.options.page);
 		} catch (error) {
 			return `<!DOCTYPE html>
             <html><body style="padding:20px;color:#f44336;">
                 <h3>Error Loading ${this.options.title} Page</h3>
                 <p>${error}</p>
                 <p>Run <code>pnpm run build:webview</code> to build the webview.</p>
-                <p>Expected: <code>${htmlPath.fsPath}</code></p>
             </body></html>`;
 		}
 	}
 
 	/** Disposes the command registration and closes the panel if open. */
 	public dispose(): void {
+		this.shuttingDown = true;
 		this.disposables.forEach((d) => d.dispose());
 		this.disposables = [];
 		this.panel?.dispose();

@@ -338,7 +338,7 @@ const SidebarViewWebview: React.FC = () => {
 	const revealTool = useCallback((toolId: string) => {
 		sendMessage({ type: 'sidebar:focusTool', toolId });
 	}, [sendMessage]);
-	const { builtinItems, builtinStoreRows, focusTool: onFocusTool, deactivateReplacedTab } = useToolStrip({
+	const { builtinItems, builtinStoreRows, focusTool: onFocusTool, deactivateReplacedTab, announceBuiltinSelected } = useToolStrip({
 		host: 'vscode',
 		services: toolServices,
 		prefsStore: prefsBridge.store,
@@ -434,13 +434,17 @@ const SidebarViewWebview: React.FC = () => {
 	const onSidebarModeChange = useCallback(
 		(mode: SidebarMode) => {
 			deactivateReplacedTab(prevSidebarModeRef.current, mode);
+			// Builtins mount in the strip itself — their activation (the
+			// single-pane contract) rides the selection; MF pins get theirs
+			// via SidebarChrome's onFocusTool.
+			announceBuiltinSelected(mode);
 			// A user selection counts as the seed: an `update` composed before
 			// the persist round trip completed must not revert it.
 			sidebarModeSeededRef.current = true;
 			setSidebarMode(mode);
 			sendMessage({ type: 'sidebar:setSidebarMode', mode });
 		},
-		[sendMessage, deactivateReplacedTab]
+		[sendMessage, deactivateReplacedTab, announceBuiltinSelected]
 	);
 
 	// ── Footer ──────────────────────────────────────────────────────────────

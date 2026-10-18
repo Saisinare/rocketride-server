@@ -87,8 +87,14 @@ export interface ToolStrip {
 	/** Strip tab focus: activation emit + host reveal. */
 	focusTool: (toolId: string) => void;
 	/** Call on every mode change BEFORE committing it: emits the
-	 *  deactivation for a replaced tool tab (same-tab reselects: nothing). */
+	 *  deactivation for a replaced tool tab (same-tab reselects: nothing).
+	 *  Covers MF pins (`tool:` ids) AND builtin tool tabs (bare ids). */
 	deactivateReplacedTab: (prev: string, next: string) => void;
+	/** Call on every strip SELECTION of a bare-id tab: emits the activation
+	 *  for a builtin tool (the single-pane contract — a tool opens its pane
+	 *  on activation). MF pins get theirs via {@link focusTool}; non-tool
+	 *  modes emit nothing. */
+	announceBuiltinSelected: (tabId: string) => void;
 }
 
 /**
@@ -163,13 +169,32 @@ export function useToolStrip(config: ToolStripConfig): ToolStrip {
 		[revealTool]
 	);
 
-	/** Deactivation for a deselected tool tab FIRST (the successor's
-	 *  activation follows from focusTool); same-tab reselects emit nothing. */
-	const deactivateReplacedTab = useCallback((prev: string, next: string) => {
-		if (prev !== next && prev.startsWith('tool:')) {
-			ConnectionManager.getInstance().emit('shell:toolSidebarDeactivated', { appId: prev.slice('tool:'.length) });
-		}
-	}, []);
+	// This host's builtin TOOL ids — strip tabs carry them BARE (only MF pins
+	// use the `tool:` prefix), so the tab discipline below must recognize both
+	// spellings or builtins never hear activation/deactivation at all.
+	const builtinToolIds = useMemo(() => new Set(getBuiltinTools().filter((t) => !t.hosts || t.hosts.includes(host)).map((t) => t.id)), [host]);
 
-	return { builtinItems, builtinStoreRows, focusTool, deactivateReplacedTab };
+	/** The tool id a strip tab addresses, or null for non-tool modes. */
+	const toolIdOf = useCallback((tabId: string): string | null => {
+		if (tabId.startsWith('tool:')) return tabId.slice('tool:'.length);
+		return builtinToolIds.has(tabId) ? tabId : null;
+	}, [builtinToolIds]);
+
+	/** Deactivation for a deselected tool tab FIRST (the successor's
+	 *  activation follows); same-tab reselects emit nothing. */
+	const deactivateReplacedTab = useCallback((prev: string, next: string) => {
+		const toolId = prev !== next ? toolIdOf(prev) : null;
+		if (toolId) ConnectionManager.getInstance().emit('shell:toolSidebarDeactivated', { appId: toolId });
+	}, [toolIdOf]);
+
+	/** Activation for a selected BUILTIN tool tab (bare id; reselects re-emit,
+	 *  matching the MF path through focusTool). Builtins mount in the strip
+	 *  itself, so there is no window to reveal. */
+	const announceBuiltinSelected = useCallback((tabId: string) => {
+		if (!tabId.startsWith('tool:') && builtinToolIds.has(tabId)) {
+			ConnectionManager.getInstance().emit('shell:toolSidebarActivated', { appId: tabId });
+		}
+	}, [builtinToolIds]);
+
+	return { builtinItems, builtinStoreRows, focusTool, deactivateReplacedTab, announceBuiltinSelected };
 }

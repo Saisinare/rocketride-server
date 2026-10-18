@@ -42,18 +42,16 @@ import { getUserConfigDir, getSystemInstallDir, migrateLocalEngine, migrateServi
 
 import { SidebarProvider } from './providers/SidebarProvider';
 import { ProjectProvider } from './providers/ProjectProvider';
-import { SettingsProvider } from './providers/SettingsProvider';
 import { HtmlPageProvider } from './providers/HtmlPageProvider';
 // DeployProvider removed — Docker/Service operations now live in Settings panels
 import { StatusProvider } from './providers/StatusProvider';
 import { BarStatus } from './providers/BarStatusProvider';
-import { WelcomeProvider } from './providers/WelcomeProvider';
 import { FrameworkProvider } from './providers/toolhost/frameworkProvider';
-import { NewAppProvider } from './providers/NewAppProvider';
 import { DevToolStore } from './providers/DevToolStore';
 import { DevToolBridge } from './providers/DevToolBridge';
 import { BusHost } from './providers/toolhost/busHost';
 import { registerVscodeOps } from './ops';
+import { registerVscodeDevToolOps } from './ops/devtoolOps';
 import { writePref } from './providers/PrefsBag';
 import { DevToolPanelProvider } from './providers/DevToolPanelProvider';
 import { DevToolReadmeProvider } from './providers/DevToolReadmeProvider';
@@ -77,13 +75,11 @@ let configManager: ConfigManager | undefined;
 // Provider references
 let sidebar: SidebarProvider | undefined;
 let project: ProjectProvider | undefined;
-let settings: SettingsProvider | undefined;
 let _htmlPages: HtmlPageProvider | undefined;
 // deploy removed — functionality moved to Settings panels
 let status: StatusProvider | undefined;
 let appScreen: AppScreenProvider | undefined;
 let barStatus: BarStatus | undefined;
-let welcome: WelcomeProvider | undefined;
 
 /**
  * One-time migrations for settings/files that changed between extension versions.
@@ -330,9 +326,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				// named client.* ops, broker-owned monitors, mirrored state.
 				const busHost = new BusHost(engineConnection);
 				// Everything this host serves over the bus — monitor broker,
-				// client overrides, the shared client table, host.* ops —
-				// registers in dependency order in src/ops.
-				registerVscodeOps(busHost, context);
+				// client overrides, the shared client table, host.* ops, the
+				// settings/cloud/engine family — registers in dependency order
+				// in src/ops. The returned controller is the settings pages'
+				// panel-lifecycle seam (open args, polling, close semantics).
+				const settingsOps = registerVscodeOps(busHost, context);
 				busHost.startMirrors();
 				context.subscriptions.push({ dispose: () => busHost.dispose() });
 
@@ -353,7 +351,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				logger.output(`${icons.info} Creating webview providers...`);
 				progress.report({ increment: 60, message: 'Creating webview providers...' });
 
-				settings = new SettingsProvider(context.extensionUri);
+				// Settings page: a framework page (page-frame + bus ops). The
+				// open command's positional args (focus section, auth-error
+				// banner) ride the settings controller's open-args seam.
+				const settingsPage = new FrameworkProvider(context, busHost, {
+					page: 'settings',
+					command: 'rocketride.page.settings.open',
+					viewType: 'rocketride.page.settings',
+					title: 'RocketRide Settings',
+					onOpen: (args) => {
+						settingsOps.setOpenArgs({
+							focus: typeof args[0] === 'string' ? args[0] : undefined,
+							authError: typeof args[1] === 'string' ? args[1] : undefined,
+						});
+						settingsOps.pageOpened('settings');
+					},
+					onClose: (userClosed) => settingsOps.pageClosed('settings', userClosed),
+				});
+				// Credential commands kept as thin aliases (contributed in
+				// package.json): setup/update open the page; clear is a
+				// host-side confirm + delete + disconnect.
+				context.subscriptions.push(
+					vscode.commands.registerCommand('rocketride.page.settings.setupCredentials', () => vscode.commands.executeCommand('rocketride.page.settings.open')),
+					vscode.commands.registerCommand('rocketride.page.settings.updateApiKey', () => vscode.commands.executeCommand('rocketride.page.settings.open')),
+					vscode.commands.registerCommand('rocketride.page.settings.clearApiKey', async () => {
+						const result = await vscode.window.showWarningMessage('Are you sure you want to clear the stored API key?', 'Yes', 'No');
+						if (result === 'Yes') {
+							await configManager?.deleteApiKey('development');
+							// Disconnect since credentials are now invalid
+							void connectionManager?.disconnect();
+						}
+					})
+				);
 				// Server Monitor is a DEV TOOL now — the old page command opens
 				// the tool's frame panel (palette compatibility).
 				context.subscriptions.push(vscode.commands.registerCommand('rocketride.page.monitor.open', () => {
@@ -386,10 +415,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				// Host" keeps them open but never re-resolves them) still need
 				// their dev servers — reconcile against the surviving tab list.
 				void appScreen.reconcileOpenTabs();
-				// File-less per-team deployment tabs (teams-as-environments)
-				welcome = new WelcomeProvider(context, context.extensionUri);
 				// Framework pages: shell components in a webview, engine access
 				// over the bus — the host side is just command + panel + realm.
+				// Welcome: first-run onboarding. Closing it by ANY user exit
+				// counts as dismissal (the settings controller persists it);
+				// Save & Connect runs the first initialize+reconcile inside
+				// host.settings.save{connect} before the page retires itself.
+				const welcomePage = new FrameworkProvider(context, busHost, {
+					page: 'welcome',
+					command: 'rocketride.page.welcome.open',
+					viewType: 'rocketride.page.welcome',
+					title: 'Welcome to RocketRide',
+					onOpen: () => settingsOps.pageOpened('welcome'),
+					onClose: (userClosed) => settingsOps.pageClosed('welcome', userClosed),
+				});
 				const account = new FrameworkProvider(context, busHost, {
 					page: 'account',
 					command: 'rocketride.page.account.open',
@@ -414,8 +453,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						}
 					},
 				});
-				// New App wizard — registers rocketride.app.create itself
-				const newApp = new NewAppProvider(context);
+				// New App wizard — a framework page (shared NewAppForm over the
+				// host.appdev.* ops); the open command keeps its historic id.
+				const newApp = new FrameworkProvider(context, busHost, {
+					page: 'newapp',
+					command: 'rocketride.app.create',
+					viewType: 'rocketride.page.newApp',
+					title: 'New App',
+				});
 				// Dev tools: the tool panels (MF host webviews) + the modules
 				// flow's details page (README + Install/Remove — Remove also
 				// closes the tool's open panel). Each registers its own command.
@@ -426,11 +471,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				// Tool sidebars follow the editor's fronted tab: the fronted
 				// tool document's key, or null when a non-tool tab is active.
 				devToolPanels.onActiveDocChange = (appId, docKey) => sidebar?.notifyToolActiveDoc(appId, docKey);
-				const devToolReadme = new DevToolReadmeProvider(context, devTools, (appId) => devToolPanels.close(appId));
-				context.subscriptions.push(account, environment, newApp, devTools, devToolPanels, devToolReadme);
+				const devToolReadme = new DevToolReadmeProvider(context, busHost);
+				// Install/Remove for the details pages — the pinned set is host
+				// state; changes push to every open surface.
+				registerVscodeDevToolOps(busHost.rootBus, {
+					context,
+					devTools,
+					closeToolPanel: (appId) => devToolPanels.close(appId),
+					broadcast: (op, params) => busHost.broadcastEmitOp(op, params),
+				});
+				context.subscriptions.push(welcomePage, settingsPage, account, environment, newApp, devTools, devToolPanels, devToolReadme);
 
 				// Register unified project editor (canvas + status + trace)
-				project = new ProjectProvider(context);
+				project = new ProjectProvider(context, busHost);
 				const pageProjectRegistration = vscode.window.registerCustomEditorProvider('rocketride.page.project', project, {
 					webviewOptions: {
 						retainContextWhenHidden: true,
@@ -456,7 +509,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				setupConnectionEventHandlers();
 
 				// Add all providers to context subscriptions for proper cleanup
-				context.subscriptions.push(pageProjectRegistration, settings, project, welcome!);
+				context.subscriptions.push(pageProjectRegistration, project);
 
 				//-------------------------------------
 				// Update tree providers with initial data
@@ -476,13 +529,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				barStatus.initializeConnectionManager();
 				context.subscriptions.push(barStatus);
 
-				const welcomeDismissed = welcome?.isDismissed() ?? true;
+				const welcomeDismissed = vscode.workspace.getConfiguration('rocketride').get<boolean>('welcomeDismissed', false);
 				if (!welcomeDismissed) {
-					// First run: show welcome page, don't auto-connect
+					// First run: show welcome page, don't auto-connect — NO
+					// engine/connection work happens until the user confirms
+					// (host.settings.save{connect} runs initialize+reconcile).
 					logger.output(`${icons.info} First run detected — showing welcome page`);
 					progress.report({ increment: 110, message: 'Showing welcome...' });
 					barStatus.setNeedsSetup();
-					void welcome!.show();
+					FrameworkProvider.openPage('welcome');
 				} else {
 					// Normal flow: initialize CMs first so they validate credentials
 					// and set their connection mode. This must happen BEFORE reconcile
@@ -879,10 +934,8 @@ export const setCachedDockerTags = (t: string[]) => {
 export const getExtensionContext = () => extensionContext;
 export const getConnectionManager = () => connectionManager;
 export const getEngineRegistry = () => engineRegistry;
-export const getSettingsProvider = () => settings;
 export const getConfigManager = () => configManager;
 export const getPipelineFilesTreeProvider = () => undefined;
 export const getConnectionTreeProvider = () => undefined;
 export const getProjectProvider = () => project;
 export const getBarStatus = () => barStatus;
-export const getWelcomeProvider = () => welcome;

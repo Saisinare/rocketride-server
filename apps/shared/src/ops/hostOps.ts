@@ -79,6 +79,18 @@ export interface HostOpMap extends ShellOpMap {
 	 *  window-modal surfaces (VS Code) open a page regardless. `args` ride
 	 *  to the page's open hook (e.g. the Environment prefill keys). */
 	'host.openPage': ShellOpSpec<{ page: string; popup?: boolean; args?: unknown[] }, void>;
+	/** Closes a framework page by registry name — a page realm asking the
+	 *  host to retire its own surface (e.g. Welcome after Save & Connect).
+	 *  A page that is not open is a no-op, never an error. */
+	'host.closePage': ShellOpSpec<{ page: string }, void>;
+	/** The pinned (installed) dev tool ids — host-persisted strip state. */
+	'host.devtools.installed': ShellOpSpec<Record<string, never>, { ids: string[] }>;
+	/** Pins a tool to the strip. */
+	'host.devtools.install': ShellOpSpec<{ appId: string }, void>;
+	/** Unpins a tool AND retires its open frame panel. */
+	'host.devtools.remove': ShellOpSpec<{ appId: string }, void>;
+	/** PUSH — the pinned set changed (any surface). */
+	'host.devtools.changed': ShellOpSpec<{ ids: string[] }, void>;
 }
 
 // =============================================================================

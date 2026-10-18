@@ -269,7 +269,7 @@ export default tseslint.config(
 					// types against (it cannot resolve the React barrel) —
 					// toolRelay (the relay policy + host:connection payload)
 					// and toolWorkspaceFs (the fs capability interface).
-					{ group: ['shell/*', '!shell/themes', 'shell/themes/*', '!shell/themes/rocketride-default.css', '!shell/src', 'shell/src/*', '!shell/src/components', 'shell/src/components/*', '!shell/src/components/workspace', 'shell/src/components/workspace/*', '!shell/src/components/workspace/toolRelay', '!shell/src/components/workspace/toolWorkspaceFs', '!shell/src/ops', 'shell/src/ops/*', '!shell/src/ops/busOps', '!shell/src/ops/busBridge', '!shell/src/ops/clientOps'], message: "The shell surface is barrel-only: import the name from 'shell' (the theme stylesheet is the one exported subpath; SDK values/types come from 'rocketride'; the ext-host-safe leaves toolRelay/toolWorkspaceFs are the sanctioned deep imports)." },
+					{ group: ['shell/*', '!shell/themes', 'shell/themes/*', '!shell/themes/rocketride-default.css', '!shell/src', 'shell/src/*', '!shell/src/components', 'shell/src/components/*', '!shell/src/components/workspace', 'shell/src/components/workspace/*', '!shell/src/components/workspace/toolRelay', '!shell/src/components/workspace/toolWorkspaceFs', '!shell/src/ops', 'shell/src/ops/*', '!shell/src/ops/busOps', '!shell/src/ops/busBridge', '!shell/src/ops/clientOps', '!shell/src/ops/retained'], message: "The shell surface is barrel-only: import the name from 'shell' (the theme stylesheet is the one exported subpath; SDK values/types come from 'rocketride'; the ext-host-safe leaves toolRelay/toolWorkspaceFs are the sanctioned deep imports)." },
 				],
 			}],
 		},

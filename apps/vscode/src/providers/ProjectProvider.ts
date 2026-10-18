@@ -37,8 +37,7 @@ import type { DeploymentWebviewToHost } from './types/deployTypes';
 import type { LogSessionWebviewToHost } from './types/logTypes';
 import { DeployLifecycle } from './project/deployLifecycle';
 import { openExternalLink } from './project/externalLink';
-import { getStripePublishableKey } from './shared/stripe-key';
-import type { StripeKeyUnavailableReason } from './types/checkoutTypes';
+import type { BusHost } from './toolhost/busHost';
 
 // =============================================================================
 // CONSTANTS
@@ -91,7 +90,13 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	// keyed by document URI. Redelivered after the next view:ready.
 	private undeliveredOAuthTokens: Map<string, { tokens: string; state: string; expiresAt: number }> = new Map();
 
-	constructor(private readonly context: vscode.ExtensionContext) {
+	constructor(
+		private readonly context: vscode.ExtensionContext,
+		/** The shell bus router — every project editor webview attaches as a
+		 *  realm so shell components (checkout, stripe key) ride the bus. The
+		 *  project:* postMessage protocol itself migrates in a later pass. */
+		private readonly busHost: BusHost
+	) {
 		this.registerCommands();
 		this.setupEventListeners();
 		// Drop an untitled pipeline's auto-backup once its editor closes: an
@@ -564,6 +569,11 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 
 		webview.html = this.getHtmlForWebview(webview);
 
+		// The editor is also a bus realm: shell components inside it (checkout,
+		// stripe key) use request('client.*')/host.* ops over the `__rrbus`
+		// envelope, which never collides with the typed project:* messages.
+		const detachRealm = this.busHost.attachWebview(webview, 'page:project');
+
 		// --- Handle messages from the webview (ProjectViewOutgoing) -----------
 
 		webview.onDidReceiveMessage(async (data) => {
@@ -903,65 +913,9 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 					break;
 				}
 
-				// Checkout flow — bridge billing SDK calls for the CheckoutModal
-				case 'checkout:getStripeKey': {
-					// Server-supplied publishable key (cached per URI) so the
-					// CheckoutModal mounts Stripe for THIS server's account. An
-					// empty key carries a reason (no connection, failed probe,
-					// or a server without billing) so the webview can explain
-					// the gap.
-					const client = this.connectionManager.getClient();
-					const { key, probed } = await getStripePublishableKey(client);
-					const reason: StripeKeyUnavailableReason | undefined = key ? undefined : !client ? 'no-connection' : probed ? 'no-billing' : 'probe-failed';
-					webview.postMessage({ type: 'checkout:stripeKey', key, requestId: data.requestId, ...(reason ? { reason } : {}) });
-					break;
-				}
-
-				case 'checkout:fetchPlans': {
-					try {
-						const billingClient = this.connectionManager.getClient();
-						if (!billingClient) throw new Error('Not connected');
-						const plans = await billingClient.billing.getProductPrices(PIPE_BUILDER_APP_ID);
-						webview.postMessage({ type: 'checkout:plansResult', plans, error: null });
-					} catch (err: unknown) {
-						const msg = err instanceof Error ? err.message : String(err);
-						webview.postMessage({ type: 'checkout:plansResult', plans: [], error: msg });
-					}
-					break;
-				}
-
-				case 'checkout:createSession': {
-					try {
-						const billingClient = this.connectionManager.getClient();
-						if (!billingClient) throw new Error('Not connected');
-						const orgId = billingClient.getAccountInfo()?.organization?.id;
-						if (!orgId) throw new Error('No organisation found');
-						const result = await billingClient.billing.createCheckoutSession(orgId, PIPE_BUILDER_APP_ID, data.priceId as string);
-						webview.postMessage({ type: 'checkout:sessionResult', ...result, error: null });
-					} catch (err: unknown) {
-						const msg = err instanceof Error ? err.message : String(err);
-						webview.postMessage({ type: 'checkout:sessionResult', clientSecret: '', subscriptionId: '', error: msg });
-					}
-					break;
-				}
-
-				case 'checkout:confirmPending': {
-					try {
-						const billingClient = this.connectionManager.getClient();
-						if (!billingClient) throw new Error('Not connected');
-						await (billingClient as any).dapRequest('rrext_account_billing', {
-							subcommand: 'confirm_pending',
-							appId: PIPE_BUILDER_APP_ID,
-							subscriptionId: data.subscriptionId,
-							priceId: data.priceId,
-						});
-						webview.postMessage({ type: 'checkout:confirmResult', error: null });
-					} catch (err: unknown) {
-						// Non-fatal — the webhook will still update the DB
-						webview.postMessage({ type: 'checkout:confirmResult', error: null });
-					}
-					break;
-				}
+				// Checkout rides the bus (client.billing.* ops + host.stripeKey)
+				// — no checkout:* request handling here. checkout:required and
+				// checkout:subscriptionUpdate remain host-originated pushes.
 
 				// Deploy lifecycle — snapshot request from the DEPLOY page
 				case 'deploy:fetch': {
@@ -1066,6 +1020,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 
 		// Clean up when panel is disposed
 		webviewPanel.onDidDispose(async () => {
+			detachRealm();
 			await this.stopMonitoring(webviewPanel);
 			// Close any run-log sessions the DVR bridge left open.
 			this.deployLifecycle.disposeLogSessions(webview);

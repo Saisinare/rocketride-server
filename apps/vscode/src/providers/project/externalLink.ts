@@ -16,6 +16,7 @@
 
 import * as vscode from 'vscode';
 import { getLogger } from '../../shared/util/output';
+import { assertExternalUrl } from 'shared/ops/hostOps';
 
 /**
  * Opens a URL — system browser (`browser: true`, scheme-allowlisted) or an
@@ -28,14 +29,13 @@ import { getLogger } from '../../shared/util/output';
 export function openExternalLink(url: string, displayName?: string, browser = false): void {
 	const logger = getLogger();
 	if (browser) {
-		// URL comes from a webview message; allowlist schemes before opening.
-		const uri = vscode.Uri.parse(url);
-		const scheme = uri.scheme.toLowerCase();
-		if (!['https', 'http', 'mailto'].includes(scheme)) {
-			logger.error(`[ProjectProvider] Blocked external URL scheme: ${scheme}`);
-			return;
+		// URL comes from a webview message — the shared host.openExternal
+		// guard (ONE scheme allowlist, not a parallel copy) gates it.
+		try {
+			void vscode.env.openExternal(vscode.Uri.parse(assertExternalUrl(url)));
+		} catch (error) {
+			logger.error(`[ProjectProvider] ${error}`);
 		}
-		void vscode.env.openExternal(uri);
 		return;
 	}
 	const panel = vscode.window.createWebviewPanel('rocketride.page.external', displayName || 'Pipeline', vscode.ViewColumn.One, {

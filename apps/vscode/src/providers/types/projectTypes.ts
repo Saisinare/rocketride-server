@@ -6,10 +6,10 @@
 /**
  * Project host/webview protocol — the message contract between
  * ProjectProvider (extension host) and the project editor webview. Composes
- * the shell base (shellTypes.ts), the shared checkout flow
- * (checkoutTypes.ts), and the deploy / run-log domain protocols
+ * the shell base (shellTypes.ts) and the deploy / run-log domain protocols
  * (deployTypes.ts, logTypes.ts); the subscription-gate pushes are
- * Project-only and declared here.
+ * Project-only and declared here. Checkout itself rides the shell bus
+ * (client.billing.* ops + host.stripeKey) — no checkout requests here.
  *
  * Pure types only — imported by both the extension host and the webview
  * (ViewState/TaskStatus come from the pure `shared/tools/pipelines/project/types`
@@ -18,7 +18,6 @@
 
 import type { ViewState, TaskStatus } from 'shared/tools/pipelines/project/types';
 import type { ShellHostToWebview, ShellWebviewToHost } from './shellTypes';
-import type { CheckoutResultHostToWebview, CheckoutRequestWebviewToHost } from './checkoutTypes';
 import type { DeployLifecycleHostToWebview, DeployLifecycleWebviewToHost, DeploymentHostToWebview, DeploymentWebviewToHost } from './deployTypes';
 import type { LogSessionHostToWebview, LogSessionWebviewToHost } from './logTypes';
 
@@ -35,10 +34,9 @@ export type ProjectHostToWebview =
 	| { type: 'project:initialPrefs'; prefs: Record<string, unknown> }
 	| { type: 'project:cloudConnectionConfigured'; cloudConnectionConfigured: boolean }
 	| { type: 'project:envKeysUpdate'; envKeys: string[] }
-	// Subscription gate + embedded checkout flow (the Subscribe overlay).
+	// Subscription gate pushes (the Subscribe overlay opens on these).
 	| { type: 'checkout:required' }
 	| { type: 'checkout:subscriptionUpdate'; isSubscribed: boolean }
-	| CheckoutResultHostToWebview
 	// Deploy lifecycle pushes for the DEPLOY page (see deployTypes.ts).
 	| DeployLifecycleHostToWebview
 	// Deployment record drawer pushes (the drawer lives in this webview).
@@ -60,8 +58,6 @@ export type ProjectWebviewToHost =
 	| { type: 'project:openCloudSetup' }
 	| { type: 'status:pipelineAction'; action: 'run' | 'stop' | 'restart'; source?: string }
 	| { type: 'status:missingEnvVars'; keys: string[] }
-	// Embedded checkout requests (the Subscribe overlay).
-	| CheckoutRequestWebviewToHost
 	// Deploy lifecycle requests from the DEPLOY page (see deployTypes.ts).
 	| DeployLifecycleWebviewToHost
 	// Deployment record drawer requests.

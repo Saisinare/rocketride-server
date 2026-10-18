@@ -166,7 +166,7 @@ export const DevToolSidebarMount: React.FC<DevToolSidebarMountProps> = ({ tool, 
 
 				// NO realm socket: the mounted sidebar's shell hooks read the
 				// realm singleton, whose state is BUS-MIRRORED from the
-				// extension host (busRealm.ts primeMirror) and whose engine
+				// extension host (CM mirror subscriptions) and whose engine
 				// access is request('client.*') through the broker.
 				registerRemotes([{ name: tool.moduleId!, entry: `${host.engineHttpUrl}/apps/${encodeURIComponent(tool.id)}/v${tool.registryVersion}/remoteEntry.js` }], { force: true });
 				const mod = (await loadRemote(`${tool.moduleId}/AppDescriptor`)) as { default: AppDescriptor } | null;

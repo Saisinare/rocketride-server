@@ -58,17 +58,13 @@ export default defineConfig({
 		exclude: ['./dist/**', './node_modules/**', './**/*.test.*', './**/*.spec.*'],
 		entry: {
 			'page-sidebar': './src/providers/views/sidebar/index.tsx',
-			'page-settings': './src/providers/views/settings/index.tsx',
 			'page-project': './src/providers/views/project/index.tsx',
-			'page-welcome': './src/providers/views/welcome/index.tsx',
 			// The ONE bundle for all framework pages (account, environment, …):
 			// the host stamps the page name into the HTML; a compiled-in
 			// registry picks the component. Per-page entries are retired as
 			// their pages migrate onto it.
 			'page-frame': './src/providers/views/page-frame/index.tsx',
 			'page-app': './src/providers/views/app/index.tsx',
-			'page-newapp': './src/providers/views/new-app/index.tsx',
-			'page-devtool-readme': './src/providers/views/devtool-readme/index.tsx',
 			// NOTE: page-devtool is NOT here — it is a Module Federation host
 			// and needs a normal chunk graph, so it builds separately via
 			// rsbuild.devtool.config.mjs into webview/devtool/.

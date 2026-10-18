@@ -4,84 +4,71 @@
 // =============================================================================
 
 /**
- * NewAppWebview — the VS Code New App wizard (page-newapp webview).
+ * NewAppWebview — the New App wizard as a shell bus realm (page-frame page).
  *
- * THIN by design: the entire wizard form lives in shared's
- * `modules/appdev` (NewAppForm). This webview contributes only the
- * transport — identity/error state arrives over useMessaging from
- * NewAppProvider, and the form's create/cancel callbacks ride back the
- * same way. The host owns identity resolution and writes the scaffold in
- * one pass on create.
- *
- * Architecture:
- *   NewAppProvider (Node.js) <-> postMessage <-> NewAppWebview (browser)
+ * THIN by design: the entire wizard form lives in shared's appdev module
+ * (NewAppForm). This page contributes only the host seams: identity via
+ * `host.appdev.identity` (+ the `identityChanged` push — the wizard is
+ * modeless, a login while it sits open changes the linkage name), the
+ * one-pass scaffold via `host.appdev.scaffold` (its resolution closes the
+ * page; a rejection re-enables the form with the validation message), and
+ * Cancel via `host.closePage`.
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ConnectionManager } from 'shell';
 // Deep import by design: the wizard page carries the FORM alone — the
-// appdev barrel would pull the whole App Builder view layer into this
-// otherwise-thin webview bundle.
+// appdev barrel would pull the whole App Builder view layer into the bundle.
 import { NewAppForm } from 'shared/tools/appdev/NewAppForm';
+import type { NewAppIdentity } from 'shared/tools/appdev/types';
 import type { FrameOptions } from 'shared/tools/appdev/templates';
-import { useMessaging } from '../hooks/useMessaging';
-import type { NewAppHostToWebview, NewAppIdentity, NewAppWebviewToHost } from '../../types/newAppTypes';
 
 // =============================================================================
 // COMPONENT
 // =============================================================================
 
-/**
- * Bridges the shared NewAppForm onto the extension-host message protocol:
- * inbound init/identityUpdate/error messages become props, the form's
- * callbacks become newapp:create / newapp:cancel messages.
- */
 const NewAppWebview: React.FC = () => {
-	// ── State ────────────────────────────────────────────────────────────
-	/** Live identity from the host; null until newapp:init arrives. */
+	const cm = ConnectionManager.getInstance();
+
+	/** Live identity from the host; null until the first pull answers. */
 	const [identity, setIdentity] = useState<NewAppIdentity | null>(null);
 
-	/** True while a create request is in flight. */
+	/** True while a scaffold request is in flight (locks the form). */
 	const [creating, setCreating] = useState(false);
 
 	/** Error from a failed create, shown in the form footer. */
 	const [error, setError] = useState<string | null>(null);
 
-	// ── Incoming messages ────────────────────────────────────────────────
-	const handleMessage = useCallback((message: NewAppHostToWebview) => {
-		switch (message.type) {
-			case 'newapp:init':
-			case 'newapp:identityUpdate':
-				setIdentity(message.identity);
-				break;
-
-			case 'newapp:error':
-				// Create failed — surface the error and re-enable the form
-				setError(message.error);
-				setCreating(false);
-				break;
-		}
+	useEffect(() => {
+		void cm.request('host.appdev.identity', {} as never).then(
+			(r) => setIdentity(r as NewAppIdentity),
+			() => {}
+		);
+		return cm.handle('host.appdev.identityChanged', (p) => setIdentity(p as NewAppIdentity));
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	const { sendMessage } = useMessaging<NewAppWebviewToHost, NewAppHostToWebview>({ onMessage: handleMessage });
-
-	// ── Callbacks ────────────────────────────────────────────────────────
-
-	/** Sends the create request and locks the form until the host answers. */
+	/** One scaffold pass; success retires the page (the scaffold already
+	 *  opened the App Builder), a rejection re-enables the form. */
 	const handleCreate = useCallback(
 		(appName: string, displayName: string, frame: FrameOptions) => {
 			setError(null);
 			setCreating(true);
-			sendMessage({ type: 'newapp:create', appName, displayName, frame });
+			cm.request('host.appdev.scaffold', { appName, displayName, frame } as never).then(
+				() => cm.emitOp('host.closePage', { page: 'newapp' }),
+				(err: unknown) => {
+					setError(err instanceof Error ? err.message : String(err));
+					setCreating(false);
+				}
+			);
 		},
-		[sendMessage],
+		[cm]
 	);
 
-	/** Asks the host to close the wizard without creating anything. */
+	/** Close the wizard without creating anything. */
 	const handleCancel = useCallback(() => {
-		sendMessage({ type: 'newapp:cancel' });
-	}, [sendMessage]);
-
-	// ── Render ───────────────────────────────────────────────────────────
+		cm.emitOp('host.closePage', { page: 'newapp' });
+	}, [cm]);
 
 	if (!identity) return null;
 

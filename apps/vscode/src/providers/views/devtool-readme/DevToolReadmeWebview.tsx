@@ -4,17 +4,21 @@
 // =============================================================================
 
 /**
- * DevToolReadmeWebview — this host's adapter for the shared ToolDetailsView:
- * catalog facts arrive as one `readme:init` seed from the extension host
- * (icons pre-inlined as data: URIs for the webview CSP); Install/Remove go
- * back as messages.
+ * DevToolReadmeWebview — the dev-tool details page as a shell bus realm.
+ *
+ * The tool's identity arrives stamped in the served HTML (`data-rr-args`);
+ * everything else is mirror + ops: catalog facts off the mirrored
+ * accountInfo (apps list), connection state off the mirrored status, the
+ * pinned set via `host.devtools.installed` + the `changed` push, and
+ * Install/Remove as fire-and-forget `host.devtools.*` ops. Icons are plain
+ * engine URLs (base = the mirrored server HTTP URL).
  */
 
-import React, { useCallback, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { ConnectionManager } from 'shell';
+import type { ConnectResult } from 'rocketride';
 import { ToolDetailsView } from 'shared/tools/core/chrome/ToolDetailsView';
-import { useMessaging } from '../hooks/useMessaging';
-import type { ReadmeHostToWebview, ReadmeToolInfo, ReadmeWebviewToHost } from '../../types/devToolReadmeTypes';
 
 const statusStyle: CSSProperties = {
 	position: 'fixed',
@@ -28,46 +32,79 @@ const statusStyle: CSSProperties = {
 	backgroundColor: 'var(--rr-bg-default)',
 };
 
-const DevToolReadmeWebview: React.FC = () => {
-	const [tool, setTool] = useState<ReadmeToolInfo | null>(null);
-	const [installed, setInstalled] = useState(false);
-	const [connected, setConnected] = useState(false);
-	const [seeded, setSeeded] = useState(false);
+/** One account-payload app row, as this page reads it. */
+interface IAppRow {
+	id: string;
+	name: string;
+	version?: string;
+	publisher?: string;
+	description?: string;
+	categories?: string[];
+	icon?: string;
+	readme?: string;
+}
 
-	const onMessage = useCallback((message: ReadmeHostToWebview) => {
-		if (message.type === 'readme:init') {
-			setTool(message.payload.tool);
-			setInstalled(message.payload.installed);
-			setConnected(message.payload.connected);
-			setSeeded(true);
-		}
+/** The page's open identity, stamped by the host into the served HTML. */
+function stampedAppId(): string {
+	try {
+		const args = JSON.parse(document.body.dataset.rrArgs ?? '{}') as { appId?: unknown };
+		return typeof args.appId === 'string' ? args.appId : '';
+	} catch {
+		return '';
+	}
+}
+
+const DevToolReadmeWebview: React.FC = () => {
+	const cm = ConnectionManager.getInstance();
+	const appId = stampedAppId();
+
+	const [account, setAccount] = useState<ConnectResult | null>(() => cm.getAccountInfo() ?? null);
+	const [connected, setConnected] = useState(() => cm.isConnected());
+	const [installedIds, setInstalledIds] = useState<string[] | null>(null);
+
+	useEffect(() => {
+		const offs = [
+			cm.on('shell:accountUpdate', (data) => setAccount(data)),
+			cm.on('shell:statusChange', () => setConnected(cm.isConnected())),
+			cm.handle('host.devtools.changed', (p) => setInstalledIds((p as { ids: string[] }).ids)),
+		];
+		void cm.request('host.devtools.installed', {} as never).then(
+			(r) => setInstalledIds((r as { ids: string[] }).ids),
+			() => setInstalledIds([])
+		);
+		return () => offs.forEach((off) => off());
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	const { sendMessage } = useMessaging<ReadmeWebviewToHost, ReadmeHostToWebview>({ onMessage });
+	const apps = (account?.apps ?? []) as IAppRow[];
+	const row = connected ? apps.find((a) => a?.id === appId) : undefined;
 
-	if (!seeded || !tool) {
-		return (
-			<div style={statusStyle}>
-				{!seeded ? 'Loading…' : connected ? 'This tool is no longer available on the server.' : 'Connect to a RocketRide server to view this tool.'}
-			</div>
-		);
+	if (installedIds === null || !row) {
+		return <div style={statusStyle}>{installedIds === null ? 'Loading…' : connected ? 'This tool is no longer available on the server.' : 'Connect to a RocketRide server to view this tool.'}</div>;
 	}
+
+	// Engine-served icons are root-relative in the catalog; resolve against
+	// the mirrored server HTTP base.
+	const base = (cm.getHttpUrl() || '').replace(/\/$/, '');
+	const iconUrl = row.icon ? (row.icon.startsWith('/') && base ? `${base}${row.icon}` : row.icon) : undefined;
 
 	return (
 		<ToolDetailsView
 			tool={{
-				id: tool.id,
-				name: tool.name,
-				...(tool.publisher !== undefined ? { publisher: tool.publisher } : {}),
-				...(tool.version !== undefined ? { version: tool.version } : {}),
-				...(tool.description !== undefined ? { description: tool.description } : {}),
-				...(tool.iconDataUri !== undefined ? { iconUrl: tool.iconDataUri } : {}),
-				...(tool.readme !== undefined ? { readme: tool.readme } : {}),
+				id: row.id,
+				name: row.name,
+				...(row.publisher !== undefined ? { publisher: row.publisher } : {}),
+				...(row.version !== undefined ? { version: row.version } : {}),
+				...(row.description !== undefined ? { description: row.description } : {}),
+				...(iconUrl !== undefined ? { iconUrl } : {}),
+				// README from the manifest; the description is the fallback so
+				// the page is never an empty sheet.
+				readme: row.readme || row.description || '',
 			}}
-			installed={installed}
+			installed={installedIds.includes(appId)}
 			connected={connected}
-			onInstall={() => sendMessage({ type: 'readme:install', appId: tool.id })}
-			onRemove={() => sendMessage({ type: 'readme:remove', appId: tool.id })}
+			onInstall={() => cm.emitOp('host.devtools.install', { appId })}
+			onRemove={() => cm.emitOp('host.devtools.remove', { appId })}
 		/>
 	);
 };

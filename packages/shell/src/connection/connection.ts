@@ -53,6 +53,8 @@ import { AUTH_REJECTED_MESSAGE, ConnectionFailure } from './errors';
 import { shouldReloadForTokenStorageUpdate } from './tokenStorageUpdate';
 import { createOpBus } from '../ops/busOps';
 import type { IOpBus, IBusRequestOptions, BusOpHandler } from '../ops/busOps';
+import { createRetainedRegistry, localRetainedPort } from '../ops/retained';
+import type { IRetainedPort, RetainedSubscriber } from '../ops/retained';
 import { isEmbeddedDevShell, isSameOriginEmbed, tokenStore, sessionScopedStore } from '../util/devGate';
 import { getStoredVerifier, clearStoredVerifier } from '../util/pkce';
 import {
@@ -250,7 +252,9 @@ export class ConnectionManager implements IConnectionManager {
 		return instance;
 	}
 
-	private constructor() {}
+	private constructor() {
+		this.installMirrorSubscriptions();
+	}
 
 	// =========================================================================
 	// PRIVATE STATE
@@ -304,6 +308,15 @@ export class ConnectionManager implements IConnectionManager {
 	 *  handler, across realms when a bridge is attached (busBridge.ts). */
 	private opBus: IOpBus = createOpBus();
 	private debugLog: DebugLogEntry[] = [];
+
+	// --- Retained-topic lane (publish/subscribe/read — see ops/retained.ts) ---
+	/** This realm's default authority — the ROOT realm's registry IS the
+	 *  framework's, an unbridged realm's is standalone (tests), and a bridged
+	 *  realm's is superseded by the wire port from attachRealmToRoot. */
+	private readonly retainedRegistry = createRetainedRegistry();
+	private retainedPort: IRetainedPort = localRetainedPort(this.retainedRegistry);
+	/** Local subscriptions, re-pointed wholesale when the port swaps. */
+	private readonly topicSubs = new Map<string, { cbs: Set<RetainedSubscriber>; off: () => void }>();
 
 	/**
 	 * User-intent control events that must not be silently dropped if emitted
@@ -1208,7 +1221,7 @@ export class ConnectionManager implements IConnectionManager {
 	/** Returns true if the WebSocket is authenticated and connected. */
 	public isConnected(): boolean {
 		// A bus-mirrored realm has NO client — the framework root's mirrored
-		// liveness is the answer (primeMirror). Null = not a mirrored realm.
+		// liveness is the answer (the mirror subscription). Null = not a mirrored realm.
 		if (this.mirrorConnected !== null) return this.mirrorConnected;
 		return this.connectionStatus.state === ConnectionState.CONNECTED &&
 			(this.client?.isConnected() ?? false);
@@ -1607,26 +1620,109 @@ export class ConnectionManager implements IConnectionManager {
 		return this.opBus;
 	}
 
+	// =========================================================================
+	// RETAINED TOPICS — the bus's third lane (publish/subscribe/read)
+	// =========================================================================
+
 	/**
-	 * Primes this realm's SYNCHRONOUS state from the framework root's mirror
-	 * feed — a SOCKETLESS realm's isConnected()/getConnectionStatus()/
-	 * getAccountInfo()/getCachedServices() answer from here, so consumers
-	 * written against the ambient manager work unchanged. Emits the matching
-	 * shell events for anything that changed (the realm's listeners fold
-	 * them exactly as they folded socket-fed state).
+	 * Publishes a retained topic: the root's registry replaces the topic's
+	 * snapshot and every subscriber (any realm) receives it; late subscribers
+	 * replay it. `undefined` retracts. Doctrine (stated, not enforced): one
+	 * writer per topic, static code-shaped names, immutable JSON-safe
+	 * snapshots — see ops/retained.ts.
 	 *
-	 * The payload is PARTIAL by topic: the root broadcasts `mirror.status` /
-	 * `mirror.account` / `mirror.services` independently (the services blob
-	 * must not ride every status tick), and the one-time `mirror.sync` pull
-	 * delivers all topics at once — both shapes land here.
-	 *
-	 * ONLY the bus-realm attachment calls this (a realm with a real client
-	 * never needs it — its state is first-hand).
-	 *
-	 * @param mirror - One topic or the full snapshot (busHost mirror shapes).
+	 * @param topic - The topic name (e.g. 'shell:account').
+	 * @param snapshot - The new current value, or undefined to retract.
 	 */
-	public primeMirror(mirror: { connected?: boolean; status?: ConnectionStatus; account?: ConnectResult | null; services?: { services: Record<string, unknown>; icons?: Record<string, string>; servicesError?: string } | null }): void {
-		if (mirror.connected !== undefined && mirror.status !== undefined) {
+	public publish(topic: string, snapshot: unknown): void {
+		this.retainedPort.publish(topic, snapshot);
+	}
+
+	/**
+	 * Subscribes to a retained topic. The current snapshot (when one exists)
+	 * is replayed FIRST — async, never inside this call — then every
+	 * replacement is delivered. Subscribing before the first publish is the
+	 * natural case: the callback simply fires on that first publish.
+	 *
+	 * @param topic - The topic name.
+	 * @param cb - Receives each snapshot (`undefined` = retraction).
+	 * @returns Unsubscribe.
+	 */
+	public subscribe(topic: string, cb: RetainedSubscriber): () => void {
+		let entry = this.topicSubs.get(topic);
+		if (!entry) {
+			const cbs = new Set<RetainedSubscriber>();
+			entry = { cbs, off: () => {} };
+			this.topicSubs.set(topic, entry);
+			entry.off = this.retainedPort.subscribe(topic, (snapshot) => this.fanTopic(cbs, snapshot));
+		}
+		entry.cbs.add(cb);
+		return () => {
+			const current = this.topicSubs.get(topic);
+			if (!current) return;
+			current.cbs.delete(cb);
+			if (current.cbs.size === 0) {
+				current.off();
+				this.topicSubs.delete(topic);
+			}
+		};
+	}
+
+	/**
+	 * The topic's current snapshot, or undefined when never published (or
+	 * retracted). Async everywhere — a bridged realm cannot read the root's
+	 * map synchronously, and one signature keeps call sites portable.
+	 *
+	 * @param topic - The topic name.
+	 * @returns The current snapshot.
+	 */
+	public read(topic: string): Promise<unknown> {
+		return this.retainedPort.read(topic);
+	}
+
+	/**
+	 * Installs the realm's retained transport — called ONCE by the bus-realm
+	 * attachment with the wire port from attachRealmToRoot. Every existing
+	 * subscription re-points to the new port (and replays off the root's
+	 * authority), so subscribe-before-attach works.
+	 *
+	 * @param port - The wire-backed port.
+	 */
+	public setRetainedPort(port: IRetainedPort): void {
+		this.retainedPort = port;
+		for (const [topic, entry] of this.topicSubs) {
+			entry.off();
+			entry.off = port.subscribe(topic, (snapshot) => this.fanTopic(entry.cbs, snapshot));
+		}
+	}
+
+	/** Delivers one snapshot to a topic's local subscribers (throw-isolated). */
+	private fanTopic(cbs: Set<RetainedSubscriber>, snapshot: unknown): void {
+		for (const cb of [...cbs]) {
+			try {
+				cb(snapshot);
+			} catch (err) {
+				console.error('[ConnectionManager] topic subscriber threw:', err);
+			}
+		}
+	}
+
+	/**
+	 * The framework's own mirror topics, consumed like anyone else's: a
+	 * SOCKETLESS realm's isConnected()/getConnectionStatus()/getAccountInfo()/
+	 * getCachedServices() answer from the last delivery (the shape-3 cache —
+	 * rebuildable, written by nobody), and the matching shell events re-emit
+	 * locally so consumers written against the ambient manager work
+	 * unchanged. In a realm with a real client nothing publishes these, so
+	 * the subscriptions simply never fire.
+	 */
+	private installMirrorSubscriptions(): void {
+		this.subscribe('shell:status', (snapshot) => {
+			const mirror = snapshot as { connected: boolean; status: ConnectionStatus; engineHttpUrl?: string } | undefined;
+			if (!mirror || mirror.connected === undefined || mirror.status === undefined) return;
+			// The root's engine HTTP base — so getHttpUrl() answers in
+			// socketless realms (engine-served icons, MF remote entries).
+			if (mirror.engineHttpUrl !== undefined) this.serverUri = mirror.engineHttpUrl;
 			const wasConnected = this.isConnected();
 			this.mirrorConnected = mirror.connected;
 			// Normalize the root's status onto this realm's enum so every state
@@ -1635,17 +1731,20 @@ export class ConnectionManager implements IConnectionManager {
 			this.emit('shell:statusChange', this.connectionStatus);
 			if (mirror.connected && !wasConnected) this.emit('shell:connected', undefined as never);
 			else if (!mirror.connected && wasConnected) this.emit('shell:disconnected', { reason: 'root disconnected', hasError: false } as never);
-		}
-		if (mirror.account) {
-			this.accountInfo = mirror.account;
-			this.emit('shell:accountUpdate', mirror.account);
-		}
-		if (mirror.services) {
-			this.cachedServices = (mirror.services.services ?? null) as Record<string, unknown> | null;
-			this.cachedServiceIcons = (mirror.services.icons ?? null) as Record<string, string> | null;
-			this.cachedServicesError = mirror.services.servicesError ?? null;
+		});
+		this.subscribe('shell:account', (snapshot) => {
+			if (!snapshot) return;
+			this.accountInfo = snapshot as ConnectResult;
+			this.emit('shell:accountUpdate', this.accountInfo);
+		});
+		this.subscribe('shell:services', (snapshot) => {
+			const services = snapshot as { services: Record<string, unknown>; icons?: Record<string, string>; servicesError?: string } | undefined;
+			if (!services) return;
+			this.cachedServices = (services.services ?? null) as Record<string, unknown> | null;
+			this.cachedServiceIcons = (services.icons ?? null) as Record<string, string> | null;
+			this.cachedServicesError = services.servicesError ?? null;
 			this.emit('shell:servicesUpdated', { services: this.cachedServices ?? {}, ...(this.cachedServiceIcons ? { icons: this.cachedServiceIcons } : {}), ...(this.cachedServicesError ? { servicesError: this.cachedServicesError } : {}) } as never);
-		}
+		});
 	}
 
 	// =========================================================================

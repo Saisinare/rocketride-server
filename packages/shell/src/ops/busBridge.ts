@@ -55,6 +55,7 @@
 
 import type { IBusForwarder, IOpBus } from './busOps';
 import { BusNoHandlerError } from './busOps';
+import type { IRetainedPort, IRetainedRegistry, RetainedSubscriber } from './retained';
 
 /** The envelope key (coexists with other traffic on a shared transport). */
 const ENVELOPE = '__rrbus';
@@ -102,7 +103,28 @@ interface IBusRegisterMessage {
 	ops: string[];
 }
 
-type BusWireMessage = IBusRequestMessage | IBusResponseMessage | IBusEmitOpMessage | IBusRegisterMessage;
+/** A retained-topic publish (realm → root; absent snapshot = retract). */
+interface IBusPublishMessage {
+	[ENVELOPE]: 'publish';
+	topic: string;
+	snapshot?: unknown;
+}
+
+/** Topic interest announcements (realm → root only). */
+interface IBusTopicSubMessage {
+	[ENVELOPE]: 'subscribeTopic' | 'unsubscribeTopic';
+	topic: string;
+}
+
+/** A retained-topic delivery (root → realm; replay AND live updates —
+ *  absent snapshot = retraction). */
+interface IBusTopicMessage {
+	[ENVELOPE]: 'topic';
+	topic: string;
+	snapshot?: unknown;
+}
+
+type BusWireMessage = IBusRequestMessage | IBusResponseMessage | IBusEmitOpMessage | IBusRegisterMessage | IBusPublishMessage | IBusTopicSubMessage | IBusTopicMessage;
 
 /** Narrows an arbitrary transport payload to bus traffic. */
 function asBusMessage(message: unknown): BusWireMessage | null {
@@ -126,21 +148,35 @@ export interface IBusEndpoint {
 // REALM SIDE
 // =============================================================================
 
+/** What attaching a realm yields: the detach function and the realm's
+ *  retained-topic port (install it on the realm's ConnectionManager). */
+export interface IRealmAttachment {
+	/** Detach (rejects this realm's in-flight outbound requests). */
+	detach: () => void;
+	/** The realm's retained-topic transport (publish/subscribe/read over
+	 *  the wire — the root's registry is the authority). */
+	retained: IRetainedPort;
+}
+
 /**
  * Attaches a realm's op bus to the framework root over one endpoint.
  *
  * Outbound: unresolved requests/emitOps forward to the root; local
  * registrations are announced (including ones made before attach — the bus
- * replays them into the forwarder). Inbound: requests from the root (ops
- * THIS realm registered) run against local handlers and answer by id.
+ * replays them into the forwarder); retained publishes and topic interest
+ * ride their own wire kinds. Inbound: requests from the root (ops THIS
+ * realm registered) run against local handlers and answer by id; topic
+ * deliveries dispatch to local subscribers.
  *
  * @param bus - This realm's op bus.
  * @param endpoint - Transport to the root.
- * @returns Detach function (rejects this realm's in-flight outbound requests).
+ * @returns The attachment (detach + retained port).
  */
-export function attachRealmToRoot(bus: IOpBus, endpoint: IBusEndpoint): () => void {
+export function attachRealmToRoot(bus: IOpBus, endpoint: IBusEndpoint): IRealmAttachment {
 	let seq = 0;
 	const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+	/** Local topic subscribers; interest is announced once per topic. */
+	const topicSubs = new Map<string, Set<RetainedSubscriber>>();
 
 	const forwarder: IBusForwarder = {
 		request(op, params, timeoutMs) {
@@ -195,20 +231,68 @@ export function attachRealmToRoot(bus: IOpBus, endpoint: IBusEndpoint): () => vo
 			case 'emitOp':
 				if (bus.hasHandler(m.op)) bus.emitOp(m.op, m.params);
 				break;
-			// register/unregister never arrive realm-side (root-only concern).
+			case 'topic': {
+				// A retained delivery (replay or live). Async by contract —
+				// the transport already guarantees a fresh task here.
+				const subs = topicSubs.get(m.topic);
+				if (subs) {
+					for (const cb of subs) {
+						try {
+							cb(m.snapshot);
+						} catch (err) {
+							console.error(`[busBridge] topic subscriber for '${m.topic}' threw:`, err);
+						}
+					}
+				}
+				break;
+			}
+			// register/unregister/publish/subscribeTopic never arrive
+			// realm-side (root-only concerns).
 		}
 	});
 
 	bus.setForwarder(forwarder);
 
-	return () => {
-		bus.setForwarder(null);
-		unsubscribe();
-		for (const [, entry] of pending) {
-			clearTimeout(entry.timer);
-			entry.reject(new Error('Bus bridge detached'));
-		}
-		pending.clear();
+	const retained: IRetainedPort = {
+		publish(topic, snapshot) {
+			endpoint.post({ [ENVELOPE]: 'publish', topic, snapshot } satisfies IBusPublishMessage);
+		},
+		subscribe(topic, cb) {
+			let set = topicSubs.get(topic);
+			if (!set) {
+				set = new Set();
+				topicSubs.set(topic, set);
+				// First local subscriber announces interest; the root replays
+				// the current snapshot (if any) as a 'topic' delivery.
+				endpoint.post({ [ENVELOPE]: 'subscribeTopic', topic } satisfies IBusTopicSubMessage);
+			}
+			set.add(cb);
+			return () => {
+				const current = topicSubs.get(topic);
+				if (!current) return;
+				current.delete(cb);
+				if (current.size === 0) {
+					topicSubs.delete(topic);
+					endpoint.post({ [ENVELOPE]: 'unsubscribeTopic', topic } satisfies IBusTopicSubMessage);
+				}
+			};
+		},
+		// Reads ride the request lane — the router answers from the registry.
+		read: (topic) => bus.request('bus.topic.read', { topic }),
+	};
+
+	return {
+		retained,
+		detach: () => {
+			bus.setForwarder(null);
+			unsubscribe();
+			topicSubs.clear();
+			for (const [, entry] of pending) {
+				clearTimeout(entry.timer);
+				entry.reject(new Error('Bus bridge detached'));
+			}
+			pending.clear();
+		},
 	};
 }
 
@@ -227,6 +311,10 @@ export interface IBusRouterOptions {
 	summon?: SummonLookup;
 	/** How long a summoned owner gets to register. */
 	summonTimeoutMs?: number;
+	/** The root's retained-topic registry — THE authority realms publish to
+	 *  and subscribe through. Absent = retained traffic from realms is
+	 *  dropped (a root without the lane). */
+	retained?: IRetainedRegistry;
 }
 
 /** The framework root's router. */
@@ -266,6 +354,8 @@ export function createBusRouter(rootBus: IOpBus, options?: IBusRouterOptions): I
 		endpoint: IBusEndpoint;
 		label: string;
 		ops: Set<string>;
+		/** Retained topics this realm announced interest in. */
+		topics: Set<string>;
 		/** Requests this router forwarded INTO the realm, by hop id. */
 		inflight: Map<string, { respond: (m: IBusResponseMessage) => void; timer: ReturnType<typeof setTimeout> }>;
 		unsubscribe: () => void;
@@ -406,9 +496,26 @@ export function createBusRouter(rootBus: IOpBus, options?: IBusRouterOptions): I
 		if (registered) fireWaiters(op);
 	});
 
+	// ── Retained-topic fan-out: every registry change goes to the realms
+	//    that announced interest in that topic. Reads ride the request lane.
+	const retained = options?.retained;
+	let offRetained: (() => void) | null = null;
+	if (retained) {
+		offRetained = retained.onChange((topic, snapshot) => {
+			for (const realm of realms) {
+				if (realm.topics.has(topic)) {
+					realm.endpoint.post({ [ENVELOPE]: 'topic', topic, snapshot } satisfies IBusTopicMessage);
+				}
+			}
+		});
+		if (!rootBus.hasHandler('bus.topic.read')) {
+			rootBus.handle('bus.topic.read', (params) => retained.read((params as { topic: string }).topic));
+		}
+	}
+
 	return {
 		addRealm(endpoint, label) {
-			const realm: IRealm = { endpoint, label, ops: new Set(), inflight: new Map(), unsubscribe: () => {} };
+			const realm: IRealm = { endpoint, label, ops: new Set(), topics: new Set(), inflight: new Map(), unsubscribe: () => {} };
 			realm.unsubscribe = endpoint.subscribe((message) => {
 				const m = asBusMessage(message);
 				if (!m) return;
@@ -448,6 +555,22 @@ export function createBusRouter(rootBus: IOpBus, options?: IBusRouterOptions): I
 						entry.respond(m);
 						break;
 					}
+					case 'publish':
+						// A realm publishing a retained topic — the registry is
+						// the authority; its watcher fans the change back out.
+						retained?.publish(m.topic, m.snapshot);
+						break;
+					case 'subscribeTopic':
+						realm.topics.add(m.topic);
+						// Replay the current snapshot to the new interest —
+						// subscribe-before-first-publish replays nothing.
+						if (retained && retained.read(m.topic) !== undefined) {
+							endpoint.post({ [ENVELOPE]: 'topic', topic: m.topic, snapshot: retained.read(m.topic) } satisfies IBusTopicMessage);
+						}
+						break;
+					case 'unsubscribeTopic':
+						realm.topics.delete(m.topic);
+						break;
 				}
 			});
 			realms.add(realm);
@@ -476,6 +599,7 @@ export function createBusRouter(rootBus: IOpBus, options?: IBusRouterOptions): I
 		dispose() {
 			if (disposed) return;
 			disposed = true;
+			offRetained?.();
 			for (const realm of [...realms]) {
 				realm.unsubscribe();
 				for (const [, entry] of realm.inflight) {

@@ -43,7 +43,7 @@ async function probeStripeKey(): Promise<StripeKeyInfo> {
 export function registerRocketHostOps(): () => void {
 	const impls: OpImplTable<HostOpMap> = {
 		'host.openExternal': (p) => {
-			window.open(assertExternalUrl(p.url as string), '_blank', 'noopener');
+			window.open(assertExternalUrl(p.url), '_blank', 'noopener');
 		},
 		'host.stripeKey': () => probeStripeKey(),
 		// This host's framework pages render as shell OVERLAYS (the modal
@@ -51,11 +51,10 @@ export function registerRocketHostOps(): () => void {
 		// directory here. `popup` is the only mode served today — a full
 		// loadPage-as-document-tab surface arrives with the page unification.
 		'host.openPage': (p) => {
-			const page = p.page as string;
-			if (!['account', 'settings', 'environment'].includes(page)) {
-				throw new Error(`Unknown framework page: ${page}`);
+			if (!['account', 'settings', 'environment'].includes(p.page)) {
+				throw new Error(`Unknown framework page: ${p.page}`);
 			}
-			ConnectionManager.getInstance().emit('shell:openOverlay', { id: page } as never);
+			ConnectionManager.getInstance().emit('shell:openOverlay', { id: p.page } as never);
 		},
 		// host.prefs.*: not served here yet (arrives with the page
 		// unification); host.envSlots is a multi-connection (VS Code

@@ -31,7 +31,8 @@ import { CheckoutModal } from 'shell';
 import type { CheckoutPlan, PlanAction } from 'shell';
 import { DeploymentRecordPanel, TeamDeploymentRecordPanel } from 'shared/components/deploy-panel';
 import type { DeploySnapshot } from 'shared/components/deploy-panel';
-import { createBridgedPrefsStore, useGridConfigAnswering } from 'shell';
+import { createBridgedPrefsStore, useGridConfigAnswering, ConnectionManager } from 'shell';
+import { PIPE_BUILDER_APP_ID } from '../../../shared/types';
 import { useMessaging } from '../hooks/useMessaging';
 import { useStripeKey } from '../hooks/useStripeKey';
 import { CheckoutUnavailableNotice } from '../components';
@@ -130,15 +131,6 @@ const ProjectWebview: React.FC = () => {
 	const logPlayCallbacks = useRef<Map<string, (item: { event: TaskEventMessage }) => void>>(new Map());
 	const logRequestCounter = useRef(0);
 	const logSessionCounter = useRef(0);
-
-	// Checkout flow state — populated by host responses to checkout:* messages
-	const [checkoutPlans, setCheckoutPlans] = useState<CheckoutPlan[]>([]);
-	const [checkoutPlansError, setCheckoutPlansError] = useState<string | null>(null);
-	const checkoutResolvers = useRef<{
-		plans?: { resolve: (v: CheckoutPlan[]) => void; reject: (e: Error) => void };
-		session?: { resolve: (v: { clientSecret: string; subscriptionId: string }) => void; reject: (e: Error) => void };
-		confirm?: { resolve: () => void; reject: (e: Error) => void };
-	}>({});
 
 	// --- Stable refs for message handler closures ----------------------------
 
@@ -313,33 +305,6 @@ const ProjectWebview: React.FC = () => {
 				setSubscribed((msg as any).isSubscribed);
 				if ((msg as any).isSubscribed) setShowCheckout(false);
 				break;
-			case 'checkout:plansResult': {
-				const r = checkoutResolvers.current.plans;
-				if (r) {
-					checkoutResolvers.current.plans = undefined;
-					if ((msg as any).error) r.reject(new Error((msg as any).error));
-					else r.resolve((msg as any).plans ?? []);
-				}
-				break;
-			}
-			case 'checkout:sessionResult': {
-				const r = checkoutResolvers.current.session;
-				if (r) {
-					checkoutResolvers.current.session = undefined;
-					if ((msg as any).error) r.reject(new Error((msg as any).error));
-					else r.resolve({ clientSecret: (msg as any).clientSecret, subscriptionId: (msg as any).subscriptionId });
-				}
-				break;
-			}
-			case 'checkout:confirmResult': {
-				const r = checkoutResolvers.current.confirm;
-				if (r) {
-					checkoutResolvers.current.confirm = undefined;
-					if ((msg as any).error) r.reject(new Error((msg as any).error));
-					else r.resolve();
-				}
-				break;
-			}
 			case 'deploy:data': {
 				// LIVE rows for badges/where-live, and the settlement of every
 				// outstanding registry-snapshot fetch — one push answers all.
@@ -566,34 +531,22 @@ const ProjectWebview: React.FC = () => {
 		sendMessage({ type: 'project:requestSave' });
 	}, [sendMessage]);
 
-	// --- Checkout callbacks (bridge to host via postMessage) ------------------
+	// --- Checkout callbacks — brokered client.billing.* bus ops ---------------
 
 	const handleFetchPlans = useCallback((): Promise<CheckoutPlan[]> => {
-		return new Promise((resolve, reject) => {
-			checkoutResolvers.current.plans = { resolve, reject };
-			sendMessage({ type: 'checkout:fetchPlans' } as any);
-		});
-	}, [sendMessage]);
+		return ConnectionManager.getInstance().request('client.billing.getProductPrices', { appId: PIPE_BUILDER_APP_ID } as never) as Promise<CheckoutPlan[]>;
+	}, []);
 
-	const handleCreateCheckout = useCallback(
-		(priceId: string): Promise<{ clientSecret: string; subscriptionId: string }> => {
-			return new Promise((resolve, reject) => {
-				checkoutResolvers.current.session = { resolve, reject };
-				sendMessage({ type: 'checkout:createSession', priceId } as any);
-			});
-		},
-		[sendMessage]
-	);
+	const handleCreateCheckout = useCallback((priceId: string): Promise<{ clientSecret: string; subscriptionId: string }> => {
+		const cm = ConnectionManager.getInstance();
+		const orgId = cm.getAccountInfo()?.organization?.id;
+		if (!orgId) return Promise.reject(new Error('No organisation found'));
+		return cm.request('client.billing.createCheckoutSession', { orgId, appId: PIPE_BUILDER_APP_ID, priceId } as never) as Promise<{ clientSecret: string; subscriptionId: string }>;
+	}, []);
 
-	const handleConfirmPending = useCallback(
-		(subscriptionId: string, priceId: string): Promise<void> => {
-			return new Promise((resolve, reject) => {
-				checkoutResolvers.current.confirm = { resolve, reject };
-				sendMessage({ type: 'checkout:confirmPending', subscriptionId, priceId } as any);
-			});
-		},
-		[sendMessage]
-	);
+	const handleConfirmPending = useCallback(async (subscriptionId: string, priceId: string): Promise<void> => {
+		await ConnectionManager.getInstance().request('client.billing.confirmPending', { appId: PIPE_BUILDER_APP_ID, subscriptionId, priceId } as never);
+	}, []);
 
 	const handleCheckoutSuccess = useCallback(() => {
 		setShowCheckout(false);

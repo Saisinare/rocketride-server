@@ -23,8 +23,8 @@
 // =============================================================================
 // FROZEN shell-api contract — ShellApiV6 — never edit by hand
 // =============================================================================
-// Generated:     2026-10-18T00:03:46.575Z
-// Source commit: f3665416e5c0180a352734c0f7620650398fe195
+// Generated:     2026-10-18T20:59:47.250Z
+// Source commit: fe5339ec8a68b6e507f7bb1d1db4636d264dd4c6
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder shell:freeze
 // =============================================================================
@@ -8362,6 +8362,29 @@ export interface IOpBus {
  *
  * @returns The op bus.
  */
+/**
+ * An implementation table for (a subset of) an op map: one function per op
+ * name, FULLY typed against the map — params and result both derive from the
+ * op's ShellOpSpec, so a drifted payload shape or wrong return type fails to
+ * compile in the table itself. THE one way every domain registers —
+ * clientOps, hostOps, and host-specific override tables all ride this.
+ */
+export type OpImplTable<M extends ShellOpMap> = Partial<{
+    [K in keyof M]: (params: ShellOpParams<M, K>) => ShellOpResult<M, K> | Promise<ShellOpResult<M, K>>;
+}>;
+/**
+ * Registers an implementation table on a bus. Per entry: skipped when the
+ * host already registered its own override (`hasHandler`) or when listed in
+ * `skip` — specific-before-shared is the composition rule.
+ *
+ * @param bus - The realm's op bus.
+ * @param impls - One implementation per op name.
+ * @param options - Ops to leave unregistered.
+ * @returns Unregister-all function.
+ */
+export declare function registerOpHandlers<M extends ShellOpMap>(bus: IOpBus, impls: OpImplTable<M>, options?: {
+    skip?: ReadonlySet<string>;
+}): () => void;
 export declare function createOpBus(): IOpBus;
 /** The typed facade over a bus for one op map. */
 export interface ITypedBusOps<O extends ShellOpMap> {
@@ -8381,6 +8404,69 @@ export interface ITypedBusOps<O extends ShellOpMap> {
  * @returns The typed facade.
  */
 export declare function typedBusOps<O extends ShellOpMap>(bus: IOpBus): ITypedBusOps<O>;
+/** A topic subscriber. `undefined` delivers a retraction. */
+export type RetainedSubscriber = (snapshot: unknown) => void;
+/** The retained-topic registry — one per framework root, THE authority. */
+export interface IRetainedRegistry {
+    /**
+     * Replaces the topic's snapshot and fans out to every subscriber (local
+     * and, via the router's watcher, remote). `undefined` RETRACTS the topic:
+     * the entry is deleted and subscribers are notified with `undefined`.
+     */
+    publish(topic: string, snapshot: unknown): void;
+    /**
+     * Subscribes to a topic. When a snapshot exists it is REPLAYED first
+     * (async, before any later publish); then every replacement is delivered.
+     * Subscribing before the first publish is the natural case — the
+     * callback simply fires on that first publish.
+     *
+     * @returns Unsubscribe.
+     */
+    subscribe(topic: string, cb: RetainedSubscriber): () => void;
+    /** The current snapshot, or `undefined` when never published/retracted.
+     *  Synchronous — only the root (and in-realm users of a local registry)
+     *  can call this; bridged realms read through their async port. */
+    read(topic: string): unknown;
+    /**
+     * Watches EVERY topic change (the router's remote fan-out seam) —
+     * delivered synchronously with the publish so the router can order its
+     * wire sends; local subscribers still get async delivery.
+     *
+     * @returns Unsubscribe.
+     */
+    onChange(cb: (topic: string, snapshot: unknown) => void): () => void;
+    /** Every retained topic with its snapshot (a late realm's replay seed). */
+    entries(): Array<[
+        string,
+        unknown
+    ]>;
+}
+/**
+ * Creates a retained-topic registry.
+ *
+ * @returns The registry.
+ */
+export declare function createRetainedRegistry(): IRetainedRegistry;
+/**
+ * What a realm's ConnectionManager speaks retained topics through. The root
+ * realm's port IS its local registry; a bridged realm's port is installed by
+ * attachRealmToRoot and rides the wire.
+ */
+export interface IRetainedPort {
+    publish(topic: string, snapshot: unknown): void;
+    subscribe(topic: string, cb: RetainedSubscriber): () => void;
+    /** Async everywhere — a bridged realm cannot read the root's map
+     *  synchronously, and one signature keeps call sites portable. */
+    read(topic: string): Promise<unknown>;
+}
+/**
+ * Adapts a local registry to the port shape (the root realm's port, and the
+ * default for unbridged realms — tests, standalone).
+ *
+ * @param registry - The local registry.
+ * @returns The port.
+ */
+export declare function localRetainedPort(registry: IRetainedRegistry): IRetainedPort;
 /**
  * Options for ConnectionManager.initialize().
  */
@@ -9090,6 +9176,46 @@ on(event: 'store:changed', handler: (payload: ShellConnectionEventMap['store:cha
      * @returns This realm's op bus.
      */
     ops(): IOpBus;
+    /**
+     * Publishes a retained topic: the root's registry replaces the topic's
+     * snapshot and every subscriber (any realm) receives it; late subscribers
+     * replay it. `undefined` retracts. Doctrine (stated, not enforced): one
+     * writer per topic, static code-shaped names, immutable JSON-safe
+     * snapshots — see ops/retained.ts.
+     *
+     * @param topic - The topic name (e.g. 'shell:account').
+     * @param snapshot - The new current value, or undefined to retract.
+     */
+    publish(topic: string, snapshot: unknown): void;
+    /**
+     * Subscribes to a retained topic. The current snapshot (when one exists)
+     * is replayed FIRST — async, never inside this call — then every
+     * replacement is delivered. Subscribing before the first publish is the
+     * natural case: the callback simply fires on that first publish.
+     *
+     * @param topic - The topic name.
+     * @param cb - Receives each snapshot (`undefined` = retraction).
+     * @returns Unsubscribe.
+     */
+    subscribe(topic: string, cb: RetainedSubscriber): () => void;
+    /**
+     * The topic's current snapshot, or undefined when never published (or
+     * retracted). Async everywhere — a bridged realm cannot read the root's
+     * map synchronously, and one signature keeps call sites portable.
+     *
+     * @param topic - The topic name.
+     * @returns The current snapshot.
+     */
+    read(topic: string): Promise<unknown>;
+    /**
+     * Installs the realm's retained transport — called ONCE by the bus-realm
+     * attachment with the wire port from attachRealmToRoot. Every existing
+     * subscription re-points to the new port (and replays off the root's
+     * authority), so subscribe-before-attach works.
+     *
+     * @param port - The wire-backed port.
+     */
+    setRetainedPort(port: IRetainedPort): void;
     /** Returns a snapshot of the debug log (newest last). */
     getDebugLog(): DebugLogEntry[];
     /** Clears all entries from the debug log. */
@@ -9545,19 +9671,30 @@ export interface IBusEndpoint {
     /** Subscribes to messages from the other side; returns unsubscribe. */
     subscribe(cb: (message: unknown) => void): () => void;
 }
+/** What attaching a realm yields: the detach function and the realm's
+ *  retained-topic port (install it on the realm's ConnectionManager). */
+export interface IRealmAttachment {
+    /** Detach (rejects this realm's in-flight outbound requests). */
+    detach: () => void;
+    /** The realm's retained-topic transport (publish/subscribe/read over
+     *  the wire — the root's registry is the authority). */
+    retained: IRetainedPort;
+}
 /**
  * Attaches a realm's op bus to the framework root over one endpoint.
  *
  * Outbound: unresolved requests/emitOps forward to the root; local
  * registrations are announced (including ones made before attach — the bus
- * replays them into the forwarder). Inbound: requests from the root (ops
- * THIS realm registered) run against local handlers and answer by id.
+ * replays them into the forwarder); retained publishes and topic interest
+ * ride their own wire kinds. Inbound: requests from the root (ops THIS
+ * realm registered) run against local handlers and answer by id; topic
+ * deliveries dispatch to local subscribers.
  *
  * @param bus - This realm's op bus.
  * @param endpoint - Transport to the root.
- * @returns Detach function (rejects this realm's in-flight outbound requests).
+ * @returns The attachment (detach + retained port).
  */
-export declare function attachRealmToRoot(bus: IOpBus, endpoint: IBusEndpoint): () => void;
+export declare function attachRealmToRoot(bus: IOpBus, endpoint: IBusEndpoint): IRealmAttachment;
 /** Summon lookup: an activation thunk when the op's owner is INSTALLED but
  *  not yet registered, null otherwise. Installed-only is the caller's
  *  contract (pinned store tools + enabled builtins); summon NEVER installs. */
@@ -9568,6 +9705,10 @@ export interface IBusRouterOptions {
     summon?: SummonLookup;
     /** How long a summoned owner gets to register. */
     summonTimeoutMs?: number;
+    /** The root's retained-topic registry — THE authority realms publish to
+     *  and subscribe through. Absent = retained traffic from realms is
+     *  dropped (a root without the lane). */
+    retained?: IRetainedRegistry;
 }
 /** The framework root's router. */
 export interface IBusRouter {
@@ -9611,6 +9752,310 @@ export declare function createLocalEndpointPair(): [
     IBusEndpoint,
     IBusEndpoint
 ];
+/** A monitor key as the SDK takes it. */
+export type ClientMonitorKey = {
+    token: string;
+} | {
+    projectId: string;
+    source: string;
+    teamId?: string;
+    pipeId?: number;
+    runKind?: "dev" | "deploy";
+};
+/**
+ * The brokered client vocabulary. Results are typed loosely where the SDK
+ * shape is pass-through — tightening is incremental and local.
+ */
+export interface ClientOpMap extends ShellOpMap {
+    "client.getDashboard": ShellOpSpec<Record<string, never>, unknown>;
+    "client.listTasks": ShellOpSpec<Record<string, unknown>, unknown>;
+    "client.listConnections": ShellOpSpec<Record<string, unknown>, unknown>;
+    "client.getTasks": ShellOpSpec<Record<string, never>, unknown>;
+    "client.getTaskToken": ShellOpSpec<{
+        projectId: string;
+        source: string;
+        teamId?: string;
+    }, unknown>;
+    "client.getTaskPipeline": ShellOpSpec<{
+        token: string;
+    }, unknown>;
+    "client.getTaskStatus": ShellOpSpec<{
+        token: string;
+        timeout?: number;
+    }, unknown>;
+    "client.terminate": ShellOpSpec<{
+        token: string;
+    }, unknown>;
+    "client.use": ShellOpSpec<Record<string, unknown>, unknown>;
+    "client.restart": ShellOpSpec<Record<string, unknown>, unknown>;
+    "client.validate": ShellOpSpec<Record<string, unknown>, unknown>;
+    "client.tool": ShellOpSpec<{
+        token: string;
+        tool: string;
+        nodeId?: string;
+        input?: unknown;
+        timeout?: number;
+    }, unknown>;
+    "client.addMonitor": ShellOpSpec<{
+        key: ClientMonitorKey;
+        types: string[];
+    }, void>;
+    "client.removeMonitor": ShellOpSpec<{
+        key: ClientMonitorKey;
+        types: string[];
+    }, void>;
+    "client.fsListDir": ShellOpSpec<{
+        path: string;
+    }, unknown>;
+    "client.fsStat": ShellOpSpec<{
+        path: string;
+    }, unknown>;
+    "client.fsGetUrl": ShellOpSpec<{
+        path: string;
+        expiresIn?: number;
+        downloadName?: string;
+    }, string>;
+    "client.fsReadString": ShellOpSpec<{
+        path: string;
+    }, string>;
+    "client.fsWriteString": ShellOpSpec<{
+        path: string;
+        text: string;
+    }, unknown>;
+    "client.fsReadJson": ShellOpSpec<{
+        path: string;
+    }, unknown>;
+    "client.fsWriteJson": ShellOpSpec<{
+        path: string;
+        value: unknown;
+    }, unknown>;
+    "client.fsRename": ShellOpSpec<{
+        from: string;
+        to: string;
+    }, unknown>;
+    "client.fsDelete": ShellOpSpec<{
+        path: string;
+    }, unknown>;
+    "client.fsMkdir": ShellOpSpec<{
+        path: string;
+    }, unknown>;
+    "client.fsRmdir": ShellOpSpec<{
+        path: string;
+        recursive?: boolean;
+    }, unknown>;
+    "client.fsOpen": ShellOpSpec<{
+        path: string;
+        mode: string;
+    }, unknown>;
+    "client.fsWrite": ShellOpSpec<{
+        handle: unknown;
+        dataB64: string;
+    }, unknown>;
+    "client.fsClose": ShellOpSpec<{
+        handle: unknown;
+        mode?: string;
+    }, unknown>;
+    "client.cprofileStart": ShellOpSpec<{
+        target?: string | null;
+        session?: Record<string, unknown>;
+    }, unknown>;
+    "client.cprofileStop": ShellOpSpec<{
+        target?: string | null;
+    }, unknown>;
+    "client.cprofileStatus": ShellOpSpec<{
+        target?: string | null;
+    }, unknown>;
+    "client.cprofileReport": ShellOpSpec<{
+        target?: string | null;
+    }, unknown>;
+    "client.cprofileReportTree": ShellOpSpec<{
+        target?: string | null;
+        max_depth?: number;
+        min_pct?: number;
+        include_system?: boolean;
+        thread?: number | null;
+    }, unknown>;
+    "client.cprofileThreads": ShellOpSpec<{
+        target?: string | null;
+    }, unknown>;
+    "client.getService": ShellOpSpec<{
+        service: string;
+    }, unknown>;
+    "client.getEnvironmentKeys": ShellOpSpec<Record<string, never>, unknown>;
+    "client.account.getProfile": ShellOpSpec<Record<string, never>, unknown>;
+    "client.account.updateProfile": ShellOpSpec<{
+        fields: Record<string, unknown>;
+    }, unknown>;
+    "client.account.setDevTeam": ShellOpSpec<{
+        teamId: string;
+    }, unknown>;
+    "client.account.setDefaultOrg": ShellOpSpec<{
+        orgId: string;
+    }, unknown>;
+    "client.account.deleteAccount": ShellOpSpec<Record<string, never>, unknown>;
+    "client.account.getOrg": ShellOpSpec<{
+        orgId?: string;
+    }, unknown>;
+    "client.account.updateOrgName": ShellOpSpec<{
+        orgId: string;
+        name: string;
+    }, unknown>;
+    "client.account.listKeys": ShellOpSpec<Record<string, never>, unknown>;
+    "client.account.createKey": ShellOpSpec<{
+        params: Record<string, unknown>;
+    }, unknown>;
+    "client.account.revokeKey": ShellOpSpec<{
+        keyId: string;
+    }, unknown>;
+    "client.account.listMembers": ShellOpSpec<{
+        orgId: string;
+    }, unknown>;
+    "client.account.inviteMember": ShellOpSpec<{
+        orgId: string;
+        params: Record<string, unknown>;
+    }, unknown>;
+    "client.account.updateMemberRole": ShellOpSpec<{
+        orgId: string;
+        userId: string;
+        role: string;
+    }, unknown>;
+    "client.account.removeMember": ShellOpSpec<{
+        orgId: string;
+        userId: string;
+    }, unknown>;
+    "client.account.resendInvite": ShellOpSpec<{
+        orgId: string;
+        userId: string;
+    }, unknown>;
+    "client.account.listTeams": ShellOpSpec<{
+        orgId: string;
+    }, unknown>;
+    "client.account.getTeamDetail": ShellOpSpec<{
+        orgId: string;
+        teamId: string;
+    }, unknown>;
+    "client.account.createTeam": ShellOpSpec<{
+        orgId: string;
+        name: string;
+    }, unknown>;
+    "client.account.deleteTeam": ShellOpSpec<{
+        orgId: string;
+        teamId: string;
+    }, unknown>;
+    "client.account.addTeamMember": ShellOpSpec<{
+        orgId: string;
+        params: Record<string, unknown>;
+    }, unknown>;
+    "client.account.updateTeamMemberPerms": ShellOpSpec<{
+        orgId: string;
+        params: Record<string, unknown>;
+    }, unknown>;
+    "client.account.removeTeamMember": ShellOpSpec<{
+        orgId: string;
+        params: Record<string, unknown>;
+    }, unknown>;
+    "client.account.getEnv": ShellOpSpec<{
+        scope: "org" | "team" | "user";
+        scopeId?: string;
+        connection?: "dev" | "deploy";
+    }, unknown>;
+    "client.account.setEnv": ShellOpSpec<{
+        scope: "org" | "team" | "user";
+        env: Record<string, string>;
+        scopeId?: string;
+        connection?: "dev" | "deploy";
+    }, unknown>;
+    "client.billing.getDetails": ShellOpSpec<{
+        orgId: string;
+    }, unknown>;
+    "client.billing.getProductPrices": ShellOpSpec<{
+        appId: string;
+    }, unknown>;
+    "client.billing.createCheckoutSession": ShellOpSpec<{
+        orgId: string;
+        appId: string;
+        priceId: string;
+        promotionCode?: string;
+    }, unknown>;
+    "client.billing.validatePromoCode": ShellOpSpec<{
+        orgId: string;
+        code: string;
+        priceId?: string;
+    }, unknown>;
+    "client.billing.redeemPromoCode": ShellOpSpec<{
+        orgId: string;
+        code: string;
+    }, unknown>;
+    "client.billing.createPortalSession": ShellOpSpec<{
+        orgId: string;
+    }, unknown>;
+    "client.billing.cancelSubscription": ShellOpSpec<{
+        orgId: string;
+        appId: string;
+    }, unknown>;
+    "client.billing.upgradeSubscription": ShellOpSpec<{
+        orgId: string;
+        appId: string;
+        newPriceId: string;
+    }, unknown>;
+    "client.billing.purchaseTopup": ShellOpSpec<{
+        orgId: string;
+        priceId: string;
+    }, unknown>;
+    "client.billing.getCreditBalance": ShellOpSpec<{
+        orgId: string;
+    }, unknown>;
+    "client.billing.listCreditPacks": ShellOpSpec<Record<string, never>, unknown>;
+    "client.billing.getTransactions": ShellOpSpec<{
+        orgId: string;
+        options?: Record<string, unknown>;
+    }, unknown>;
+    "client.billing.getTransactionDistinct": ShellOpSpec<{
+        orgId: string;
+        field: string;
+    }, unknown>;
+    "client.billing.getUsageByUser": ShellOpSpec<{
+        orgId: string;
+    }, unknown>;
+    "client.billing.getUsageByTeam": ShellOpSpec<{
+        orgId: string;
+    }, unknown>;
+    "client.billing.createCreditCheckout": ShellOpSpec<{
+        orgId: string;
+        packId: string;
+    }, unknown>;
+    "client.billing.confirmPending": ShellOpSpec<{
+        appId: string;
+        subscriptionId: string;
+        priceId: string;
+    }, unknown>;
+}
+/** What the registration needs from its host — the SDK client and liveness.
+ *  Typed structurally so BOTH ConnectionManager classes (shell and the VS
+ *  Code extension host's) satisfy it without a shared base. */
+export interface IClientOpsSource {
+    getClient(): unknown;
+    isConnected(): boolean;
+}
+/** Registration options. */
+export interface IClientOpsOptions {
+    /** Ops to leave UNREGISTERED (the VS Code root pre-registers its
+     *  broker-owned monitor pair; cloud registers everything). */
+    skip?: ReadonlySet<string>;
+    /** Where Stripe sends the browser back from the customer portal — HOST
+     *  POLICY (cloud: its own origin; VS Code: the public site). Required
+     *  for `client.billing.createPortalSession` to be served. */
+    portalReturnUrl?: () => string;
+}
+/**
+ * Registers the brokered `client.*` surface on a framework root's bus.
+ *
+ * @param bus - The root's op bus.
+ * @param source - The root's client accessor + liveness.
+ * @param options - Ops to skip (host-specific overrides).
+ * @returns Unregister-all function.
+ */
+export declare function registerClientOps(bus: IOpBus, source: IClientOpsSource, options?: IClientOpsOptions): () => void;
 /**
  * Answers the realm's grid-config channel from a prefs store.
  *
@@ -10841,14 +11286,20 @@ export interface AnchoredPopupProps {
     children?: React$1.ReactNode;
 }
 export declare const AnchoredPopup: React$1.FC<AnchoredPopupProps>;
+interface IAccountProviderProps {
+    /** Starts a subscription flow (e.g. emit shell:subscribe toward a mounted
+     *  CheckoutFlow). Absent = no subscribe CTA, matching prior behavior. */
+    onSubscribe?: () => void;
+}
 /**
- * Cloud-UI AccountView wrapper.
+ * AccountView wrapper for any framework realm.
  *
- * Fetches account data via DAP commands (`rrext_account_*`) and delegates
- * all rendering to the shared AccountView. Listens for `shell:accountUpdate`
- * bus events to keep the profile in sync with server-pushed updates.
+ * Fetches account data via brokered `client.account.*` / `client.billing.*`
+ * bus ops and delegates all rendering to the shared AccountView. Listens for
+ * `shell:accountUpdate` events to keep the profile in sync with
+ * server-pushed updates (socket-fed at a root; mirror-fed in a spoke realm).
  */
-export declare const AccountProvider: React$1.FC;
+export declare const AccountProvider: React$1.FC<IAccountProviderProps>;
 /**
  * Shell-owned settings overlay, VSCode-style, rendered entirely from the
  * settings registry.
@@ -10858,6 +11309,20 @@ export declare const AccountProvider: React$1.FC;
  * every section.  All edits apply immediately (deltas-only persistence).
  */
 export declare const SettingsProvider: React$1.FC;
+interface CheckoutFlowProps {
+    /** Stripe publishable key from API config. */
+    stripeKey: string;
+    /** Organization ID from the authenticated identity. */
+    orgId: string;
+}
+/**
+ * Listens for `shell:subscribe` events and renders the CheckoutModal
+ * overlay when a user clicks "Subscribe" on a paid app.
+ *
+ * Wires up the Stripe checkout flow callbacks to the ConnectionManager's
+ * billing API.
+ */
+export declare const CheckoutFlow: React$1.FC<CheckoutFlowProps>;
 /**
  * Sent by the shell to an iframe immediately after the iframe posts `view:ready`.
  *
@@ -13857,12 +14322,16 @@ export declare const shellApi: {
     readonly TOOL_DOC_PREFIX: string;
     readonly createOpBus: typeof createOpBus;
     readonly typedBusOps: typeof typedBusOps;
+    readonly registerOpHandlers: typeof registerOpHandlers;
     readonly BusNoHandlerError: typeof BusNoHandlerError;
     readonly DEFAULT_BUS_REQUEST_TIMEOUT_MS: number;
     readonly attachRealmToRoot: typeof attachRealmToRoot;
     readonly createBusRouter: typeof createBusRouter;
     readonly createLocalEndpointPair: typeof createLocalEndpointPair;
     readonly DEFAULT_SUMMON_TIMEOUT_MS: number;
+    readonly createRetainedRegistry: typeof createRetainedRegistry;
+    readonly localRetainedPort: typeof localRetainedPort;
+    readonly registerClientOps: typeof registerClientOps;
     readonly useIframeBridge: typeof useIframeBridge;
     readonly useSubscriptions: typeof useSubscriptions;
     readonly usePolling: typeof usePolling;
@@ -13900,8 +14369,9 @@ export declare const shellApi: {
         onClick?: (e: React$1.MouseEvent<HTMLDivElement>) => void;
     }>;
     readonly AnchoredPopup: import("react").FC<AnchoredPopupProps>;
-    readonly AccountProvider: import("react").FC<{}>;
+    readonly AccountProvider: import("react").FC<IAccountProviderProps>;
     readonly SettingsProvider: import("react").FC<{}>;
+    readonly CheckoutFlow: import("react").FC<CheckoutFlowProps>;
     readonly BxPlus: IconComponent;
     readonly BxEditAlt: IconComponent;
     readonly BxTrash: IconComponent;
