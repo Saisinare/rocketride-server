@@ -441,7 +441,7 @@ export class DeployLifecycle {
 			}
 
 			// Step 6: resolve teams (names + control) and map into view models.
-			const teams = resolveDeployTeams(client, [dep]);
+			const teams = resolveDeployTeams(client.getAccountInfo?.(), [dep]);
 			// Focused-source display name from the artifact (id fallback).
 			const components = Array.isArray(pipeline.components) ? (pipeline.components as Array<{ id?: string; name?: string }>) : [];
 			const sourceName = sourceId ? components.find((c) => c.id === sourceId)?.name || sourceId : undefined;
@@ -511,7 +511,7 @@ export class DeployLifecycle {
 			const deploymentRows = list.rows ?? [];
 
 			// Step 2: resolve the caller's teams (names + control rights).
-			const teams = resolveDeployTeams(client, deploymentRows);
+			const teams = resolveDeployTeams(client.getAccountInfo?.(), deploymentRows);
 
 			// Step 3: map everything into view models and push the snapshot.
 			// Where-live rows are RAW facts — the shared ProjectView resolves
@@ -527,7 +527,7 @@ export class DeployLifecycle {
 			// but keep the identity-derived team roster so Publish still offers
 			// its one-step deploy targets.
 			this.logger.error(`[ProjectProvider] Deploy lifecycle fetch failed: ${error}`);
-			webview.postMessage({ type: 'deploy:data', versions: [], deployments: [], teams: resolveDeployTeams(client, []) });
+			webview.postMessage({ type: 'deploy:data', versions: [], deployments: [], teams: resolveDeployTeams(client.getAccountInfo?.(), []) });
 		}
 	}
 }

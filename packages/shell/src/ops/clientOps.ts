@@ -119,6 +119,10 @@ export interface ClientOpMap extends ShellOpMap {
 	'client.deploy.resumeSchedule': ShellOpSpec<{ projectId: string; sourceId: string; teamId: string }, unknown>;
 	'client.deploy.setSourceConfig': ShellOpSpec<{ projectId: string; sourceId: string; teamId: string; traceLevel?: string; debugOut?: boolean }, unknown>;
 	'client.deploy.preview': ShellOpSpec<{ cron: string; count: number }, unknown>;
+	/** The server task registry's raw rows (ownerKind/ownerId/runKind/teamId
+	 *  carried) — the deploy drawers' live-run scan. A NAMED allowlist entry
+	 *  over the one extension command (never a generic call passthrough). */
+	'client.listRunningTasks': ShellOpSpec<Record<string, never>, unknown>;
 
 	// ── Account (profile / org / members / teams / keys / env) ──────────────
 	'client.account.getProfile': ShellOpSpec<Record<string, never>, unknown>;
@@ -284,6 +288,7 @@ export function registerClientOps(bus: IOpBus, source: IClientOpsSource, options
 		'client.deploy.resumeSchedule': (p) => client().deploy.resumeSchedule(p.projectId, p.sourceId, p.teamId),
 		'client.deploy.setSourceConfig': (p) => client().deploy.setSourceConfig(p.projectId, p.sourceId, p.teamId, { ...(p.traceLevel ? { traceLevel: p.traceLevel } : {}), ...(p.debugOut !== undefined ? { debugOut: p.debugOut } : {}) }),
 		'client.deploy.preview': (p) => client().deploy.preview(p.cron, p.count),
+		'client.listRunningTasks': () => client().call('rrext_get_tasks'),
 		'client.account.getProfile': () => client().account.getProfile(),
 		'client.account.updateProfile': (p) => client().account.updateProfile(p.fields),
 		'client.account.setDevTeam': (p) => client().account.setDevTeam(p.teamId),

@@ -13,7 +13,7 @@
  * whose mapping logic this module mirrors line-for-line.
  */
 
-import type { RocketRideClient, Deployment, DeployArtifact, DeployHistoryEntry } from 'rocketride';
+import type { ConnectResult, Deployment, DeployArtifact, DeployHistoryEntry } from 'rocketride';
 import type { DeployTeamRefDTO, DeployVersionCardDTO, TeamDeploymentRowDTO, DeployHistoryRowDTO, DeployScheduleRowDTO, DeploymentInfoDTO } from '../../providers/types/deployTypes';
 
 // =============================================================================
@@ -35,9 +35,9 @@ import type { DeployTeamRefDTO, DeployVersionCardDTO, TeamDeploymentRowDTO, Depl
  * @param deployments - Deployment rows used as the rosterless fallback.
  * @returns Team refs with resolved display names and control rights.
  */
-export function resolveDeployTeams(client: RocketRideClient | null | undefined, deployments: Deployment[]): DeployTeamRefDTO[] {
-	// Step 1: read the cached identity from the client (null pre-auth).
-	const info = client?.getAccountInfo?.();
+export function resolveDeployTeams(info: ConnectResult | null | undefined, deployments: Deployment[]): DeployTeamRefDTO[] {
+	// Step 1: the cached identity (null pre-auth) — webview realms read it
+	// off the mirrored account state, the extension host off its client.
 	const org = info?.organization;
 
 	// Step 2: the personal (@me) target — every authenticated user can point
