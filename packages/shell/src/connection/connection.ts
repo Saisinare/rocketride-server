@@ -1639,6 +1639,18 @@ export class ConnectionManager implements IConnectionManager {
 	}
 
 	/**
+	 * Delivers a TRANSIENT payload to the topic's subscribers — same fan-out
+	 * as publish, nothing stored: read() never sees it, late subscribers
+	 * replay nothing. Cross-realm events with N readers.
+	 *
+	 * @param topic - The topic name.
+	 * @param payload - The transient payload.
+	 */
+	public signal(topic: string, payload: unknown): void {
+		this.retainedPort.signal(topic, payload);
+	}
+
+	/**
 	 * Subscribes to a retained topic. The current snapshot (when one exists)
 	 * is replayed FIRST — async, never inside this call — then every
 	 * replacement is delivered. Subscribing before the first publish is the

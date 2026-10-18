@@ -103,11 +103,13 @@ interface IBusRegisterMessage {
 	ops: string[];
 }
 
-/** A retained-topic publish (realm → root; absent snapshot = retract). */
+/** A retained-topic publish (realm → root; absent snapshot = retract;
+ *  transient = a SIGNAL — fan out, store nothing). */
 interface IBusPublishMessage {
 	[ENVELOPE]: 'publish';
 	topic: string;
 	snapshot?: unknown;
+	transient?: boolean;
 }
 
 /** Topic interest announcements (realm → root only). */
@@ -116,12 +118,13 @@ interface IBusTopicSubMessage {
 	topic: string;
 }
 
-/** A retained-topic delivery (root → realm; replay AND live updates —
- *  absent snapshot = retraction). */
+/** A retained-topic delivery (root → realm; replay, live updates, and
+ *  signals — absent snapshot = retraction). */
 interface IBusTopicMessage {
 	[ENVELOPE]: 'topic';
 	topic: string;
 	snapshot?: unknown;
+	transient?: boolean;
 }
 
 type BusWireMessage = IBusRequestMessage | IBusResponseMessage | IBusEmitOpMessage | IBusRegisterMessage | IBusPublishMessage | IBusTopicSubMessage | IBusTopicMessage;
@@ -256,6 +259,9 @@ export function attachRealmToRoot(bus: IOpBus, endpoint: IBusEndpoint): IRealmAt
 	const retained: IRetainedPort = {
 		publish(topic, snapshot) {
 			endpoint.post({ [ENVELOPE]: 'publish', topic, snapshot } satisfies IBusPublishMessage);
+		},
+		signal(topic, payload) {
+			endpoint.post({ [ENVELOPE]: 'publish', topic, snapshot: payload, transient: true } satisfies IBusPublishMessage);
 		},
 		subscribe(topic, cb) {
 			let set = topicSubs.get(topic);
@@ -410,6 +416,9 @@ export function createBusRouter(rootBus: IOpBus, options?: IBusRouterOptions): I
 			// Poll-free wait: watch registrations arriving from any realm.
 			const giveUp = setTimeout(() => {
 				cleanup();
+				// Clear the in-flight marker — a timed-out summon must not
+				// wedge the op name (later requests re-activate).
+				summonsInFlight.delete(op);
 				respond({ [ENVELOPE]: 'response', id: '', ok: false, error: `Op '${op}' owner did not register within ${summonTimeoutMs}ms of summon` });
 			}, Math.min(summonTimeoutMs, timeoutMs));
 			const cleanup = registerWaiters(op, () => {
@@ -501,10 +510,10 @@ export function createBusRouter(rootBus: IOpBus, options?: IBusRouterOptions): I
 	const retained = options?.retained;
 	let offRetained: (() => void) | null = null;
 	if (retained) {
-		offRetained = retained.onChange((topic, snapshot) => {
+		offRetained = retained.onChange((topic, value, transient) => {
 			for (const realm of realms) {
 				if (realm.topics.has(topic)) {
-					realm.endpoint.post({ [ENVELOPE]: 'topic', topic, snapshot } satisfies IBusTopicMessage);
+					realm.endpoint.post({ [ENVELOPE]: 'topic', topic, snapshot: value, ...(transient ? { transient } : {}) } satisfies IBusTopicMessage);
 				}
 			}
 		});
@@ -556,9 +565,11 @@ export function createBusRouter(rootBus: IOpBus, options?: IBusRouterOptions): I
 						break;
 					}
 					case 'publish':
-						// A realm publishing a retained topic — the registry is
-						// the authority; its watcher fans the change back out.
-						retained?.publish(m.topic, m.snapshot);
+						// A realm publishing a retained topic (or firing a
+						// signal) — the registry is the authority; its watcher
+						// fans the value back out.
+						if (m.transient) retained?.signal(m.topic, m.snapshot);
+						else retained?.publish(m.topic, m.snapshot);
 						break;
 					case 'subscribeTopic':
 						realm.topics.add(m.topic);

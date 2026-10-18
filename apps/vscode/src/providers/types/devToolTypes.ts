@@ -33,13 +33,11 @@ export interface DevToolInitPayload {
 
 /** Messages from the extension host to the webview. */
 export type DevToolHostToWebview =
-	| { type: 'devtool:init'; payload: DevToolInitPayload }
-	| { type: 'devtool:peer'; payload: unknown };
+	| { type: 'devtool:init'; payload: DevToolInitPayload };
 
 /** Messages from the webview to the extension host. */
 export type DevToolWebviewToHost =
 	| { type: 'view:ready' }
-	| { type: 'devtool:peer'; payload: unknown }
 	// The DevToolProps.documents API: the tool asks for a (new or existing)
 	// top-level document of its own, or closes one.
 	| { type: 'devtool:openDocument'; docKey: string; title: string }

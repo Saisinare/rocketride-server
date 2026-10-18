@@ -34,7 +34,6 @@ import { isDeployRunBody } from '../shared/util/runClassification';
 import { getLogger } from '../shared/util/output';
 import { getProjectProvider } from '../extension';
 import { DevToolStore } from './DevToolStore';
-import { DevToolBridge } from './DevToolBridge';
 import type { BusHost } from './toolhost/busHost';
 import { readPref, readPrefsSnapshot, writePref } from './PrefsBag';
 import { WorkspaceFsService } from './toolhost/workspaceFsService';
@@ -95,10 +94,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 	 * @param extensionUri - The extension root for webview resources.
 	 * @param context - Extension context; persists the sidebar mode across reloads.
 	 * @param devTools - The pinned dev-tools store feeding the tool tabs.
-	 * @param devToolBridge - The per-app panel↔sidebar peer relay.
-	 * @param busHost - The shell bus root (this webview attaches as a spoke).
+	 * @param busHost - The shell bus root (this webview attaches as a spoke;
+	 *   tool peer traffic rides its retained/signal lanes).
 	 */
-	constructor(private readonly extensionUri: vscode.Uri, private readonly context?: vscode.ExtensionContext, private readonly devTools?: DevToolStore, private readonly devToolBridge?: DevToolBridge, private readonly busHost?: BusHost) {
+	constructor(private readonly extensionUri: vscode.Uri, private readonly context?: vscode.ExtensionContext, private readonly devTools?: DevToolStore, private readonly busHost?: BusHost) {
 		// Restore the last mode (previously session-only — it died on reload)
 		// and the persisted strip order.
 		// DELIBERATE per-host default: 'apps' in VS Code, 'agent' on web. A
@@ -141,11 +140,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		const html = this.getHtmlForWebview(webviewView.webview);
 		webviewView.webview.html = html;
 
-		// Peer relay: panel→sidebar messages land here once the sidebar lives.
-		this.devToolBridge?.registerSidebar((appId, payload) => {
-			void this._view?.webview.postMessage({ type: 'devtool:peer', appId, payload });
-		});
-
 		// Handle messages from the webview
 		webviewView.webview.onDidReceiveMessage(async (message) => {
 			try {
@@ -171,10 +165,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 						// must not boot with every tool sidebar unselected
 						// while a tool tab is in front.
 						void this._view?.webview.postMessage({ type: 'devtool:activeDoc', ...this.activeToolDoc });
-						// Replay each tool's retained frame→sidebar state so a
-						// reloaded sidebar re-renders its mounts without any
-						// ask-the-frame handshake (peer direction discipline).
-						this.devToolBridge?.replayRetainedToSidebar();
 						break;
 					case 'sidebar:command':
 						vscode.commands.executeCommand(message.command, ...(message.args ?? []));
@@ -233,13 +223,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 					case 'prefs:set':
 						// Persists one prefs-store write (fire-and-forget).
 						if (this.context) writePref(this.context, message.key, message.value, message.scope);
-						break;
-					case 'devtool:peer':
-						// Sidebar mount → the tool's frame panel (buffered while
-						// the panel opens). Payloads are opaque to the host; by
-						// the peer contract these are USER actions, so a message
-						// to a closed panel summons it.
-						this.devToolBridge?.toPanel(message.appId, message.payload);
 						break;
 					case 'sidebar:openToolDocument':
 						// A tool's sidebar mount opens one of ITS documents (the

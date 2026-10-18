@@ -23,8 +23,8 @@
 // =============================================================================
 // FROZEN shell-api contract — ShellApiV6 — never edit by hand
 // =============================================================================
-// Generated:     2026-10-18T20:59:47.250Z
-// Source commit: fe5339ec8a68b6e507f7bb1d1db4636d264dd4c6
+// Generated:     2026-10-18T21:21:05.709Z
+// Source commit: e23bfe5e2a733a9cf122280ef0a9438d56fe75bd
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder shell:freeze
 // =============================================================================
@@ -8415,10 +8415,17 @@ export interface IRetainedRegistry {
      */
     publish(topic: string, snapshot: unknown): void;
     /**
+     * Delivers a TRANSIENT payload to the topic's subscribers — same
+     * fan-out as publish, but nothing is stored: read() never sees it and
+     * late subscribers replay nothing. The N-subscriber ephemeral lane
+     * (cross-realm events) the one-owner op model cannot provide.
+     */
+    signal(topic: string, payload: unknown): void;
+    /**
      * Subscribes to a topic. When a snapshot exists it is REPLAYED first
-     * (async, before any later publish); then every replacement is delivered.
-     * Subscribing before the first publish is the natural case — the
-     * callback simply fires on that first publish.
+     * (async, before any later publish); then every replacement AND every
+     * signal is delivered. Subscribing before the first publish is the
+     * natural case — the callback simply fires on that first publish.
      *
      * @returns Unsubscribe.
      */
@@ -8428,13 +8435,15 @@ export interface IRetainedRegistry {
      *  can call this; bridged realms read through their async port. */
     read(topic: string): unknown;
     /**
-     * Watches EVERY topic change (the router's remote fan-out seam) —
-     * delivered synchronously with the publish so the router can order its
-     * wire sends; local subscribers still get async delivery.
+     * Watches EVERY topic change AND signal (the router's remote fan-out
+     * seam) — delivered synchronously with the publish/signal so the router
+     * can order its wire sends; local subscribers still get async delivery.
      *
+     * @param cb - Receives (topic, value, transient) — transient marks a
+     *             signal (nothing stored).
      * @returns Unsubscribe.
      */
-    onChange(cb: (topic: string, snapshot: unknown) => void): () => void;
+    onChange(cb: (topic: string, value: unknown, transient: boolean) => void): () => void;
     /** Every retained topic with its snapshot (a late realm's replay seed). */
     entries(): Array<[
         string,
@@ -8454,6 +8463,7 @@ export declare function createRetainedRegistry(): IRetainedRegistry;
  */
 export interface IRetainedPort {
     publish(topic: string, snapshot: unknown): void;
+    signal(topic: string, payload: unknown): void;
     subscribe(topic: string, cb: RetainedSubscriber): () => void;
     /** Async everywhere — a bridged realm cannot read the root's map
      *  synchronously, and one signature keeps call sites portable. */
@@ -9188,6 +9198,15 @@ on(event: 'store:changed', handler: (payload: ShellConnectionEventMap['store:cha
      */
     publish(topic: string, snapshot: unknown): void;
     /**
+     * Delivers a TRANSIENT payload to the topic's subscribers — same fan-out
+     * as publish, nothing stored: read() never sees it, late subscribers
+     * replay nothing. Cross-realm events with N readers.
+     *
+     * @param topic - The topic name.
+     * @param payload - The transient payload.
+     */
+    signal(topic: string, payload: unknown): void;
+    /**
      * Subscribes to a retained topic. The current snapshot (when one exists)
      * is replayed FIRST — async, never inside this call — then every
      * replacement is delivered. Subscribing before the first publish is the
@@ -9365,45 +9384,6 @@ export declare const HOST_CONNECTION_TOPIC = "host:connection";
 export declare function hostConnectionPayload(connected: boolean): IToolStateMessage;
 /** Most buffered payloads kept per direction (oldest evicted past this). */
 export declare const TOOL_RELAY_BUFFER_LIMIT = 64;
-/** The host-supplied sides of one tool's relay. */
-export interface ToolRelayEnds {
-    /** Delivers one payload to the live frame side. Called only while
-     *  {@link frameLive} is true. */
-    toFrame(payload: unknown): void;
-    /** Delivers one payload to the live sidebar side. Called only while
-     *  {@link sidebarLive} is true. */
-    toSidebar(payload: unknown): void;
-    /** Whether a frame sink is currently attached. */
-    frameLive(): boolean;
-    /** Whether a sidebar sink is currently attached. */
-    sidebarLive(): boolean;
-    /** Opens (or focuses) the tool's frame — a sidebar event found no live
-     *  frame. Hosts without a summon capability omit it. */
-    summonFrame?(): void;
-}
-/** One tool's relay: the policy over the host's two ends. */
-export interface ToolRelay {
-    /** Routes one frame→sidebar payload per the policy. */
-    fromFrame(payload: unknown): void;
-    /** Routes one sidebar→frame payload per the policy. */
-    fromSidebar(payload: unknown): void;
-    /** Replays what a newly attached FRAME must see, in order: retained
-     *  state snapshots, then the buffered events (draining the buffer). */
-    replayToFrame(deliver: (payload: unknown) => void): void;
-    /** Replays what a newly attached SIDEBAR must see: the retained last
-     *  frame push, then the buffered frame payloads (draining). */
-    replayToSidebar(deliver: (payload: unknown) => void): void;
-}
-/**
- * Builds one tool's relay over the host's ends.
- *
- * @param ends - The host's delivery/liveness/summon surface.
- * @param options - Buffer cap override (tests).
- * @returns The relay.
- */
-export declare function createToolRelay(ends: ToolRelayEnds, options?: {
-    bufferLimit?: number;
-}): ToolRelay;
 /** The `host:connection` snapshot: the controller realm's connection to the
  *  RocketRide server. Frames hold no connection of their own — a frame's
  *  run/apply enablement derives from this replicated snapshot. */
@@ -10062,6 +10042,34 @@ export declare function registerClientOps(bus: IOpBus, source: IClientOpsSource,
  * @param store - The realm's SYSTEM-partition store (holds `tableLayouts`).
  */
 export declare function useGridConfigAnswering(store: PrefsStore): void;
+interface IBusPeerBus {
+    publish(topic: string, snapshot: unknown): void;
+    signal(topic: string, payload: unknown): void;
+    subscribe(topic: string, cb: (snapshot: unknown) => void): () => void;
+    read(topic: string): Promise<unknown>;
+    emitOp(op: string, params: unknown): void;
+}
+type Peer = DevToolProps["peer"];
+/**
+ * The sidebar mount's peer for one tool. Create ONE per tool per realm and
+ * keep it for the realm's lifetime (mounts subscribe and unsubscribe; the
+ * peer's buffers and liveness tracking persist across remounts).
+ *
+ * @param appId - The tool's app id.
+ * @param cm - The realm's bus verbs (its ConnectionManager).
+ * @returns The peer.
+ */
+export declare function createSidebarBusPeer(appId: string, cm: IBusPeerBus): Peer;
+/**
+ * A frame mount's peer for one tool. Create one per mount; its subscribe's
+ * cleanup says BYE (hosts whose panels die without cleanup publish the
+ * presence topic instead).
+ *
+ * @param appId - The tool's app id.
+ * @param cm - The realm's bus verbs (its ConnectionManager).
+ * @returns The peer.
+ */
+export declare function createFrameBusPeer(appId: string, cm: IBusPeerBus): Peer;
 /** The tool-document URI prefix. */
 export declare const TOOL_DOC_PREFIX = "tool:";
 /**
@@ -14313,9 +14321,10 @@ export declare const shellApi: {
     readonly useToolHost: typeof useToolHost;
     readonly createLoopbackPeer: typeof createLoopbackPeer;
     readonly useGridConfigAnswering: typeof useGridConfigAnswering;
-    readonly createToolRelay: typeof createToolRelay;
     readonly hostConnectionPayload: typeof hostConnectionPayload;
     readonly TOOL_RELAY_BUFFER_LIMIT: number;
+    readonly createSidebarBusPeer: typeof createSidebarBusPeer;
+    readonly createFrameBusPeer: typeof createFrameBusPeer;
     readonly toolDocUri: typeof toolDocUri;
     readonly parseToolDocUri: typeof parseToolDocUri;
     readonly activeDocKeyFor: typeof activeDocKeyFor;

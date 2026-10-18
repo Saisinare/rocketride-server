@@ -38,7 +38,6 @@ export type SidebarWebviewToHost =
 	| { type: 'sidebar:reorderTabs'; order: string[] }
 	| { type: 'sidebar:setDisabledBuiltins'; ids: string[] }
 	| { type: 'prefs:set'; key: string; value: unknown; scope: 'workspace' | 'global' }
-	| { type: 'devtool:peer'; appId: string; payload: unknown }
 	| { type: 'sidebar:openToolDocument'; appId: string; docKey: string; title: string }
 	| { type: 'sidebar:closeToolDocument'; appId: string; docKey: string }
 	| { type: 'svc:fs'; id: number; method: 'findFiles'; include: string; exclude?: string }
@@ -81,7 +80,6 @@ export type SidebarHostToWebview =
 	| { type: 'sidebar:stripSeed'; tools: ToolTab[]; tabOrder: string[]; sidebarMode: SidebarMode; disabledBuiltins?: string[] }
 	| { type: 'prefs:init'; values: Record<string, unknown> }
 	| { type: 'devtool:activeDoc'; appId: string | null; docKey: string | null }
-	| { type: 'devtool:peer'; appId: string; payload: unknown }
 	| { type: 'svc:fs:result'; id: number; ok: boolean; result?: unknown; error?: string }
 	| { type: 'svc:fs:event'; id: number; path: string }
 	| { type: 'sidebar:modeUpdate'; mode: SidebarMode }

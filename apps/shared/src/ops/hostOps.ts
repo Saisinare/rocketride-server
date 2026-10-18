@@ -83,6 +83,10 @@ export interface HostOpMap extends ShellOpMap {
 	 *  host to retire its own surface (e.g. Welcome after Save & Connect).
 	 *  A page that is not open is a no-op, never an error. */
 	'host.closePage': ShellOpSpec<{ page: string }, void>;
+	/** Opens (or focuses) a tool's frame panel/document — the bus peer's
+	 *  SUMMON: a sidebar event found no live frame (a sidebar post is a user
+	 *  action by the peer contract). */
+	'host.openToolPanel': ShellOpSpec<{ appId: string }, void>;
 	/** The pinned (installed) dev tool ids — host-persisted strip state. */
 	'host.devtools.installed': ShellOpSpec<Record<string, never>, { ids: string[] }>;
 	/** Pins a tool to the strip. */

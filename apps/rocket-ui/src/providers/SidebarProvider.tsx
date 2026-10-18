@@ -49,7 +49,7 @@ import type { ProjectEntry } from 'shared/tools/pipelines/types';
 import type { SidebarMode, ToolTabsSidebar } from 'shared/tools/core/chrome/types';
 import type { AppListItem } from 'shared/tools/appdev/sidebarTypes';
 import { useDevToolPins, toToolTab } from '../devtools/devToolPins';
-import { getSidebarPeer, getToolChannel, setToolFrameOpener } from '../devtools/peer';
+import { getSidebarPeer, getToolChannel } from '../devtools/peer';
 import DevToolMount from '../devtools/DevToolMount';
 import { isPipelineFile, pipelineExtension } from '../utils/projectStore';
 import { createProjectVfs } from '../utils/projectVfs';
@@ -476,10 +476,14 @@ const SidebarProvider: React.FC = () => {
 	}, []);
 
 	// A sidebar-mount peer post with no mounted frame summons the tool's
-	// document (the in-memory counterpart of the bridge's onPanelNeeded).
+	// document — this host's `host.openToolPanel` implementation (the bus
+	// peer emits the op; registration is the allowlist).
 	useEffect(() => {
-		setToolFrameOpener(handleOpenTool);
-		return () => setToolFrameOpener(null);
+		const cm = ConnectionManager.getInstance();
+		return cm.handle('host.openToolPanel', (params) => {
+			const { appId } = params as { appId: string };
+			if (typeof appId === 'string' && appId) handleOpenTool(appId);
+		});
 	}, [handleOpenTool]);
 
 	// The dev-tool tabs contract: presence adds the pinned tool tabs and the

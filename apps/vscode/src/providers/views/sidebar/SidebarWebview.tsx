@@ -15,7 +15,7 @@
  *
  * The seams live in sibling modules:
  *   - messages.ts     — both typed ends of the wire vocabulary
- *   - peerRegistry.ts — stable tool peers over the host's devtool relay
+ *   - shell busPeer — stable tool peers over the bus's retained/signal lanes
  *   - svcFsClient.ts  — the ToolWorkspaceFs capability (svc:fs RPC)
  *   - footerMenu.tsx  — the footer popup items from connection facts
  *
@@ -34,7 +34,7 @@ import { SidebarChrome, ToolPanel } from 'shared/tools/core/chrome/SidebarChrome
 import { ToolHostProvider } from 'shared/tools/core';
 import { useToolStrip } from 'shared/tools/core/chrome/useToolStrip';
 import type { BuiltinToolServices } from 'shared/tools/core';
-import { ConnectionManager, SidebarFooter, createBridgedPrefsStore } from 'shell';
+import { ConnectionManager, SidebarFooter, createBridgedPrefsStore, createSidebarBusPeer } from 'shell';
 import { registerBuiltinTools } from 'shared/tools/builtins';
 import { pushSourceDiagnostics } from 'shared/tools/pipelines/diagnostics';
 import type { ConnectionInfo, SidebarMode, ToolTab } from 'shared/tools/core/chrome/types';
@@ -42,7 +42,6 @@ import { useMessaging } from '../hooks/useMessaging';
 import { DevToolSidebarMount } from './DevToolSidebarMount';
 import type { DevToolHostInfo } from './DevToolSidebarMount';
 import type { SidebarHostToWebview, SidebarWebviewToHost } from './messages';
-import { createPeerRegistry } from './peerRegistry';
 import { createSvcFsClient } from './svcFsClient';
 import { buildFooterMenuItems } from './footerMenu';
 import { attachBusRealm } from '../hooks/busRealm';
@@ -206,11 +205,6 @@ const SidebarViewWebview: React.FC = () => {
 					svcFs.onEvent(msg);
 					break;
 
-				case 'devtool:peer':
-					// Frame → this tool's sidebar mount (opaque payload).
-					peerRegistry.deliver(msg.appId, msg.payload);
-					break;
-
 				case 'sidebar:modeUpdate':
 					// Host-driven selection (a tool panel gained focus) — unlike
 					// the full-update seed, this ALWAYS applies.
@@ -239,10 +233,21 @@ const SidebarViewWebview: React.FC = () => {
 	// request/response + watch traffic routes through the message switch.
 	const svcFs = useMemo(() => createSvcFsClient((m) => sendRef.current(m)), []);
 
-	// ── Tool peers (host-relayed) ───────────────────────────────────────────
-	// Stable peer channels per tool; frame payloads relayed by the host fan
-	// out here (held for replay until the tool's lazy mount subscribes).
-	const peerRegistry = useMemo(() => createPeerRegistry((appId, payload) => sendRef.current({ type: 'devtool:peer', appId, payload })), []);
+	// ── Tool peers (bus-carried) ────────────────────────────────────────────
+	// Stable sidebar-side peers per tool, riding the bus's retained/signal
+	// lanes (shell busPeer): frame traffic arrives on the tool's topics, and
+	// each peer holds payloads until the tool's lazy mount subscribes.
+	const sidebarPeers = useMemo(() => {
+		const cache = new Map<string, ReturnType<typeof createSidebarBusPeer>>();
+		return (appId: string) => {
+			let peer = cache.get(appId);
+			if (!peer) {
+				peer = createSidebarBusPeer(appId, ConnectionManager.getInstance());
+				cache.set(appId, peer);
+			}
+			return peer;
+		};
+	}, []);
 
 	// This realm's prefs backend: a hydrate-once bridged store — the host
 	// seeds the snapshot in its view:ready reply (prefs:init) and persists
@@ -416,13 +421,13 @@ const SidebarViewWebview: React.FC = () => {
 			<DevToolSidebarMount
 				tool={tool}
 				host={devToolHost}
-				peer={peerRegistry.getPeer(id)}
+				peer={sidebarPeers(id)}
 				documents={getDocumentsApi(id)}
 				{...(activeDocKey !== undefined ? { activeDocKey } : {})}
 				fallback={card}
 			/>
 		);
-	}, [tools, devToolHost, activatedTools, activeToolDoc, peerRegistry, getDocumentsApi, onOpenTool, onRemoveTool]);
+	}, [tools, devToolHost, activatedTools, activeToolDoc, sidebarPeers, getDocumentsApi, onOpenTool, onRemoveTool]);
 
 	// The TRUE previous mode, mirrored from state so externally applied
 	// changes (modeUpdate, stripSeed) update it silently — only a chrome

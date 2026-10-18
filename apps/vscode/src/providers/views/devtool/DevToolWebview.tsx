@@ -43,7 +43,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { registerRemotes, loadRemote } from '@module-federation/runtime';
-import { createToolChannel } from 'shell';
+import { createToolChannel, createFrameBusPeer, ConnectionManager } from 'shell';
 import type { AppDescriptor, DevToolProps, ToolChannel } from 'shell';
 import { useMessaging } from '../hooks/useMessaging';
 import type { DevToolHostToWebview, DevToolInitPayload, DevToolWebviewToHost } from '../../types/devToolTypes';
@@ -125,13 +125,6 @@ function entryUrl(base: string, appId: string, version: number): string {
 const DevToolWebview: React.FC = () => {
 	const [data, setData] = useState<DevToolInitPayload | null>(null);
 	const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
-	// Peer subscribers — host-relayed messages from the tool's sidebar mount.
-	const peerSubsRef = useRef(new Set<(msg: unknown) => void>());
-	// Messages that arrived BEFORE the frame subscribed: the host flushes its
-	// buffer on view:ready, but the mounted tool only subscribes after the
-	// remote loads and the connection comes up — hold them here and replay to
-	// the first subscriber (the reopen-on-click flow depends on this).
-	const peerPendingRef = useRef<unknown[]>([]);
 	// One container per document: a loaded MF remote cannot be repointed —
 	// the host recreates the whole panel on version change.
 	const mountedRef = useRef<string | null>(null);
@@ -139,13 +132,6 @@ const DevToolWebview: React.FC = () => {
 	const onMessage = useCallback((message: DevToolHostToWebview) => {
 		if (message.type === 'devtool:init') {
 			setData(message.payload);
-		} else if (message.type === 'devtool:peer') {
-			if (peerSubsRef.current.size === 0) {
-				// Nothing mounted yet — buffer (bounded) for the first subscriber.
-				if (peerPendingRef.current.length < 64) peerPendingRef.current.push(message.payload);
-				return;
-			}
-			for (const cb of peerSubsRef.current) cb(message.payload);
 		}
 	}, []);
 
@@ -198,26 +184,16 @@ const DevToolWebview: React.FC = () => {
 		};
 	}, [data]);
 
-	// ── DevToolProps (stable identity across renders) ────────────────────────
-	const peerRef = useRef<DevToolProps['peer'] | null>(null);
-	if (!peerRef.current) {
-		peerRef.current = {
-			post: (message: unknown) => sendMessage({ type: 'devtool:peer', payload: message }),
-			subscribe: (cb: (message: unknown) => void) => {
-				peerSubsRef.current.add(cb);
-				// Replay anything that arrived before the tool mounted.
-				const pending = peerPendingRef.current;
-				peerPendingRef.current = [];
-				for (const payload of pending) cb(payload);
-				return () => peerSubsRef.current.delete(cb);
-			},
-		};
+	// ── DevToolProps (stable identity per tool) ──────────────────────────────
+	// The frame-side BUS peer (shell busPeer): subscribing replays the host
+	// connection state, then the retained channel state, then live traffic —
+	// and announces this frame (HELLO) so the sidebar peer flushes buffered
+	// events. Built once the tool's identity arrives with devtool:init.
+	const peerRef = useRef<{ appId: string; peer: DevToolProps['peer']; channel: ToolChannel } | null>(null);
+	if (data?.app && peerRef.current?.appId !== data.app.id) {
+		const peer = createFrameBusPeer(data.app.id, ConnectionManager.getInstance());
+		peerRef.current = { appId: data.app.id, peer, channel: createToolChannel(peer) };
 	}
-	// The typed channel over the same transport — one per document lifetime.
-	// The bridge replays retained state into this webview on registration,
-	// and the channel replays it again to late component subscribers.
-	const channelRef = useRef<ToolChannel | null>(null);
-	if (!channelRef.current) channelRef.current = createToolChannel(peerRef.current);
 
 	// ── Render ───────────────────────────────────────────────────────────────
 	if (!data || !data.connected || !data.app) {
@@ -238,7 +214,7 @@ const DevToolWebview: React.FC = () => {
 		return (
 			<div style={styles.page}>
 				<div style={styles.frameHost}>
-					<Frame peer={peerRef.current} channel={channelRef.current} documents={documents} {...(data.docKey ? { docKey: data.docKey } : {})} />
+					<Frame peer={peerRef.current!.peer} channel={peerRef.current!.channel} documents={documents} {...(data.docKey ? { docKey: data.docKey } : {})} />
 				</div>
 			</div>
 		);

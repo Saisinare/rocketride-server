@@ -679,10 +679,6 @@ import type { ToolControllerFn as Frozen_ToolControllerFn } from '../contract/ve
 import type { ToolControllerFn as Current_ToolControllerFn } from './api';
 import type { IToolOpServer as Frozen_IToolOpServer } from '../contract/versions/v6';
 import type { IToolOpServer as Current_IToolOpServer } from './api';
-import type { ToolRelayEnds as Frozen_ToolRelayEnds } from '../contract/versions/v6';
-import type { ToolRelayEnds as Current_ToolRelayEnds } from './api';
-import type { ToolRelay as Frozen_ToolRelay } from '../contract/versions/v6';
-import type { ToolRelay as Current_ToolRelay } from './api';
 import type { IHostConnectionState as Frozen_IHostConnectionState } from '../contract/versions/v6';
 import type { IHostConnectionState as Current_IHostConnectionState } from './api';
 import type { ToolStateMap as Frozen_ToolStateMap } from '../contract/versions/v6';
@@ -1437,10 +1433,6 @@ const _t_ToolControllerFn: Frozen_ToolControllerFn<any> = {} as Current_ToolCont
 void _t_ToolControllerFn;
 const _t_IToolOpServer: Frozen_IToolOpServer<any> = {} as Current_IToolOpServer<any>;
 void _t_IToolOpServer;
-const _t_ToolRelayEnds: Frozen_ToolRelayEnds = {} as Current_ToolRelayEnds;
-void _t_ToolRelayEnds;
-const _t_ToolRelay: Frozen_ToolRelay = {} as Current_ToolRelay;
-void _t_ToolRelay;
 const _t_IHostConnectionState: Frozen_IHostConnectionState = {} as Current_IHostConnectionState;
 void _t_IHostConnectionState;
 const _t_ToolStateMap: Frozen_ToolStateMap = {} as Current_ToolStateMap;

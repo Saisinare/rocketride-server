@@ -73,10 +73,18 @@ export interface IRetainedRegistry {
 	publish(topic: string, snapshot: unknown): void;
 
 	/**
+	 * Delivers a TRANSIENT payload to the topic's subscribers — same
+	 * fan-out as publish, but nothing is stored: read() never sees it and
+	 * late subscribers replay nothing. The N-subscriber ephemeral lane
+	 * (cross-realm events) the one-owner op model cannot provide.
+	 */
+	signal(topic: string, payload: unknown): void;
+
+	/**
 	 * Subscribes to a topic. When a snapshot exists it is REPLAYED first
-	 * (async, before any later publish); then every replacement is delivered.
-	 * Subscribing before the first publish is the natural case — the
-	 * callback simply fires on that first publish.
+	 * (async, before any later publish); then every replacement AND every
+	 * signal is delivered. Subscribing before the first publish is the
+	 * natural case — the callback simply fires on that first publish.
 	 *
 	 * @returns Unsubscribe.
 	 */
@@ -88,13 +96,15 @@ export interface IRetainedRegistry {
 	read(topic: string): unknown;
 
 	/**
-	 * Watches EVERY topic change (the router's remote fan-out seam) —
-	 * delivered synchronously with the publish so the router can order its
-	 * wire sends; local subscribers still get async delivery.
+	 * Watches EVERY topic change AND signal (the router's remote fan-out
+	 * seam) — delivered synchronously with the publish/signal so the router
+	 * can order its wire sends; local subscribers still get async delivery.
 	 *
+	 * @param cb - Receives (topic, value, transient) — transient marks a
+	 *             signal (nothing stored).
 	 * @returns Unsubscribe.
 	 */
-	onChange(cb: (topic: string, snapshot: unknown) => void): () => void;
+	onChange(cb: (topic: string, value: unknown, transient: boolean) => void): () => void;
 
 	/** Every retained topic with its snapshot (a late realm's replay seed). */
 	entries(): Array<[string, unknown]>;
@@ -108,7 +118,7 @@ export interface IRetainedRegistry {
 export function createRetainedRegistry(): IRetainedRegistry {
 	const snapshots = new Map<string, unknown>();
 	const subscribers = new Map<string, Set<RetainedSubscriber>>();
-	const watchers = new Set<(topic: string, snapshot: unknown) => void>();
+	const watchers = new Set<(topic: string, value: unknown, transient: boolean) => void>();
 
 	/** Async delivery on a fresh task — never inside the caller's stack. */
 	const deliver = (cb: RetainedSubscriber, snapshot: unknown): void => {
@@ -121,19 +131,28 @@ export function createRetainedRegistry(): IRetainedRegistry {
 		}, 0);
 	};
 
+	/** Watchers (sync) + topic subscribers (async) for one value. */
+	const fanOut = (topic: string, value: unknown, transient: boolean): void => {
+		for (const w of watchers) {
+			try {
+				w(topic, value, transient);
+			} catch (err) {
+				console.error('[retained] watcher threw:', err);
+			}
+		}
+		const subs = subscribers.get(topic);
+		if (subs) for (const cb of subs) deliver(cb, value);
+	};
+
 	return {
 		publish(topic, snapshot) {
 			if (snapshot === undefined) snapshots.delete(topic);
 			else snapshots.set(topic, snapshot);
-			for (const w of watchers) {
-				try {
-					w(topic, snapshot);
-				} catch (err) {
-					console.error('[retained] watcher threw:', err);
-				}
-			}
-			const subs = subscribers.get(topic);
-			if (subs) for (const cb of subs) deliver(cb, snapshot);
+			fanOut(topic, snapshot, false);
+		},
+
+		signal(topic, payload) {
+			fanOut(topic, payload, true);
 		},
 
 		subscribe(topic, cb) {
@@ -185,6 +204,7 @@ export function createRetainedRegistry(): IRetainedRegistry {
  */
 export interface IRetainedPort {
 	publish(topic: string, snapshot: unknown): void;
+	signal(topic: string, payload: unknown): void;
 	subscribe(topic: string, cb: RetainedSubscriber): () => void;
 	/** Async everywhere — a bridged realm cannot read the root's map
 	 *  synchronously, and one signature keeps call sites portable. */
@@ -201,6 +221,7 @@ export interface IRetainedPort {
 export function localRetainedPort(registry: IRetainedRegistry): IRetainedPort {
 	return {
 		publish: (topic, snapshot) => registry.publish(topic, snapshot),
+		signal: (topic, payload) => registry.signal(topic, payload),
 		subscribe: (topic, cb) => registry.subscribe(topic, cb),
 		read: (topic) => Promise.resolve(registry.read(topic)),
 	};

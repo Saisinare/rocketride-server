@@ -48,7 +48,6 @@ import { StatusProvider } from './providers/StatusProvider';
 import { BarStatus } from './providers/BarStatusProvider';
 import { FrameworkProvider } from './providers/toolhost/frameworkProvider';
 import { DevToolStore } from './providers/DevToolStore';
-import { DevToolBridge } from './providers/DevToolBridge';
 import { BusHost } from './providers/toolhost/busHost';
 import { registerVscodeOps } from './ops';
 import { registerVscodeDevToolOps } from './ops/devtoolOps';
@@ -302,22 +301,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 				// Pinned dev-tools store — created before the sidebar (which
 				// renders the tool tabs) and shared with the picker below —
-				// plus the peer bridge relaying frame ↔ sidebar tool messages.
 				const devTools = new DevToolStore(context);
-				const devToolBridge = new DevToolBridge();
-				// A sidebar interaction with a closed tool panel reopens it —
-				// the message waits in the bridge buffer and flushes on mount.
-				devToolBridge.onPanelNeeded = (appId) => {
-					void vscode.commands.executeCommand('rocketride.devtool.open', appId);
-				};
-				// The HOST owns the tools' 'engine' reachability topic: feed the
-				// bridge from the extension's connection state so every frame's
-				// enablement is right even when no tool sidebar has mounted.
 				const engineConnection = ConnectionManager.getInstance();
-				devToolBridge.setHostConnected(engineConnection.isConnected());
-				engineConnection.on('shell:statusChange', () => {
-					devToolBridge.setHostConnected(engineConnection.isConnected());
-				});
 
 				// SHELL BUS ROOT: this process owns the engine connection, so
 				// the bus router + client broker live here. Webview realms
@@ -334,11 +319,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				busHost.startMirrors();
 				context.subscriptions.push({ dispose: () => busHost.dispose() });
 
+				// The HOST owns the tools' reachability topic: every frame's
+				// bus peer subscribes `host:connection` (retained — a late
+				// panel replays it first) so enablement is right even before
+				// any tool sidebar has mounted.
+				const pushHostConnection = (): void => busHost.retained.publish('host:connection', { connected: engineConnection.isConnected() });
+				pushHostConnection();
+				engineConnection.on('shell:statusChange', pushHostConnection);
+				context.subscriptions.push({ dispose: () => engineConnection.off('shell:statusChange', pushHostConnection) });
+
 				// Register unified sidebar webview. retainContextWhenHidden: the
 				// sidebar carries live state (dev-tool sidebar mounts, their SDK
 				// connections, task indicators) that must survive switching to
 				// another activity-bar container (Explorer, Git, ...).
-				sidebar = new SidebarProvider(context.extensionUri, context, devTools, devToolBridge, busHost);
+				sidebar = new SidebarProvider(context.extensionUri, context, devTools, busHost);
 				const sidebarWebviewProvider = vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, sidebar, {
 					webviewOptions: { retainContextWhenHidden: true },
 				});
@@ -464,7 +458,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				// Dev tools: the tool panels (MF host webviews) + the modules
 				// flow's details page (README + Install/Remove — Remove also
 				// closes the tool's open panel). Each registers its own command.
-				const devToolPanels = new DevToolPanelProvider(context, devToolBridge);
+				const devToolPanels = new DevToolPanelProvider(context, busHost);
 				// Focusing a tool's editor tab highlights its tab on the
 				// sidebar strip (and shows its sidebar body).
 				devToolPanels.onPanelFocused = (appId) => sidebar?.setModeExternal(`tool:${appId}`);

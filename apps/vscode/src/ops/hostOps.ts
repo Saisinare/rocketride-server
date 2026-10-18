@@ -70,6 +70,10 @@ export function registerVscodeHostOps(bus: IOpBus, deps: IVscodeHostOpsDeps): vo
 				throw new Error(`Unknown framework page: ${p.page}`);
 			}
 		},
+		// The bus peer's frame SUMMON: a sidebar event found no live frame.
+		'host.openToolPanel': async (p) => {
+			await vscode.commands.executeCommand('rocketride.devtool.open', p.appId);
+		},
 	};
 	registerOpHandlers<HostOpMap>(bus, impls);
 

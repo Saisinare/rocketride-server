@@ -34,7 +34,7 @@
 
 import React, { useEffect, useMemo } from 'react';
 import type { CSSProperties } from 'react';
-import { activeDocKeyFor, publishHostConnectionState, toolDocUri, useShellConnection, useWorkspace } from 'shell';
+import { activeDocKeyFor, ConnectionManager, HOST_CONNECTION_TOPIC, toolDocUri, useShellConnection, useWorkspace } from 'shell';
 import { getBuiltinTools } from 'shared/tools/core';
 import type { DevToolProps, Documents } from 'shell';
 import { getFramePeer, getSidebarPeer, getToolChannel } from './peer';
@@ -112,13 +112,14 @@ const DevToolMount: React.FC<DevToolMountProps> = ({ appId, name, slot, docKey }
 		close: (key: string) => getDocs()?.discardDocument(toolDocUri(appId, key)),
 	}), [appId]);
 
-	// The HOST owns the tool's `host:connection` system topic (frames derive
-	// their enablement from it; no tool publishes it). Published through the
-	// sidebar-side channel so it retains toward frames; both slots publishing
-	// the same value is an idempotent overwrite.
+	// The HOST owns the `host:connection` system topic (frames derive their
+	// enablement from it; no tool publishes it). ONE retained topic for the
+	// whole framework now — every frame peer subscribes it and forwards it as
+	// the channel state message tools already read (useConnectionReady).
+	// Per-mount publishes of the same value are idempotent overwrites.
 	useEffect(() => {
-		publishHostConnectionState(getToolChannel(appId, 'sidebar'), isConnected);
-	}, [appId, isConnected]);
+		ConnectionManager.getInstance().publish(HOST_CONNECTION_TOPIC, { connected: isConnected });
+	}, [isConnected]);
 
 	const label = name ?? appId;
 	const descriptor = loadedApps[appId];

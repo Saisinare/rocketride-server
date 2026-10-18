@@ -44,7 +44,7 @@ import { getLogger } from '../shared/util/output';
 import * as crypto from 'crypto';
 import { readFileSync } from 'fs';
 import { ConnectionManager } from '../connection/connection';
-import { DevToolBridge } from './DevToolBridge';
+import type { BusHost } from './toolhost/busHost';
 import type { DevToolInitPayload, DevToolWebviewToHost } from './types/devToolTypes';
 
 // =============================================================================
@@ -55,14 +55,12 @@ import type { DevToolInitPayload, DevToolWebviewToHost } from './types/devToolTy
     tab identifies its tool by itself (no webview state involved). */
 const VIEWTYPE_PREFIX = 'rocketride.page.devTool.';
 
-/** One open panel: the webview plus its identity and bridge sink. */
+/** One open panel: the webview plus its identity. */
 interface PanelEntry {
 	panel: vscode.WebviewPanel;
 	appId: string;
 	/** The host-document key ('' = the tool's single/default frame). */
 	docKey: string;
-	/** The bridge sink registered for this panel (needed to unregister). */
-	deliver: (payload: unknown) => void;
 }
 
 export class DevToolPanelProvider {
@@ -134,9 +132,11 @@ export class DevToolPanelProvider {
 	 * Creates the provider and registers the open command.
 	 *
 	 * @param context - The VS Code extension context for subscriptions and URIs.
-	 * @param bridge - The peer relay to the tool's sidebar mount.
+	 * @param busHost - The shell bus root — each panel attaches as a realm
+	 *   (tool peer traffic rides the bus) and the host publishes each tool's
+	 *   authoritative open-panel count on its presence topic.
 	 */
-	constructor(private context: vscode.ExtensionContext, private bridge?: DevToolBridge) {
+	constructor(private context: vscode.ExtensionContext, private busHost?: BusHost) {
 		const cmd = vscode.commands.registerCommand('rocketride.devtool.open', (appId?: string, docKey?: string, title?: string) => {
 			if (typeof appId === 'string' && appId) this.show(appId, typeof docKey === 'string' ? docKey : '', typeof title === 'string' ? title : undefined);
 		});
@@ -247,27 +247,25 @@ export class DevToolPanelProvider {
 			panel,
 			appId,
 			docKey,
-			deliver: (payload) => {
-				void panel.webview.postMessage({ type: 'devtool:peer', payload });
-			},
 		};
 		this.panels.set(key, entry);
 		if (row?.registryVersion !== undefined) this.panelVersions.set(key, row.registryVersion);
 
 		panel.webview.html = this.getHtmlForWebview(panel.webview);
 
+		// The panel is a bus realm: the tool's peer traffic (and any engine
+		// access) rides the `__rrbus` envelope beside the typed devtool:*
+		// boot messages. Presence feeds the sidebar peer's summon decisions —
+		// a webview can die without running unmount cleanup, so the HOST's
+		// panel count is the authority.
+		const detachRealm = this.busHost?.attachWebview(panel.webview, `tool:${appId}/${docKey || 'main'}`);
+		this.publishPresence(appId);
+
 		panel.webview.onDidReceiveMessage(async (message: DevToolWebviewToHost) => {
 			try {
 				switch (message.type) {
 					case 'view:ready':
 						await this.sendInit(entry);
-						// The panel is live: register with the peer bridge and
-						// flush any sidebar messages buffered while it opened.
-						this.bridge?.registerPanel(appId, entry.deliver);
-						break;
-					case 'devtool:peer':
-						// Frame → the tool's sidebar mount (opaque payload).
-						this.bridge?.toSidebar(appId, message.payload);
 						break;
 					case 'devtool:openDocument':
 						// The tool asks for one of ITS documents (DevToolProps
@@ -295,15 +293,23 @@ export class DevToolPanelProvider {
 		});
 
 		panel.onDidDispose(() => {
+			detachRealm?.();
 			this.panels.delete(key);
 			this.panelVersions.delete(key);
 			if (this.lastFocused.get(appId) === key) this.lastFocused.delete(appId);
-			this.bridge?.unregisterPanel(appId, entry.deliver);
+			this.publishPresence(appId);
 		});
 	}
 
 	/** The panel key each app's user focused last (reveal target). */
 	private lastFocused = new Map<string, string>();
+
+	/** Publishes one tool's open-panel count on its presence topic. */
+	private publishPresence(appId: string): void {
+		let count = 0;
+		for (const entry of this.panels.values()) if (entry.appId === appId) count += 1;
+		this.busHost?.retained.publish(`tool:${appId}:panels`, count);
+	}
 
 	/**
 	 * Brings an already-open window of the tool forward — the last-focused

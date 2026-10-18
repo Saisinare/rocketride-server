@@ -102,7 +102,8 @@ import { attachRealmToRoot, createBusRouter, createLocalEndpointPair, DEFAULT_SU
 import { createRetainedRegistry, localRetainedPort } from './ops/retained';
 import { registerClientOps } from './ops/clientOps';
 import { useGridConfigAnswering } from './components/data-grid/gridConfigAnswering';
-import { createToolRelay, hostConnectionPayload, TOOL_RELAY_BUFFER_LIMIT } from './components/workspace/toolRelay';
+import { hostConnectionPayload, TOOL_RELAY_BUFFER_LIMIT } from './components/workspace/toolRelay';
+import { createSidebarBusPeer, createFrameBusPeer } from './components/workspace/busPeer';
 import { toolDocUri, parseToolDocUri, activeDocKeyFor, TOOL_DOC_PREFIX } from './components/workspace/toolDocUri';
 
 // Auth providers
@@ -220,8 +221,8 @@ export type { ToolHostServices, ToolWorkspaceFs } from './components/workspace/t
 
 // Tool relay — the ONE relay policy between a tool's two mounts (hosts wire
 // transport + scheduling; the relay decides retention/buffering/summon).
-export { createToolRelay, hostConnectionPayload, TOOL_RELAY_BUFFER_LIMIT } from './components/workspace/toolRelay';
-export type { ToolRelay, ToolRelayEnds } from './components/workspace/toolRelay';
+export { hostConnectionPayload, TOOL_RELAY_BUFFER_LIMIT } from './components/workspace/toolRelay';
+export { createSidebarBusPeer, createFrameBusPeer } from './components/workspace/busPeer';
 
 // Tool document URIs — the `tool:<appId>[/<docKey>]` convention, spelled once.
 export { toolDocUri, parseToolDocUri, activeDocKeyFor, TOOL_DOC_PREFIX } from './components/workspace/toolDocUri';
@@ -597,9 +598,10 @@ export const shellApi = {
 	get useToolHost() { return useToolHost; },
 	get createLoopbackPeer() { return createLoopbackPeer; },
 	get useGridConfigAnswering() { return useGridConfigAnswering; },
-	get createToolRelay() { return createToolRelay; },
 	get hostConnectionPayload() { return hostConnectionPayload; },
 	get TOOL_RELAY_BUFFER_LIMIT() { return TOOL_RELAY_BUFFER_LIMIT; },
+	get createSidebarBusPeer() { return createSidebarBusPeer; },
+	get createFrameBusPeer() { return createFrameBusPeer; },
 	get toolDocUri() { return toolDocUri; },
 	get parseToolDocUri() { return parseToolDocUri; },
 	get activeDocKeyFor() { return activeDocKeyFor; },
