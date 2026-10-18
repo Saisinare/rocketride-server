@@ -139,13 +139,6 @@ const ProjectWebview: React.FC = () => {
 		projectIdRef.current = projectId;
 	}, [projectId]);
 
-	// Pending validate requests (request-ID → Promise resolver)
-	const pendingValidates = useRef<Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>>(new Map());
-	const validateCounter = useRef(0);
-
-	// Pending node-schema requests (request-ID → Promise resolver)
-	const pendingNodeSchemas = useRef<Map<number, { resolve: (v: Record<string, any> | undefined) => void; reject: (e: Error) => void }>>(new Map());
-	const nodeSchemaCounter = useRef(0);
 
 	// Stable ref into the message fold below — the bus listeners deliver
 	// through it so the big switch stays the one fold for both carriers.
@@ -295,24 +288,6 @@ const ProjectWebview: React.FC = () => {
 			case 'project:update':
 				setProject(msg.project);
 				break;
-			case 'project:validateResponse': {
-				const pending = pendingValidates.current.get(msg.requestId);
-				if (pending) {
-					pendingValidates.current.delete(msg.requestId);
-					if (msg.error) pending.reject(new Error(msg.error));
-					else pending.resolve(msg.result);
-				}
-				break;
-			}
-			case 'project:nodeSchemaResponse': {
-				const pending = pendingNodeSchemas.current.get(msg.requestId);
-				if (pending) {
-					pendingNodeSchemas.current.delete(msg.requestId);
-					if (msg.error) pending.reject(new Error(msg.error));
-					else pending.resolve(msg.service);
-				}
-				break;
-			}
 			case 'shell:event': {
 				const pid = projectIdRef.current;
 				// statusMap keeps feeding the canvas (per-node badges + page
@@ -507,23 +482,16 @@ const ProjectWebview: React.FC = () => {
 		[sendMessage]
 	);
 
-	const handleValidate = useCallback(
-		async (pipeline: any): Promise<any> => {
-			return new Promise((resolve, reject) => {
-				const requestId = ++validateCounter.current;
-				pendingValidates.current.set(requestId, { resolve, reject });
-				sendMessage({ type: 'project:validate', requestId, pipeline });
-				// Timeout: resolve with empty result after 15s to avoid hanging
-				setTimeout(() => {
-					if (pendingValidates.current.has(requestId)) {
-						pendingValidates.current.get(requestId)!.resolve({ errors: [], warnings: [] });
-						pendingValidates.current.delete(requestId);
-					}
-				}, 15000);
-			});
-		},
-		[sendMessage]
-	);
+	const handleValidate = useCallback(async (pipeline: any): Promise<any> => {
+		// Brokered client.validate. CONTRACT: the old path resolved with an
+		// EMPTY result on timeout/failure (the canvas has never seen a
+		// rejection here) — preserve that by catching everything.
+		try {
+			return await ConnectionManager.getInstance().request('client.validate', pipeline as never, { timeoutMs: 15000 });
+		} catch {
+			return { errors: [], warnings: [] };
+		}
+	}, []);
 
 	/**
 	 * Fetches the FULL definition (config schema) for one service provider
@@ -531,23 +499,11 @@ const ProjectWebview: React.FC = () => {
 	 * the canvas requests definitions on demand and caches them. Rejects on
 	 * host error or timeout so the canvas treats the request as retryable.
 	 */
-	const handleGetNodeSchema = useCallback(
-		async (provider: string): Promise<Record<string, any> | undefined> => {
-			return new Promise((resolve, reject) => {
-				const requestId = ++nodeSchemaCounter.current;
-				pendingNodeSchemas.current.set(requestId, { resolve, reject });
-				sendMessage({ type: 'project:getNodeSchema', requestId, provider });
-				// Timeout: reject after 15s so a lost reply never hangs the canvas
-				setTimeout(() => {
-					if (pendingNodeSchemas.current.has(requestId)) {
-						pendingNodeSchemas.current.delete(requestId);
-						reject(new Error(`Node schema request timed out for '${provider}'`));
-					}
-				}, 15000);
-			});
-		},
-		[sendMessage]
-	);
+	const handleGetNodeSchema = useCallback(async (provider: string): Promise<Record<string, any> | undefined> => {
+		// Brokered client.getService — rejects on error/timeout so the canvas
+		// treats the request as retryable (unchanged contract).
+		return (await ConnectionManager.getInstance().request('client.getService', { service: provider } as never, { timeoutMs: 15000 })) as Record<string, any> | undefined;
+	}, []);
 
 	const handlePipelineAction = useCallback((action: 'run' | 'stop' | 'restart', source?: string) => {
 		const cm = ConnectionManager.getInstance();

@@ -673,39 +673,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 					break;
 				}
 
-				case 'project:validate': {
-					this.logger.output(`${icons.pipeline} Validating pipeline...`);
-					try {
-						const client = this.connectionManager.getClient();
-						if (!client) throw new Error('Not connected to server');
-						const result = await client.validate({ pipeline: data.pipeline });
-						this.logger.output(`${icons.success} Pipeline validation passed`);
-						webview.postMessage({ type: 'project:validateResponse', requestId: data.requestId, result });
-					} catch (error) {
-						const msg = error instanceof Error ? error.message : String(error);
-						this.logger.output(`${icons.error} Pipeline validation failed: ${msg}`);
-						webview.postMessage({ type: 'project:validateResponse', requestId: data.requestId, result: { errors: [], warnings: [] }, error: msg });
-					}
-					break;
-				}
-
-				case 'project:getNodeSchema': {
-					// The bulk services payload is summary-only; the canvas requests
-					// one provider's FULL definition (config schema) on demand and
-					// caches it webview-side, so this fires once per provider.
-					try {
-						const client = this.connectionManager.getClient();
-						if (!client) throw new Error('Not connected to server');
-						const service = await client.getService(data.provider);
-						webview.postMessage({ type: 'project:nodeSchemaResponse', requestId: data.requestId, service });
-					} catch (error) {
-						const msg = error instanceof Error ? error.message : String(error);
-						this.logger.error(`Fetching service definition for '${data.provider}': ${msg}`);
-						webview.postMessage({ type: 'project:nodeSchemaResponse', requestId: data.requestId, error: msg });
-					}
-					break;
-				}
-
 				// OAuth login: open the broker URL in the system browser (Google's
 				// consent screen refuses to render in a webview iframe) and arm a
 				// one-shot callback so the deep-link return delivers tokens back to
