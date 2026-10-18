@@ -41,7 +41,7 @@ import { EngineRegistry } from './engine';
 import { getUserConfigDir, getSystemInstallDir, migrateLocalEngine, migrateServiceConfig } from './engine/config/config-migration';
 
 import { SidebarProvider } from './providers/SidebarProvider';
-import { ProjectProvider } from './providers/ProjectProvider';
+import { PipelineProvider } from './providers/PipelineProvider';
 import { HtmlPageProvider } from './providers/HtmlPageProvider';
 // DeployProvider removed — Docker/Service operations now live in Settings panels
 import { BarStatus } from './providers/BarStatusProvider';
@@ -72,7 +72,7 @@ let configManager: ConfigManager | undefined;
 
 // Provider references
 let sidebar: SidebarProvider | undefined;
-let project: ProjectProvider | undefined;
+let pipeline: PipelineProvider | undefined;
 let _htmlPages: HtmlPageProvider | undefined;
 // deploy removed — functionality moved to Settings panels
 let appScreen: AppScreenProvider | undefined;
@@ -474,8 +474,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				context.subscriptions.push(welcomePage, settingsPage, account, environment, newApp, devTools, devToolPanels, devToolReadme);
 
 				// Register unified project editor (canvas + status + trace)
-				project = new ProjectProvider(context, busHost);
-				const pageProjectRegistration = vscode.window.registerCustomEditorProvider('rocketride.page.project', project, {
+				pipeline = new PipelineProvider(context, busHost);
+				const pipelineEditorRegistration = vscode.window.registerCustomEditorProvider('rocketride.page.project', pipeline, {
 					webviewOptions: {
 						retainContextWhenHidden: true,
 					},
@@ -500,7 +500,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				setupConnectionEventHandlers();
 
 				// Add all providers to context subscriptions for proper cleanup
-				context.subscriptions.push(pageProjectRegistration, project);
+				context.subscriptions.push(pipelineEditorRegistration, pipeline);
 
 				//-------------------------------------
 				// Update tree providers with initial data
@@ -662,7 +662,7 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('rocketride.page.status.open', (projectId: string, sourceId: string) => {
 			// Readonly live-task viewer — the pipeline page served with a
 			// task: doc (the StatusProvider replacement).
-			project?.openTaskStatus(projectId, sourceId);
+			pipeline?.openTaskStatus(projectId, sourceId);
 		}),
 		vscode.commands.registerCommand('rocketride.app.open', (appId: string) => {
 			// Fire-and-forget: a rejection has no other surface here — say it.
@@ -930,5 +930,5 @@ export const getEngineRegistry = () => engineRegistry;
 export const getConfigManager = () => configManager;
 export const getPipelineFilesTreeProvider = () => undefined;
 export const getConnectionTreeProvider = () => undefined;
-export const getProjectProvider = () => project;
+export const getPipelineProvider = () => pipeline;
 export const getBarStatus = () => barStatus;

@@ -4,14 +4,17 @@
 // =============================================================================
 
 /**
- * ProjectProvider — Unified custom editor for .pipeline files.
+ * PipelineProvider — the .pipe custom editor (canvas, file I/O, run/stop,
+ * publish) plus the readonly live-task viewer (task: docs).
  *
- * Combines the former PageEditorProvider (canvas editing, file I/O, undo/redo)
- * and StatusProvider (status, trace, flow monitoring) into a single provider
- * that renders the shared ProjectView component.
+ * The editor webview is a BUS REALM: boot state rides host.pipeline.load,
+ * per-document state rides the pipeline:doc:<doc> topics, engine access is
+ * request('client.*'). The remaining postMessage protocol is three
+ * messages: the two checkout pushes and the deploy:publish pair.
  *
- * Uses the ProjectViewIncoming / ProjectViewOutgoing message protocol to
- * communicate with the Project webview.
+ * NOTE: the viewType stays 'rocketride.page.project' on purpose — it is
+ * VS Code's tab-restore identity; renaming it orphans every user's open
+ * .pipe tabs (decision: keep, 2026-10-18).
  */
 
 import * as vscode from 'vscode';
@@ -31,7 +34,7 @@ import { isDeployRunBody } from '../shared/util/runClassification';
 import { handleMissingEnvVars } from '../shared/util/envVarCheck';
 import { isCloudConnectionConfigured as hasCloudConnectionConfigured } from '../shared/util/connectionModeAuth';
 import { savePipelineDocument } from '../shared/util/pipelineSave';
-import { openExternalLink } from './project/externalLink';
+import { openExternalLink } from './pipeline/externalLink';
 import type { BusHost } from './toolhost/busHost';
 // Deep import on purpose — ext-host-safe .ts leaf (see busHost.ts).
 import { registerOpHandlers } from 'shell/src/ops/busOps';
@@ -77,7 +80,7 @@ interface EditorState {
 // PROVIDER
 // =============================================================================
 
-export class ProjectProvider implements vscode.CustomTextEditorProvider {
+export class PipelineProvider implements vscode.CustomTextEditorProvider {
 	private disposables: vscode.Disposable[] = [];
 	private editorStates: Map<vscode.WebviewPanel, EditorState> = new Map();
 	private connectionManager = ConnectionManager.getInstance();
@@ -586,11 +589,11 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		try {
 			parsedUrl = new URL(url);
 		} catch {
-			this.logger.error('[ProjectProvider] Blocked unparseable OAuth URL');
+			this.logger.error('[PipelineProvider] Blocked unparseable OAuth URL');
 			return;
 		}
 		if (parsedUrl.protocol !== 'https:') {
-			this.logger.error(`[ProjectProvider] Blocked OAuth URL scheme: ${parsedUrl.protocol}`);
+			this.logger.error(`[PipelineProvider] Blocked OAuth URL scheme: ${parsedUrl.protocol}`);
 			vscode.window.showErrorMessage(`Sign-in blocked: the OAuth broker URL must use https (got "${parsedUrl.protocol}//"). Rebuild the extension without a non-https REACT_APP_OAUTH_ROOT_URL override.`);
 			return;
 		}
@@ -610,7 +613,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		} catch (error) {
 			// A dead waiter would swallow a later unrelated deep link.
 			unregister();
-			this.logger.error(`[ProjectProvider] Failed to open OAuth URL: ${error}`);
+			this.logger.error(`[PipelineProvider] Failed to open OAuth URL: ${error}`);
 			vscode.window.showErrorMessage('Could not open the browser for sign-in. Check your default browser and try again.');
 		}
 	}
@@ -635,7 +638,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		});
 		this.taskPanels.set(doc, panel);
 		panel.webview.html = this.getHtmlForWebview(panel.webview, doc);
-		const detachRealm = this.busHost.attachWebview(panel.webview, `page:project/${doc}`);
+		const detachRealm = this.busHost.attachWebview(panel.webview, `page:pipeline/${doc}`);
 		panel.onDidDispose(() => {
 			detachRealm();
 			this.taskPanels.delete(doc);
@@ -708,7 +711,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		// The editor is also a bus realm: shell components inside it (checkout,
 		// stripe key) use request('client.*')/host.* ops over the `__rrbus`
 		// envelope, which never collides with the typed project:* messages.
-		const detachRealm = this.busHost.attachWebview(webview, `page:project/${document.uri.toString()}`);
+		const detachRealm = this.busHost.attachWebview(webview, `page:pipeline/${document.uri.toString()}`);
 
 		// --- Handle messages from the webview (ProjectViewOutgoing) -----------
 
@@ -756,7 +759,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 						webview.postMessage({ type: 'deploy:actionResult', requestId: data.requestId });
 					} catch (error) {
 						const msg = error instanceof Error ? error.message : String(error);
-						this.logger.error(`[ProjectProvider] Publish failed: ${msg}`);
+						this.logger.error(`[PipelineProvider] Publish failed: ${msg}`);
 						webview.postMessage({ type: 'deploy:actionResult', requestId: data.requestId, error: msg });
 					}
 					break;
@@ -870,7 +873,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		edit.replace(document.uri, fullRange, normalizedNew);
 		const success = await vscode.workspace.applyEdit(edit);
 		if (!success) {
-			this.logger.error('[ProjectProvider] Failed to apply document edit');
+			this.logger.error('[PipelineProvider] Failed to apply document edit');
 		}
 		return { changed: true, applied: success };
 	}
@@ -935,7 +938,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			const projectId = parsed.project_id;
 
 			if (!projectId || !componentId) {
-				this.logger.error(`[ProjectProvider] Missing projectId or componentId`);
+				this.logger.error(`[PipelineProvider] Missing projectId or componentId`);
 				vscode.window.showErrorMessage('Invalid pipeline: missing project ID or component ID');
 				return;
 			}
@@ -943,14 +946,14 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			const token = await client.getTaskToken({ projectId, source: componentId });
 
 			if (!token) {
-				this.logger.error('[ProjectProvider] No token found for running task');
+				this.logger.error('[PipelineProvider] No token found for running task');
 				vscode.window.showErrorMessage('No running task found to stop');
 				return;
 			}
 
 			await client.terminate(token);
 		} catch (error: unknown) {
-			this.logger.error(`[ProjectProvider] Unable to stop pipeline: ${error}`);
+			this.logger.error(`[PipelineProvider] Unable to stop pipeline: ${error}`);
 			const message = error instanceof Error ? error.message : String(error);
 			vscode.window.showErrorMessage(`Failed to stop pipeline: ${message}`);
 		}
@@ -962,7 +965,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 
 	private getHtmlForWebview(webview: vscode.Webview, doc: string): string {
 		const nonce = this.generateNonce();
-		const htmlPath = vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'page-project.html');
+		const htmlPath = vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'page-pipeline.html');
 
 		try {
 			let htmlContent = require('fs').readFileSync(htmlPath.fsPath, 'utf8');

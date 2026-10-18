@@ -30,7 +30,7 @@ import { parsePipelineContent } from 'shared/tools/pipelines/parse';
 import type { ParsedPipelineFile, ServiceClassInfo } from 'shared/tools/pipelines/parse';
 import { checkMissingEnvVars } from '../../shared/util/envVarCheck';
 import { getLogger } from '../../shared/util/output';
-import { getProjectProvider } from '../../extension';
+import { getPipelineProvider } from '../../extension';
 
 export class PipelineFiles {
 	constructor(
@@ -206,7 +206,7 @@ export class PipelineFiles {
 			if (missing.length > 0) return;
 
 			const pipeName = path.basename(fsPath).replace(/\.pipe(?:\.json)?$/, '');
-			// Same per-task settings as editor launches (ProjectProvider.runPipeline)
+			// Same per-task settings as editor launches (PipelineProvider.runPipeline)
 			// — a pipeline must run identically regardless of where it is started.
 			const cfg = ConfigManager.getInstance().getConfig();
 			await client.use({
@@ -266,7 +266,7 @@ export class PipelineFiles {
 	private async handlePipelineRestart(uri: vscode.Uri, parsedFile: ParsedPipelineFile): Promise<void> {
 		if (!parsedFile.isValid || !parsedFile.projectId) return;
 
-		const projectProvider = getProjectProvider();
+		const projectProvider = getPipelineProvider();
 		if (projectProvider?.isSaveForRun(uri)) return;
 
 		// Which sources are running — asked of the server directly (the host

@@ -20,7 +20,7 @@ import type { ViewState, TaskStatus } from 'shared/tools/pipelines/project/types
 import type { ShellHostToWebview, ShellWebviewToHost } from './shellTypes';
 
 /** All messages the extension host can send to the ProjectWebview. */
-export type ProjectHostToWebview =
+export type PipelineHostToWebview =
 	| ShellHostToWebview
 	| { type: 'project:load'; project: any; viewState: ViewState; prefs: Record<string, unknown>; services: Record<string, any>; icons?: Record<string, string>; isConnected: boolean; cloudConnectionConfigured?: boolean; isSubscribed?: boolean; statuses?: Record<string, TaskStatus>; serverHost?: string; oauthReturnUrl?: string; isReadonly?: boolean; envKeys?: string[] }
 	| { type: 'project:oauthTokens'; tokens: string; state: string }
@@ -36,7 +36,7 @@ export type ProjectHostToWebview =
 	| { type: 'deploy:actionResult'; requestId: number; error?: string | null };
 
 /** All messages the ProjectWebview can send to the extension host. */
-export type ProjectWebviewToHost =
+export type PipelineWebviewToHost =
 	| ShellWebviewToHost
 	| { type: 'project:contentChanged'; project: any }
 	| { type: 'project:viewStateChange'; viewState: ViewState }

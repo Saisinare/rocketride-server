@@ -4,14 +4,14 @@
 // =============================================================================
 
 /**
- * ProjectWebview — VS Code webview bridge for the pipeline editor.
+ * PipelineWebview — the pipeline editor page as a shell bus realm.
  *
- * Receives messages from the extension host via useMessaging, manages local
- * state, and renders <ProjectView> with props. User actions from ProjectView
- * flow back as messages to the extension host.
- *
- * Architecture:
- *   ProjectHost (Node.js) ↔ postMessage ↔ ProjectWebview (browser) → ProjectView (pure UI)
+ * Boot state rides host.pipeline.load (the panel's identity is stamped in
+ * the served HTML as data-rr-doc); per-document state rides the
+ * pipeline:doc:<doc> topics; deploy and the DVR ride the client.deploy
+ * and client.log op families.
+ * Renders the shared ProjectView (its name follows the SHARED module —
+ * cross-app, out of this rename's scope).
  */
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
@@ -36,7 +36,7 @@ import { fetchDeployLifecycle as fetchLifecycleOp, fetchDeployment as fetchDeplo
 import { useMessaging } from '../hooks/useMessaging';
 import { useStripeKey } from '../hooks/useStripeKey';
 import { CheckoutUnavailableNotice } from '../components';
-import type { ProjectHostToWebview, ProjectWebviewToHost } from '../../types/projectTypes';
+import type { PipelineHostToWebview, PipelineWebviewToHost } from '../../types/pipelineTypes';
 import type { DeployTeamRefDTO, TeamDeploymentRowDTO, DeploymentLoadPayload, SchedulePreviewResultDTO } from '../../types/deployTypes';
 
 // =============================================================================
@@ -64,7 +64,7 @@ const DEPLOYMENT_REFETCH_COALESCE_MS = 400;
 // COMPONENT
 // =============================================================================
 
-const ProjectWebview: React.FC = () => {
+const PipelineWebview: React.FC = () => {
 	// --- State (populated from host messages) ---------------------------------
 
 	const [project, setProject] = useState<any>(null);
@@ -131,7 +131,7 @@ const ProjectWebview: React.FC = () => {
 
 	// Stable ref into the message fold below — the bus listeners deliver
 	// through it so the big switch stays the one fold for both carriers.
-	const handleMessageRef = useRef<(msg: ProjectHostToWebview) => void>(() => {});
+	const handleMessageRef = useRef<(msg: PipelineHostToWebview) => void>(() => {});
 	// This panel's bus identity (the document URI, or task:<pid>.<sid> for
 	// the readonly live-task viewer) — stamped into the served HTML, present
 	// before any script ran.
@@ -229,7 +229,7 @@ const ProjectWebview: React.FC = () => {
 			// The engine event stream arrives realm-locally (mirror.event →
 			// shell:event) — feed the same fold the typed push used to.
 			cm.on('shell:event', (payload) => {
-				handleMessageRef.current({ type: 'shell:event', event: (payload as { event?: unknown })?.event ?? payload } as ProjectHostToWebview);
+				handleMessageRef.current({ type: 'shell:event', event: (payload as { event?: unknown })?.event ?? payload } as PipelineHostToWebview);
 			}),
 			cm.on('shell:statusChange', applyConnection),
 			cm.on('shell:servicesUpdated', (payload) => applyServices(payload as { services: Record<string, unknown>; icons?: Record<string, string> })),
@@ -285,7 +285,7 @@ const ProjectWebview: React.FC = () => {
 
 	// --- Messaging ------------------------------------------------------------
 
-	const sendMessageRef = useRef<(msg: ProjectWebviewToHost) => void>(() => {});
+	const sendMessageRef = useRef<(msg: PipelineWebviewToHost) => void>(() => {});
 
 	// This realm's prefs store — hydrated once from the host's memento bag
 	// over the bus (host.prefs.*; the same lane every framework page uses);
@@ -304,7 +304,7 @@ const ProjectWebview: React.FC = () => {
 	}, []);
 	const getStateRef = useRef<() => ViewState | null>(() => null);
 
-	const handleMessage = useCallback((msg: ProjectHostToWebview) => {
+	const handleMessage = useCallback((msg: PipelineHostToWebview) => {
 		switch (msg.type) {
 			case 'shell:event': {
 				const pid = projectIdRef.current;
@@ -387,7 +387,7 @@ const ProjectWebview: React.FC = () => {
 		}
 	}, []);
 
-	const { sendMessage, getState, setState } = useMessaging<ProjectWebviewToHost, ProjectHostToWebview, ViewState>({
+	const { sendMessage, getState, setState } = useMessaging<PipelineWebviewToHost, PipelineHostToWebview, ViewState>({
 		onMessage: handleMessage,
 	});
 	useEffect(() => {
@@ -533,7 +533,7 @@ const ProjectWebview: React.FC = () => {
 	}, [isConnected]);
 
 	/** One requestId-correlated deploy action settled by deploy:actionResult. */
-	const deployRequest = useCallback((build: (requestId: number) => ProjectWebviewToHost): Promise<void> => {
+	const deployRequest = useCallback((build: (requestId: number) => PipelineWebviewToHost): Promise<void> => {
 		return new Promise<void>((resolve, reject) => {
 			// Step 1: allocate the correlation id and arm the timeout guard.
 			const requestId = ++deployRequestCounter.current;
@@ -877,4 +877,4 @@ const ProjectWebview: React.FC = () => {
 	);
 };
 
-export default ProjectWebview;
+export default PipelineWebview;

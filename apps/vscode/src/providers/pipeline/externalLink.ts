@@ -34,7 +34,7 @@ export function openExternalLink(url: string, displayName?: string, browser = fa
 		try {
 			void vscode.env.openExternal(vscode.Uri.parse(assertExternalUrl(url)));
 		} catch (error) {
-			logger.error(`[ProjectProvider] ${error}`);
+			logger.error(`[PipelineProvider] ${error}`);
 		}
 		return;
 	}
@@ -171,7 +171,7 @@ export function openExternalLink(url: string, displayName?: string, browser = fa
 				);
 				panel.webview.postMessage({ type: 'nativeFilesSelected', files });
 			} catch (error) {
-				logger.error(`[ProjectProvider] Native file dialog failed: ${error}`);
+				logger.error(`[PipelineProvider] Native file dialog failed: ${error}`);
 			}
 		}
 	});

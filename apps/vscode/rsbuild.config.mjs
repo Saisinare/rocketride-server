@@ -58,7 +58,7 @@ export default defineConfig({
 		exclude: ['./dist/**', './node_modules/**', './**/*.test.*', './**/*.spec.*'],
 		entry: {
 			'page-sidebar': './src/providers/views/sidebar/index.tsx',
-			'page-project': './src/providers/views/project/index.tsx',
+			'page-pipeline': './src/providers/views/pipeline/index.tsx',
 			// The ONE bundle for all framework pages (account, environment, …):
 			// the host stamps the page name into the HTML; a compiled-in
 			// registry picks the component. Per-page entries are retired as

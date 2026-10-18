@@ -32,7 +32,7 @@ import { GenericEvent, PIPE_BUILDER_APP_ID } from '../shared/types';
 import { isSubscribed } from '../shared/util/subscriptionGate';
 import { isDeployRunBody } from '../shared/util/runClassification';
 import { getLogger } from '../shared/util/output';
-import { getProjectProvider } from '../extension';
+import { getPipelineProvider } from '../extension';
 import { DevToolStore } from './DevToolStore';
 import type { BusHost } from './toolhost/busHost';
 import { readPref, readPrefsSnapshot, writePref } from './PrefsBag';
@@ -395,7 +395,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 			if (event?.event === 'apaevt_status_update') {
 				// Forward status updates (errors/warnings) to webview.
 				// Deploy runs never touch the dev lists (THE one host-side
-				// classifier, shared with ProjectProvider's status cache) —
+				// classifier, shared with PipelineProvider's status cache) —
 				// their status belongs to the deployment surfaces, and the '*'
 				// subscription delivers them here whenever a team-scoped run
 				// is visible.
@@ -403,7 +403,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 				const projectId = event.body?.project_id;
 				const sourceId = event.body?.source;
 				if (projectId && sourceId) {
-					const statusProvider = getProjectProvider();
+					const statusProvider = getPipelineProvider();
 					const ts = statusProvider?.getTaskStatus(projectId, sourceId);
 					this._view?.webview.postMessage({
 						type: 'sidebar:statusUpdate',
