@@ -158,13 +158,10 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		const connectionStateListener = this.connectionManager.on('shell:statusChange', async (connectionStatus) => {
 			try {
 				if (connectionStatus.state === ConnectionState.CONNECTED) {
+					// Monitoring is realm-owned now (brokered client.addMonitor
+					// with cross-realm refcounts; the broker resubscribes on
+					// reconnect) — the host only clears its stale status fold.
 					this.onConnectedClearStaleData();
-					// Start monitoring for all open editors that missed initial subscription
-					for (const [panel] of this.editorStates) {
-						this.startMonitoring(panel).catch((err) => {
-							this.logger.error(`Starting monitoring on reconnect: ${err}`);
-						});
-					}
 				}
 			} catch (error) {
 				this.logger.error(`Handling connection state change: ${error}`);
@@ -319,47 +316,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	// =========================================================================
 	// MONITORING
 	// =========================================================================
-
-	private async startMonitoring(panel: vscode.WebviewPanel): Promise<void> {
-		const editorState = this.editorStates.get(panel);
-		if (!editorState || editorState.isDisposed || !editorState.projectId || !this.connectionManager.isConnected()) {
-			return;
-		}
-
-		try {
-			const client = this.connectionManager.getClient();
-			if (!client) throw new Error('No client available');
-			// summary/flow feed the canvas + status map; output/task feed the
-			// webview's live log and run-active timeline. The webview has no
-			// session of its own (the host bridges all events), so the host
-			// must subscribe to every class the panes consume. The 'deploy'
-			// class rides the global registration: deployment-change
-			// invalidations that let the drawer re-fetch instead of polling.
-			await client.addMonitor({ projectId: editorState.projectId, source: '*' }, ['summary', 'flow', 'output', 'task']);
-			// Global classes: 'deploy' = deployment-change invalidations;
-			// '*' task = ALL visible runs' lifecycle (the where-live running
-			// badges) — each registration also triggers the server's catch-up
-			// snapshot, seeding the webview's fold on panel open.
-			await client.addMonitor({ token: '*' }, ['deploy', 'task']);
-		} catch (error) {
-			this.logger.error(`Starting monitoring for project ${editorState.projectId}: ${error}`);
-		}
-	}
-
-	private async stopMonitoring(panel: vscode.WebviewPanel): Promise<void> {
-		const editorState = this.editorStates.get(panel);
-		if (!editorState || !editorState.projectId) return;
-
-		try {
-			const client = this.connectionManager.getClient();
-			if (client) {
-				await client.removeMonitor({ projectId: editorState.projectId, source: '*' }, ['summary', 'flow', 'output', 'task']);
-				await client.removeMonitor({ token: '*' }, ['deploy', 'task']);
-			}
-		} catch (error) {
-			this.logger.error(`Stopping monitoring for project ${editorState.projectId}: ${error}`);
-		}
-	}
 
 	private onConnectedClearStaleData(): void {
 		for (const editorState of this.editorStates.values()) {
@@ -598,12 +554,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 						this.logger.error(`Background services refresh failed: ${err}`);
 					});
 
-					// Start monitoring
-					try {
-						await this.startMonitoring(webviewPanel);
-					} catch (error) {
-						this.logger.error(`Starting monitoring after webview ready: ${error}`);
-					}
 					break;
 				}
 
@@ -945,7 +895,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		// Clean up when panel is disposed
 		webviewPanel.onDidDispose(async () => {
 			detachRealm();
-			await this.stopMonitoring(webviewPanel);
 			// Close any run-log sessions the DVR bridge left open.
 			this.deployLifecycle.disposeLogSessions(webview);
 			editorState.cachedStatuses = {};
@@ -955,12 +904,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			saveDocumentSubscription.dispose();
 		});
 
-		// Start monitoring immediately if connected
-		if (this.connectionManager.isConnected()) {
-			this.startMonitoring(webviewPanel).catch((error) => {
-				this.logger.error(`Starting initial monitoring: ${error}`);
-			});
-		}
 	}
 
 	// =========================================================================

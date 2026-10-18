@@ -194,6 +194,43 @@ const ProjectWebview: React.FC = () => {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
+	// --- Monitoring (realm-owned, brokered) ------------------------------------
+	// summary/flow feed the canvas + status map; output/task feed the live
+	// log and run-active timeline; the global {token:'*'} pair carries deploy
+	// invalidations + ALL visible runs' lifecycle (each registration also
+	// triggers the server's catch-up snapshot). The broker owns cross-realm
+	// refcounts and resubscribes on reconnect — this realm registers once per
+	// projectId and removes on unmount (fixing the old host-side bug where
+	// the first panel to close unregistered the global pair for everyone).
+	useEffect(() => {
+		if (!projectId) return;
+		const cm = ConnectionManager.getInstance();
+		const projectKey = { projectId, source: '*' };
+		const projectTypes = ['summary', 'flow', 'output', 'task'];
+		const globalKey = { token: '*' };
+		const globalTypes = ['deploy', 'task'];
+		let added = false;
+		let disposed = false;
+		const add = (): void => {
+			if (added || disposed || !cm.isConnected()) return;
+			added = true;
+			void cm.request('client.addMonitor', { key: projectKey, types: projectTypes } as never).catch(() => {
+				added = false;
+			});
+			void cm.request('client.addMonitor', { key: globalKey, types: globalTypes } as never).catch(() => {});
+		};
+		add();
+		const off = cm.on('shell:connected', add);
+		return () => {
+			disposed = true;
+			off();
+			if (added) {
+				cm.emitOp('client.removeMonitor', { key: projectKey, types: projectTypes });
+				cm.emitOp('client.removeMonitor', { key: globalKey, types: globalTypes });
+			}
+		};
+	}, [projectId]);
+
 	// --- Messaging ------------------------------------------------------------
 
 	const sendMessageRef = useRef<(msg: ProjectWebviewToHost) => void>(() => {});
