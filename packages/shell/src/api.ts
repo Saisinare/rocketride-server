@@ -97,9 +97,9 @@ import { createToolController, createToolOpServer, asToolCallMessage, asToolRepl
 import { typedToolChannel, useToolState, useConnectionReady, publishHostConnectionState, HOST_CONNECTION_TOPIC } from './components/workspace/toolProtocol';
 import { typedPrefs, scopedPrefs, createBridgedPrefsStore, usePref } from './components/workspace/prefsStore';
 import { ToolHostProvider, useToolHost, createLoopbackPeer } from './components/workspace/toolHost';
-import { createOpBus, typedBusOps, BusNoHandlerError, DEFAULT_BUS_REQUEST_TIMEOUT_MS } from './connection/busOps';
-import { attachRealmToRoot, createBusRouter, createLocalEndpointPair, DEFAULT_SUMMON_TIMEOUT_MS } from './connection/busBridge';
-import { registerClientOps } from './connection/clientOps';
+import { createOpBus, typedBusOps, registerOpHandlers, BusNoHandlerError, DEFAULT_BUS_REQUEST_TIMEOUT_MS } from './ops/busOps';
+import { attachRealmToRoot, createBusRouter, createLocalEndpointPair, DEFAULT_SUMMON_TIMEOUT_MS } from './ops/busBridge';
+import { registerClientOps } from './ops/clientOps';
 import { useGridConfigAnswering } from './components/data-grid/gridConfigAnswering';
 import { createToolRelay, hostConnectionPayload, TOOL_RELAY_BUFFER_LIMIT } from './components/workspace/toolRelay';
 import { toolDocUri, parseToolDocUri, activeDocKeyFor, TOOL_DOC_PREFIX } from './components/workspace/toolDocUri';
@@ -153,6 +153,7 @@ import { AnchoredPopup } from './components/AnchoredPopup';
 // Shell-owned overlay pages
 import AccountProvider from './providers/AccountProvider';
 import SettingsProvider from './providers/SettingsProvider';
+import { CheckoutFlow } from './components/layout/CheckoutFlow';
 
 // Icons — a DELIBERATE subset of ./icons/BoxIcon: only the glyphs shell chrome
 // itself renders are part of the frozen contract. Apps needing other icons take
@@ -229,12 +230,12 @@ export { toolDocUri, parseToolDocUri, activeDocKeyFor, TOOL_DOC_PREFIX } from '.
 // router; hosts supply only transport endpoints. Registration is the
 // allowlist is the routing entry; summon wakes installed-but-dormant
 // owners and never installs.
-export { createOpBus, typedBusOps, BusNoHandlerError, DEFAULT_BUS_REQUEST_TIMEOUT_MS } from './connection/busOps';
-export type { ShellOpMap, ShellOpSpec, ShellOpParams, ShellOpResult, IOpBus, IBusForwarder, IBusRequestOptions, ITypedBusOps, BusOpHandler } from './connection/busOps';
-export { attachRealmToRoot, createBusRouter, createLocalEndpointPair, DEFAULT_SUMMON_TIMEOUT_MS } from './connection/busBridge';
-export { registerClientOps } from './connection/clientOps';
-export type { ClientOpMap, ClientMonitorKey, IClientOpsSource, IClientOpsOptions } from './connection/clientOps';
-export type { IBusEndpoint, IBusRouter, IBusRouterOptions, SummonLookup } from './connection/busBridge';
+export { createOpBus, typedBusOps, registerOpHandlers, BusNoHandlerError, DEFAULT_BUS_REQUEST_TIMEOUT_MS } from './ops/busOps';
+export type { ShellOpMap, ShellOpSpec, ShellOpParams, ShellOpResult, IOpBus, IBusForwarder, IBusRequestOptions, ITypedBusOps, BusOpHandler, OpImplTable } from './ops/busOps';
+export { attachRealmToRoot, createBusRouter, createLocalEndpointPair, DEFAULT_SUMMON_TIMEOUT_MS } from './ops/busBridge';
+export { registerClientOps } from './ops/clientOps';
+export type { ClientOpMap, ClientMonitorKey, IClientOpsSource, IClientOpsOptions } from './ops/clientOps';
+export type { IBusEndpoint, IBusRouter, IBusRouterOptions, SummonLookup } from './ops/busBridge';
 
 // Top-level shell + sidebar component prop types
 export type { ShellProps } from './components/layout/Shell';
@@ -602,6 +603,7 @@ export const shellApi = {
 	get TOOL_DOC_PREFIX() { return TOOL_DOC_PREFIX; },
 	get createOpBus() { return createOpBus; },
 	get typedBusOps() { return typedBusOps; },
+	get registerOpHandlers() { return registerOpHandlers; },
 	get BusNoHandlerError() { return BusNoHandlerError; },
 	get DEFAULT_BUS_REQUEST_TIMEOUT_MS() { return DEFAULT_BUS_REQUEST_TIMEOUT_MS; },
 	get attachRealmToRoot() { return attachRealmToRoot; },
@@ -643,6 +645,7 @@ export const shellApi = {
 	get AnchoredPopup() { return AnchoredPopup; },
 	get AccountProvider() { return AccountProvider; },
 	get SettingsProvider() { return SettingsProvider; },
+	get CheckoutFlow() { return CheckoutFlow; },
 	get BxPlus() { return BxPlus; },
 	get BxEditAlt() { return BxEditAlt; },
 	get BxTrash() { return BxTrash; },
@@ -703,8 +706,8 @@ export {
 	Shell, Sidebar, BottomPanel, DebugPanel,
 	// Layout building blocks
 	NavButton, ConfirmDialog, PopupRow, AnchoredPopup,
-	// Shell-owned overlay pages
-	AccountProvider, SettingsProvider,
+	// Shell-owned overlay pages (framework pages in any host realm)
+	AccountProvider, SettingsProvider, CheckoutFlow,
 	// Icons
 	BxPlus, BxEditAlt, BxTrash, BxDesktop, BxGridAlt, BxCog, BxListUl,
 	BxStop, BxPlay, BxHome, BxNote, BxComponent, BxUser, BxRocket,

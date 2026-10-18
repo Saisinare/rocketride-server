@@ -442,6 +442,10 @@ const SidebarWorkbench: React.FC<SidebarWorkbenchProps> = ({ variant, themeConfi
 	 * panel.
 	 */
 	const activate = useCallback((id: string) => {
+		// An id the rail never declared must not become — or PERSIST as — the
+		// active view: resolveActiveView would silently fall back to the
+		// default tab while the bad id kept re-asserting from storage.
+		if (!views.some((v) => v.id === id)) return;
 		if (open && activeView?.id === id) {
 			closePanel();
 			return;
@@ -449,7 +453,7 @@ const SidebarWorkbench: React.FC<SidebarWorkbenchProps> = ({ variant, themeConfi
 		setActiveViewId(id);
 		remember(activeAppId, { view: id });
 		if (!open) openPanel();
-	}, [open, activeView?.id, activeAppId, closePanel, openPanel]);
+	}, [open, activeView?.id, activeAppId, closePanel, openPanel, views]);
 
 	// The classic event keeps working in workbench modes: "collapsed" means
 	// "panel closed". A LAYOUT effect for the same replay reasons as the

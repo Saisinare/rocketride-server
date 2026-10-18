@@ -61,6 +61,11 @@ import { ToolGlyph } from './devtools/ToolGlyph';
 import { useDevToolPins } from './devtools/devToolPins';
 import { CodiconExtensions } from 'shared/components/icons/Codicon';
 import { AgentSession } from 'shared/agent/agent';
+import { registerRocketHostOps } from './ops/hostOps';
+
+// This app IS the cloud host: its `host.*` implementations register once at
+// module scope on the root realm's bus (idempotent across remounts).
+registerRocketHostOps();
 
 // =============================================================================
 // STYLES

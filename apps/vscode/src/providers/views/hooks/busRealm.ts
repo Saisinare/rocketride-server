@@ -11,25 +11,27 @@
 // router (toolhost/busHost.ts) over the webview's postMessage channel, and
 // receives the broker's MIRROR feed:
 //
-//   - `mirror.state` — connection/account/services snapshot, re-emitted
-//     locally as the shell events realm code already listens for
-//     (shell:statusChange / shell:accountUpdate / shell:servicesUpdated),
+//   - `mirror.status` / `mirror.account` / `mirror.services` — per-topic
+//     state pushes (the services blob never rides a status tick),
+//     re-emitted locally as the shell events realm code already listens
+//     for (shell:statusChange / shell:accountUpdate / shell:servicesUpdated),
 //   - `mirror.event` — engine pushes (task/status events), re-emitted as
 //     `shell:event` so controllers fold them exactly as they folded events
 //     off their own socket.
 //
-// Bus traffic rides the `__rrbus` envelope on the SAME channel as the
-// view's typed messages — the view's useMessaging switch never sees it
-// (no `type` field), and this module never sees the view's messages.
+// Bus traffic rides the `__rrbus` envelope on the SAME channel as any typed
+// view messages — a useMessaging switch never sees it (no `type` field),
+// and this module never sees the view's messages.
 //
-// This file is the realm's ONE bus attachment: call attachSidebarRealm()
-// once at module scope. After this lands, the realm needs no socket and no
-// authToken — engine access is `request('client.*')`.
+// This file is a realm's ONE bus attachment: every webview entry (sidebar
+// and each framework page) calls attachBusRealm() once at module scope.
+// A realm needs no socket and no authToken — engine access is
+// `request('client.*')` against the extension host's broker.
 // =============================================================================
 
 import { ConnectionManager, attachRealmToRoot } from 'shell';
 import type { IBusEndpoint } from 'shell';
-import { getVsCodeApi } from '../hooks/useMessaging';
+import { getVsCodeApi } from './useMessaging';
 
 /** The bus envelope key (must match shell busBridge.ts). */
 const BUS_ENVELOPE = '__rrbus';
@@ -41,10 +43,10 @@ let attached = false;
  * the realm has exactly one attachment for its lifetime (a rebooted
  * webview is a fresh realm and attaches fresh).
  */
-export function attachSidebarRealm(): void {
+export function attachBusRealm(): void {
 	if (attached) return;
 	try {
-		attachSidebarRealmUnsafe();
+		attachBusRealmUnsafe();
 	} catch (err) {
 		// The bus attach must NEVER take the page down — a realm without a
 		// bus degrades (no engine data) but still renders.
@@ -52,7 +54,7 @@ export function attachSidebarRealm(): void {
 	}
 }
 
-function attachSidebarRealmUnsafe(): void {
+function attachBusRealmUnsafe(): void {
 	const api = getVsCodeApi();
 	if (!api) return; // not inside a VS Code webview (tests, storybook)
 	attached = true;
@@ -78,9 +80,14 @@ function attachSidebarRealmUnsafe(): void {
 	// getCachedServices) answer from mirrored state, and the matching shell
 	// events re-emit locally — consumers written against the ambient manager
 	// work unchanged, socketless.
-	cm.handle('mirror.state', (params) => {
+	// Each topic is a partial of the same primeMirror contract; the sync
+	// snapshot is their union, so one receiver shape covers all four.
+	const prime = (params: unknown): void => {
 		cm.primeMirror(params as Parameters<typeof cm.primeMirror>[0]);
-	});
+	};
+	cm.handle('mirror.status', prime);
+	cm.handle('mirror.account', prime);
+	cm.handle('mirror.services', prime);
 	cm.handle('mirror.event', (params) => {
 		// Payload shape preserved: shell:event carries { event } (the DAP
 		// message), exactly as the socket path produced it.
@@ -89,7 +96,7 @@ function attachSidebarRealmUnsafe(): void {
 
 	// Pull the current snapshot once — pushes only cover changes AFTER attach.
 	void cm.request('mirror.sync', {}).then(
-		(snapshot) => cm.emitOp('mirror.state', snapshot),
+		(snapshot) => prime(snapshot),
 		() => { /* root not ready yet — the first broadcast will seed us */ }
 	);
 }

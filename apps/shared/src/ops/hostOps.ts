@@ -1,0 +1,109 @@
+// =============================================================================
+// MIT License
+// Copyright (c) 2026 Aparavi Software AG
+// =============================================================================
+
+// =============================================================================
+// HOST OPS — declarations for the host-environment vocabulary
+// =============================================================================
+//
+// The `host.*` ops are capabilities only a framework HOST can provide (open
+// the real browser, probe the server's Stripe key, persist prefs, read
+// multi-connection state). DECLARATIONS AND SHARED GUARDS ONLY — the actual
+// implementations live with each host: apps/rocket-ui/src/ops (cloud) and
+// apps/vscode/src/ops (extension host). Not every host serves every op (a
+// single-connection browser root has no env slots), but every op is
+// declared here so realms address one vocabulary.
+//
+// Imports only the ext-host-safe busOps leaf: this file is compiled into
+// webview bundles, the cloud realm, AND the extension host.
+// =============================================================================
+
+import type { ShellOpMap, ShellOpSpec } from 'shell/src/ops/busOps';
+
+// =============================================================================
+// PAYLOAD SHAPES
+// =============================================================================
+
+/** Why a host has no Stripe publishable key to offer. */
+export type StripeKeyReason = 'no-connection' | 'probe-failed' | 'no-billing';
+
+/** `host.stripeKey` result. */
+export interface StripeKeyInfo {
+	key: string | null;
+	reason?: StripeKeyReason;
+}
+
+/** One connection slot's state for the Environment page (host-derived:
+ *  a deploy slot's state never leaves the host process). */
+export interface EnvSlotState {
+	slot: 'development' | 'deployment';
+	isConnected: boolean;
+	isSaas: boolean;
+	connectionMode: string | null;
+	isOrgAdmin: boolean;
+	isTeamAdmin: boolean;
+	orgId?: string;
+	teamId?: string;
+}
+
+/** `host.envSlots` result — also the `host.envSlotsChanged` broadcast payload. */
+export interface EnvSlotsPayload {
+	/** True when deployment shares the development target (one slot shown). */
+	shared: boolean;
+	slots: EnvSlotState[];
+}
+
+// =============================================================================
+// THE VOCABULARY
+// =============================================================================
+
+/** The host-environment op map. */
+export interface HostOpMap extends ShellOpMap {
+	/** Opens a URL in the user's real browser (never inside the realm).
+	 *  Every implementation MUST gate through {@link assertExternalUrl}. */
+	'host.openExternal': ShellOpSpec<{ url: string }, void>;
+	/** The Stripe publishable key for the host's server, or null + reason. */
+	'host.stripeKey': ShellOpSpec<Record<string, never>, StripeKeyInfo>;
+	/** The host's prefs snapshot — a page realm hydrates its bridged prefs
+	 *  store once from this. */
+	'host.prefs.snapshot': ShellOpSpec<Record<string, never>, Record<string, unknown>>;
+	/** One pref write (fire-and-forget via emitOp, like every prefs write). */
+	'host.prefs.set': ShellOpSpec<{ key: string; value: unknown; scope?: 'workspace' | 'global' }, void>;
+	/** Connection-slot state for the Environment page — served by
+	 *  multi-connection hosts (dev/deploy). */
+	'host.envSlots': ShellOpSpec<Record<string, never>, EnvSlotsPayload>;
+	/** Opens a framework page by registry name, from ANY realm. The host's
+	 *  page directory is the allowlist; an unknown name rejects. `popup`
+	 *  asks for an overlay where the host has one (cloud); hosts without
+	 *  window-modal surfaces (VS Code) open a page regardless. `args` ride
+	 *  to the page's open hook (e.g. the Environment prefill keys). */
+	'host.openPage': ShellOpSpec<{ page: string; popup?: boolean; args?: unknown[] }, void>;
+}
+
+// =============================================================================
+// SHARED GUARDS
+// =============================================================================
+
+/** The only URL schemes a host may open externally. */
+export const EXTERNAL_URL_SCHEMES = ['https', 'http', 'mailto'] as const;
+
+/**
+ * Validates a realm-supplied external URL — the GENERIC half of every
+ * `host.openExternal` implementation. A realm must never steer the host
+ * into opening file:/vscode:/javascript:/custom-app URIs.
+ *
+ * @param url - The URL as received off the bus.
+ * @returns The validated URL (for fluent use).
+ * @throws When the URL is unparseable or its scheme is not allowlisted.
+ */
+export function assertExternalUrl(url: string): string {
+	let scheme = '';
+	try {
+		scheme = new URL(url).protocol.replace(':', '').toLowerCase();
+	} catch { /* unparseable — rejected below */ }
+	if (!(EXTERNAL_URL_SCHEMES as readonly string[]).includes(scheme)) {
+		throw new Error(`Blocked external URL scheme: ${scheme || '(unparseable)'}`);
+	}
+	return url;
+}

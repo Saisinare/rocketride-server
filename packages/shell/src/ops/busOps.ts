@@ -167,6 +167,31 @@ export interface IOpBus {
  *
  * @returns The op bus.
  */
+/**
+ * An implementation table for (a subset of) an op map: one function per op
+ * name, name-checked against the map. THE one way every domain registers —
+ * clientOps, hostOps, and host-specific override tables all ride this.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type OpImplTable<M extends ShellOpMap> = Partial<{ [K in keyof M]: (params: any) => unknown }>;
+
+/**
+ * Registers an implementation table on a bus. Per entry: skipped when the
+ * host already registered its own override (`hasHandler`) or when listed in
+ * `skip` — specific-before-shared is the composition rule.
+ *
+ * @param bus - The realm's op bus.
+ * @param impls - One implementation per op name.
+ * @param options - Ops to leave unregistered.
+ * @returns Unregister-all function.
+ */
+export function registerOpHandlers<M extends ShellOpMap>(bus: IOpBus, impls: OpImplTable<M>, options?: { skip?: ReadonlySet<string> }): () => void {
+	const offs = Object.entries(impls as Record<string, BusOpHandler>)
+		.filter(([op]) => !options?.skip?.has(op) && !bus.hasHandler(op))
+		.map(([op, fn]) => bus.handle(op, fn));
+	return () => offs.forEach((off) => off());
+}
+
 export function createOpBus(): IOpBus {
 	const handlers = new Map<string, BusOpHandler>();
 	const regWatchers = new Set<(op: string, registered: boolean) => void>();

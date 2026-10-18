@@ -48,12 +48,12 @@ import { HtmlPageProvider } from './providers/HtmlPageProvider';
 import { StatusProvider } from './providers/StatusProvider';
 import { BarStatus } from './providers/BarStatusProvider';
 import { WelcomeProvider } from './providers/WelcomeProvider';
-import { AccountProvider } from './providers/AccountProvider';
-import { EnvironmentProvider } from './providers/EnvironmentProvider';
+import { FrameworkProvider } from './providers/toolhost/frameworkProvider';
 import { NewAppProvider } from './providers/NewAppProvider';
 import { DevToolStore } from './providers/DevToolStore';
 import { DevToolBridge } from './providers/DevToolBridge';
 import { BusHost } from './providers/toolhost/busHost';
+import { registerVscodeOps } from './ops';
 import { writePref } from './providers/PrefsBag';
 import { DevToolPanelProvider } from './providers/DevToolPanelProvider';
 import { DevToolReadmeProvider } from './providers/DevToolReadmeProvider';
@@ -329,7 +329,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				// resolve) and reach the engine only through request() —
 				// named client.* ops, broker-owned monitors, mirrored state.
 				const busHost = new BusHost(engineConnection);
-				busHost.registerBrokerOps();
+				// Everything this host serves over the bus — monitor broker,
+				// client overrides, the shared client table, host.* ops —
+				// registers in dependency order in src/ops.
+				registerVscodeOps(busHost, context);
 				busHost.startMirrors();
 				context.subscriptions.push({ dispose: () => busHost.dispose() });
 
@@ -385,8 +388,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				void appScreen.reconcileOpenTabs();
 				// File-less per-team deployment tabs (teams-as-environments)
 				welcome = new WelcomeProvider(context, context.extensionUri);
-				const account = new AccountProvider(context);
-				const environment = new EnvironmentProvider(context);
+				// Framework pages: shell components in a webview, engine access
+				// over the bus — the host side is just command + panel + realm.
+				const account = new FrameworkProvider(context, busHost, {
+					page: 'account',
+					command: 'rocketride.page.account.open',
+					viewType: 'rocketride.page.account',
+					title: 'Account',
+				});
+				// The Environment page's missing-keys prefill (the pre-run env
+				// gate): pull-based for open-with-args (the realm attaches
+				// after the command fires), push for an already-open page.
+				let envPrefillKeys: string[] = [];
+				busHost.rootBus.handle('env.getPrefill', async () => ({ keys: envPrefillKeys }));
+				const environment = new FrameworkProvider(context, busHost, {
+					page: 'environment',
+					command: 'rocketride.page.environment.open',
+					viewType: 'rocketride.page.environment',
+					title: 'Variables',
+					onOpen: (args) => {
+						const keys = Array.isArray(args[0]) ? (args[0] as string[]) : [];
+						if (keys.length > 0) {
+							envPrefillKeys = keys;
+							busHost.broadcastEmitOp('env.prefill', { keys });
+						}
+					},
+				});
 				// New App wizard — registers rocketride.app.create itself
 				const newApp = new NewAppProvider(context);
 				// Dev tools: the tool panels (MF host webviews) + the modules

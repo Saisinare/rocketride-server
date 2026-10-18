@@ -16,10 +16,10 @@
 //   - `attachWebview` adapts one webview to an IBusEndpoint (its own
 //     onDidReceiveMessage listener — bus traffic rides the `__rrbus`
 //     envelope and never touches the owning provider's message switch).
-//   - `registerBrokerOps` registers the first `client.*` slice: NAMED ops
-//     only (registration is the allowlist — never a generic passthrough),
-//     with the broker as the single monitor authority (cross-realm
-//     refcounts; the engine sees ONE subscription set).
+//   - `registerMonitorBroker` registers the broker-owned monitor pair
+//     (cross-realm refcounts; the engine sees ONE subscription set). Every
+//     OTHER op this host serves registers via apps/vscode/src/ops
+//     (registerVscodeOps) — NAMED ops only; registration is the allowlist.
 //   - MIRRORS: connection/account/services state is broadcast to every
 //     realm as fire-and-forget `mirror.*` ops; realms re-emit locally so
 //     synchronous reads (isConnected, getAccountInfo, getCachedServices)
@@ -30,11 +30,11 @@ import * as vscode from 'vscode';
 // Deep imports on purpose — the barrel drags .tsx into the extension
 // host's no-DOM compile; busOps/busBridge are the sanctioned ext-host-safe
 // .ts leaves (same rule as toolRelay).
-import { createOpBus } from 'shell/src/connection/busOps';
-import type { IOpBus } from 'shell/src/connection/busOps';
-import { createBusRouter } from 'shell/src/connection/busBridge';
-import { registerClientOps } from 'shell/src/connection/clientOps';
-import type { IBusEndpoint, IBusRouter, SummonLookup } from 'shell/src/connection/busBridge';
+import { createOpBus, registerOpHandlers } from 'shell/src/ops/busOps';
+import type { IOpBus } from 'shell/src/ops/busOps';
+import { createBusRouter } from 'shell/src/ops/busBridge';
+import type { ClientOpMap } from 'shell/src/ops/clientOps';
+import type { IBusEndpoint, IBusRouter, SummonLookup } from 'shell/src/ops/busBridge';
 import type { ConnectionManager } from '../../connection/connection';
 import { getLogger } from '../../shared/util/output';
 
@@ -58,8 +58,17 @@ export class BusHost {
 	/** The parsed key behind each keyString (for SDK calls + resubscribe). */
 	private monitorKeys = new Map<string, MonitorKey>();
 
-	constructor(private readonly connectionManager: ConnectionManager, summon?: SummonLookup) {
+	/** Wire-trace gate (rocketride.debug.busTrace) — read once, refreshed on
+	 *  config change so it can be toggled without a reload. */
+	private traceEnabled = vscode.workspace.getConfiguration('rocketride').get<boolean>('debug.busTrace', false);
+
+	constructor(public readonly connectionManager: ConnectionManager, summon?: SummonLookup) {
 		this.router = createBusRouter(this.rootBus, summon ? { summon } : {});
+		this.disposables.push(vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration('rocketride.debug.busTrace')) {
+				this.traceEnabled = vscode.workspace.getConfiguration('rocketride').get<boolean>('debug.busTrace', false);
+			}
+		}));
 	}
 
 	// =========================================================================
@@ -78,7 +87,8 @@ export class BusHost {
 	 */
 	public attachWebview(webview: vscode.Webview, label: string): () => void {
 		// Wire-level trace of EVERY bus message crossing this webview's
-		// bridge, both directions — the one place that sees it all.
+		// bridge, both directions — the one place that sees it all. Gated
+		// behind rocketride.debug.busTrace (off by default; very chatty).
 		const describe = (m: unknown): string => {
 			const b = m as Record<string, unknown>;
 			const kind = String(b[BUS_ENVELOPE]);
@@ -88,12 +98,12 @@ export class BusHost {
 		const subs = new Set<(m: unknown) => void>();
 		const listener = webview.onDidReceiveMessage((message) => {
 			if (!message || typeof message !== 'object' || typeof (message as Record<string, unknown>)[BUS_ENVELOPE] !== 'string') return;
-			this.logger.output(`[bus <- ${label}] ${describe(message)}`);
+			if (this.traceEnabled) this.logger.output(`[bus <- ${label}] ${describe(message)}`);
 			for (const cb of subs) cb(message);
 		});
 		const endpoint: IBusEndpoint = {
 			post: (m) => {
-				this.logger.output(`[bus -> ${label}] ${describe(m)}`);
+				if (this.traceEnabled) this.logger.output(`[bus -> ${label}] ${describe(m)}`);
 				void webview.postMessage(m);
 			},
 			subscribe: (cb) => {
@@ -117,13 +127,23 @@ export class BusHost {
 	 * Starts the mirror feed: connection status, account info, and the
 	 * services cache broadcast to every realm on change (and the full set on
 	 * demand via `mirror.sync` — a fresh realm pulls once at attach).
+	 *
+	 * PER-TOPIC: each state family broadcasts on its OWN op, from its own
+	 * trigger events — the services blob (the heaviest payload) never rides
+	 * a status tick, and account only crosses when it actually changed.
 	 */
 	public startMirrors(): void {
-		const push = (): void => this.broadcastMirrors();
-		for (const event of ['shell:statusChange', 'shell:connected', 'shell:disconnected', 'shell:accountUpdate', 'shell:servicesUpdated'] as const) {
-			this.connectionManager.on(event, push);
-			this.disposables.push({ dispose: () => this.connectionManager.off(event, push) });
+		const pushStatus = (): void => this.router.broadcastEmitOp('mirror.status', this.statusTopic());
+		for (const event of ['shell:statusChange', 'shell:connected', 'shell:disconnected'] as const) {
+			this.connectionManager.on(event, pushStatus);
+			this.disposables.push({ dispose: () => this.connectionManager.off(event, pushStatus) });
 		}
+		const pushAccount = (): void => this.router.broadcastEmitOp('mirror.account', this.accountTopic());
+		this.connectionManager.on('shell:accountUpdate', pushAccount);
+		this.disposables.push({ dispose: () => this.connectionManager.off('shell:accountUpdate', pushAccount) });
+		const pushServices = (): void => this.router.broadcastEmitOp('mirror.services', this.servicesTopic());
+		this.connectionManager.on('shell:servicesUpdated', pushServices);
+		this.disposables.push({ dispose: () => this.connectionManager.off('shell:servicesUpdated', pushServices) });
 		// Engine events forward as a mirror too — realms fold task/status
 		// events off their local bus exactly as they did off their own socket.
 		const onEvent = (event: unknown): void => {
@@ -136,19 +156,26 @@ export class BusHost {
 		this.rootBus.handle('mirror.sync', () => this.mirrorSnapshot());
 	}
 
-	/** The current mirrored state, one shape for push and pull. */
-	private mirrorSnapshot(): Record<string, unknown> {
+	// ── Per-topic payloads; mirror.sync returns their union (one pull shape,
+	//    same partial contract — primeMirror takes either). ─────────────────
+	private statusTopic(): Record<string, unknown> {
 		return {
 			connected: this.connectionManager.isConnected(),
 			status: this.connectionManager.getConnectionStatus(),
-			account: this.connectionManager.getClient()?.getAccountInfo() ?? null,
-			services: this.connectionManager.getCachedServices() ?? null,
 			engineHttpUrl: (this.connectionManager.getHttpUrl() || '').replace(/\/$/, ''),
 		};
 	}
 
-	private broadcastMirrors(): void {
-		this.router.broadcastEmitOp('mirror.state', this.mirrorSnapshot());
+	private accountTopic(): Record<string, unknown> {
+		return { account: this.connectionManager.getClient()?.getAccountInfo() ?? null };
+	}
+
+	private servicesTopic(): Record<string, unknown> {
+		return { services: this.connectionManager.getCachedServices() ?? null };
+	}
+
+	private mirrorSnapshot(): Record<string, unknown> {
+		return { ...this.statusTopic(), ...this.accountTopic(), ...this.servicesTopic() };
 	}
 
 	// =========================================================================
@@ -161,14 +188,15 @@ export class BusHost {
 	 * THIS host's monitor pair registered first so the shared table skips
 	 * it — multi-realm hosts need the broker-owned cross-realm refcounts.
 	 */
-	public registerBrokerOps(): void {
+	public registerMonitorBroker(): void {
 		// Monitors — the BROKER is the single authority (see file header).
-		this.rootBus.handle('client.addMonitor', async (p) => this.addMonitor(p as { key: MonitorKey; types: string[] }));
-		this.rootBus.handle('client.removeMonitor', async (p) => this.removeMonitor(p as { key: MonitorKey; types: string[] }));
-
-		// The shared allowlist against the extension host's client (skips the
-		// two ops above — hasHandler guard in registerClientOps).
-		registerClientOps(this.rootBus, this.connectionManager);
+		// This is the one client.* override that lives in BusHost itself:
+		// cross-realm refcounts are broker STATE, not host policy. Every
+		// other op registration is apps/vscode/src/ops (registerVscodeOps).
+		registerOpHandlers<ClientOpMap>(this.rootBus, {
+			'client.addMonitor': async (p) => this.addMonitor(p),
+			'client.removeMonitor': async (p) => this.removeMonitor(p),
+		});
 
 		// Re-register the merged monitor set after every reconnect — ONE
 		// resubscribe, regardless of how many realms hold subscriptions.
@@ -177,6 +205,12 @@ export class BusHost {
 		};
 		this.connectionManager.on('shell:connected', resubscribe);
 		this.disposables.push({ dispose: () => this.connectionManager.off('shell:connected', resubscribe) });
+	}
+
+	/** Fire-and-forget op to EVERY attached realm (host pushes like the
+	 *  Environment page's prefill ride this). */
+	public broadcastEmitOp(op: string, params: unknown): void {
+		this.router.broadcastEmitOp(op, params);
 	}
 
 	private keyString(key: MonitorKey): string {

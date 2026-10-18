@@ -216,6 +216,11 @@
 					"default": false,
 					"description": "Enable full debug output for pipeline tasks (--trace=debugOut)."
 				},
+				"rocketride.debug.busTrace": {
+					"type": "boolean",
+					"default": false,
+					"description": "Log every shell-bus message crossing a webview bridge to the RocketRide output channel (diagnostics only — very chatty)."
+				},
 				"rocketride.integrations.autoAgentIntegration": {
 					"type": "boolean",
 					"default": true,

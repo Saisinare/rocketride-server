@@ -99,6 +99,33 @@ async function saveVscodeAndSharedUiHashes(srcHash, sharedUiHash) {
 	await saveSourceHash(SHARED_UI_HASH_KEY, sharedUiHash);
 }
 
+/**
+ * Fails the build if any webview bundle externalizes the 'vscode' module.
+ *
+ * The rsbuild config externalizes 'vscode' (`commonjs vscode`) so an
+ * extension-host import that leaks into webview-reachable code compiles
+ * SILENTLY into `require("vscode")` — a load-time ReferenceError that
+ * blanks the page. tsc passes, rsbuild passes; this scan is the gate
+ * (alongside the eslint ban on 'vscode'/util/output in views/**).
+ */
+async function assertNoVscodeExternalInWebviews(task) {
+	const bundles = await glob('**/*.js', { cwd: BUILD_WEBVIEW_DIR, absolute: true, nodir: true });
+	const offenders = [];
+	for (const file of bundles) {
+		const text = await readFile(file, 'utf8');
+		if (text.includes('require("vscode")') || text.includes("require('vscode')")) {
+			offenders.push(path.relative(BUILD_WEBVIEW_DIR, file));
+		}
+	}
+	if (offenders.length > 0) {
+		throw new Error(
+			`webview bundle(s) contain require("vscode") — an extension-host module leaked into webview code ` +
+			`(usually via getLogger/util/output; see the eslint webview-realm ban): ${offenders.join(', ')}`
+		);
+	}
+	task.output = `webview bundles verified vscode-free (${bundles.length} files)`;
+}
+
 // =============================================================================
 // Action Factories
 // =============================================================================
@@ -126,6 +153,9 @@ function makeBuildWebviewAction() {
 			// chunk graph, so it builds from its own config into webview/devtool/.
 			const devtoolArgs = ['exec', 'rsbuild', 'build', '--config', 'rsbuild.devtool.config.mjs'];
 			await execCommand('pnpm', devtoolArgs, { task, cwd: APP_ROOT });
+
+			// Gate BEFORE saving hashes — a failed scan must re-run next build.
+			await assertNoVscodeExternalInWebviews(task);
 
 			await saveVscodeAndSharedUiHashes(srcHash, sharedUiHash);
 		},

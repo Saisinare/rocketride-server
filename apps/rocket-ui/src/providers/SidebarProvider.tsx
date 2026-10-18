@@ -639,10 +639,17 @@ const SidebarProvider: React.FC = () => {
 	// Frame → rail: focusing a tool's document highlights its rail container
 	// (the VS Code host's onPanelFocused → setModeExternal, in-tree). The
 	// container id is the tool, so a per-document URI (`tool:<appId>/<docKey>`)
-	// maps back to its tool's container.
+	// maps back to its tool's container. BUILTIN tools are declared on the
+	// rail with BARE ids ('apps', 'agent', ...) — only MF pins use the
+	// `tool:` prefix — so prefixing a builtin here would select a container
+	// the rail never declares, which the workbench resolves to the DEFAULT
+	// tab (Agent) and persists.
+	const builtinItemsRef = useRef(builtinItems);
+	builtinItemsRef.current = builtinItems;
 	useEffect(() => {
 		if (!shellView || !activeFilePath.startsWith('tool:')) return;
-		const containerId = `tool:${activeFilePath.slice('tool:'.length).split('/')[0]}`;
+		const appId = activeFilePath.slice('tool:'.length).split('/')[0];
+		const containerId = builtinItemsRef.current.some((i) => i.id === appId) ? appId : `tool:${appId}`;
 		if (shellView.activeViewId !== containerId) shellView.setActiveView(containerId);
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- sync on document focus changes only
 	}, [activeFilePath]);

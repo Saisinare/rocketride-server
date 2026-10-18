@@ -61,8 +61,11 @@ export default defineConfig({
 			'page-settings': './src/providers/views/settings/index.tsx',
 			'page-project': './src/providers/views/project/index.tsx',
 			'page-welcome': './src/providers/views/welcome/index.tsx',
-			'page-account': './src/providers/views/account/index.tsx',
-			'page-environment': './src/providers/views/environment/index.tsx',
+			// The ONE bundle for all framework pages (account, environment, …):
+			// the host stamps the page name into the HTML; a compiled-in
+			// registry picks the component. Per-page entries are retired as
+			// their pages migrate onto it.
+			'page-frame': './src/providers/views/page-frame/index.tsx',
 			'page-app': './src/providers/views/app/index.tsx',
 			'page-newapp': './src/providers/views/new-app/index.tsx',
 			'page-devtool-readme': './src/providers/views/devtool-readme/index.tsx',

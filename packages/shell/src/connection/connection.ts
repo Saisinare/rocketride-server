@@ -51,8 +51,8 @@ import { BaseManager } from './base-manager';
 import { RemoteManager } from './remote-manager';
 import { AUTH_REJECTED_MESSAGE, ConnectionFailure } from './errors';
 import { shouldReloadForTokenStorageUpdate } from './tokenStorageUpdate';
-import { createOpBus } from './busOps';
-import type { IOpBus, IBusRequestOptions, BusOpHandler } from './busOps';
+import { createOpBus } from '../ops/busOps';
+import type { IOpBus, IBusRequestOptions, BusOpHandler } from '../ops/busOps';
 import { isEmbeddedDevShell, isSameOriginEmbed, tokenStore, sessionScopedStore } from '../util/devGate';
 import { getStoredVerifier, clearStoredVerifier } from '../util/pkce';
 import {
@@ -1615,18 +1615,27 @@ export class ConnectionManager implements IConnectionManager {
 	 * shell events for anything that changed (the realm's listeners fold
 	 * them exactly as they folded socket-fed state).
 	 *
+	 * The payload is PARTIAL by topic: the root broadcasts `mirror.status` /
+	 * `mirror.account` / `mirror.services` independently (the services blob
+	 * must not ride every status tick), and the one-time `mirror.sync` pull
+	 * delivers all topics at once — both shapes land here.
+	 *
 	 * ONLY the bus-realm attachment calls this (a realm with a real client
 	 * never needs it — its state is first-hand).
 	 *
-	 * @param mirror - The root's snapshot (busHost mirrorSnapshot shape).
+	 * @param mirror - One topic or the full snapshot (busHost mirror shapes).
 	 */
-	public primeMirror(mirror: { connected: boolean; status: ConnectionStatus; account: ConnectResult | null; services: { services: Record<string, unknown>; icons?: Record<string, string>; servicesError?: string } | null }): void {
-		const wasConnected = this.isConnected();
-		this.mirrorConnected = mirror.connected;
-		// Normalize the root's status onto this realm's enum so every state
-		// reader agrees with the liveness flag.
-		this.connectionStatus = { ...mirror.status, state: mirror.connected ? ConnectionState.CONNECTED : ConnectionState.DISCONNECTED };
-		this.emit('shell:statusChange', this.connectionStatus);
+	public primeMirror(mirror: { connected?: boolean; status?: ConnectionStatus; account?: ConnectResult | null; services?: { services: Record<string, unknown>; icons?: Record<string, string>; servicesError?: string } | null }): void {
+		if (mirror.connected !== undefined && mirror.status !== undefined) {
+			const wasConnected = this.isConnected();
+			this.mirrorConnected = mirror.connected;
+			// Normalize the root's status onto this realm's enum so every state
+			// reader agrees with the liveness flag.
+			this.connectionStatus = { ...mirror.status, state: mirror.connected ? ConnectionState.CONNECTED : ConnectionState.DISCONNECTED };
+			this.emit('shell:statusChange', this.connectionStatus);
+			if (mirror.connected && !wasConnected) this.emit('shell:connected', undefined as never);
+			else if (!mirror.connected && wasConnected) this.emit('shell:disconnected', { reason: 'root disconnected', hasError: false } as never);
+		}
 		if (mirror.account) {
 			this.accountInfo = mirror.account;
 			this.emit('shell:accountUpdate', mirror.account);
@@ -1637,8 +1646,6 @@ export class ConnectionManager implements IConnectionManager {
 			this.cachedServicesError = mirror.services.servicesError ?? null;
 			this.emit('shell:servicesUpdated', { services: this.cachedServices ?? {}, ...(this.cachedServiceIcons ? { icons: this.cachedServiceIcons } : {}), ...(this.cachedServicesError ? { servicesError: this.cachedServicesError } : {}) } as never);
 		}
-		if (mirror.connected && !wasConnected) this.emit('shell:connected', undefined as never);
-		else if (!mirror.connected && wasConnected) this.emit('shell:disconnected', { reason: 'root disconnected', hasError: false } as never);
 	}
 
 	// =========================================================================

@@ -45,7 +45,7 @@ import type { SidebarHostToWebview, SidebarWebviewToHost } from './messages';
 import { createPeerRegistry } from './peerRegistry';
 import { createSvcFsClient } from './svcFsClient';
 import { buildFooterMenuItems } from './footerMenu';
-import { attachSidebarRealm } from './busRealm';
+import { attachBusRealm } from '../hooks/busRealm';
 
 // A TOOL IS AN APP: the builtin tools register once per realm; this host's
 // sidebar renders them by iterating the registry.
@@ -59,7 +59,7 @@ registerBuiltinTools();
 const SidebarViewWebview: React.FC = () => {
 	// Attach this realm to the shell bus FIRST (idempotent; failure-isolated
 	// inside) — mirror state and brokered client.* ops ride it.
-	attachSidebarRealm();
+	attachBusRealm();
 
 	// ── Dev connection state ────────────────────────────────────────────────
 	const [connection, setConnection] = useState<ConnectionInfo>({ state: 'disconnected' });
