@@ -36,7 +36,7 @@ import type { BusHost } from './toolhost/busHost';
 // Deep import on purpose — ext-host-safe .ts leaf (see busHost.ts).
 import { registerOpHandlers } from 'shell/src/ops/busOps';
 import type { OpImplTable } from 'shell/src/ops/busOps';
-import type { PipelineHostOpMap } from 'shared/ops/pipelineOps';
+import type { PipelineHostOpMap, PipelineLoadPayload } from 'shared/ops/pipelineOps';
 
 // =============================================================================
 // CONSTANTS
@@ -51,10 +51,14 @@ const GLOBAL_PREF_KEYS = new Set(['cloudCanvasPromptDismissed']);
 // the editor re-resolves empty after a restart. Cleared when the editor closes.
 const UNTITLED_BACKUP_PREFIX = 'rocketride.untitledBackup:';
 
-// How long undelivered OAuth tokens are kept for redelivery after a webview
-// reload. Long enough to cover a slow consent flow, short enough that stale
-// tokens don't linger.
-const OAUTH_REDELIVERY_TTL_MS = 5 * 60 * 1000;
+/** Parses a readonly live-task doc (`task:<projectId>.<sourceId>`), else null. */
+function parseTaskDoc(doc: string): { projectId: string; sourceId: string } | null {
+	if (!doc.startsWith('task:')) return null;
+	const rest = doc.slice('task:'.length);
+	const dot = rest.indexOf('.');
+	if (dot <= 0) return null;
+	return { projectId: rest.slice(0, dot), sourceId: rest.slice(dot + 1) };
+}
 
 // =============================================================================
 // TYPES
@@ -67,8 +71,6 @@ interface EditorState {
 	isDisposed: boolean;
 	isReady: boolean;
 	cachedStatuses: Record<string, TaskStatus>;
-	/** One-shot: save the document after the next contentChanged, so OAuth tokens reach disk without a manual save. */
-	saveAfterOAuthApply?: boolean;
 }
 
 // =============================================================================
@@ -82,10 +84,8 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	private logger = getLogger();
 	private savesForRun: Set<string> = new Set();
 	private preferenceUpdateQueue: Promise<void> = Promise.resolve();
-	// OAuth tokens that arrived while no live webview existed for their
-	// document (e.g. the editor was recycled during the browser round-trip),
-	// keyed by document URI. Redelivered after the next view:ready.
-	private undeliveredOAuthTokens: Map<string, { tokens: string; state: string; expiresAt: number }> = new Map();
+	/** Readonly live-task viewer panels (doc = task:<projectId>.<sourceId>). */
+	private taskPanels: Map<string, vscode.WebviewPanel> = new Map();
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -232,19 +232,8 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		return prefs;
 	}
 
-	private broadcastPreferences(prefs: Record<string, unknown>, originatingWebview: vscode.Webview): void {
-		for (const editorState of this.editorStates.values()) {
-			const webview = editorState.webviewPanel.webview;
-			if (editorState.isReady && !editorState.isDisposed && webview && webview !== originatingWebview) {
-				webview.postMessage({ type: 'project:initialPrefs', prefs }).then(undefined, (err: unknown) => {
-					this.logger.error(`Failed to post initialPrefs to webview: ${err}`);
-				});
-			}
-		}
-	}
-
 	/** Merges preference updates; keys cannot currently be deleted through this path. */
-	private updatePreferences(updatedPrefs: Record<string, unknown>, originatingWebview: vscode.Webview): Promise<void> {
+	private updatePreferences(updatedPrefs: Record<string, unknown>): Promise<void> {
 		this.preferenceUpdateQueue = this.preferenceUpdateQueue
 			.then(async () => {
 				const workspacePrefs = this.context.workspaceState.get<Record<string, unknown>>(PREFS_KEY) ?? {};
@@ -271,8 +260,13 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				// Broadcast only the global-scoped changes. Workspace prefs (layout,
 				// navigation mode) are per-editor view state: propagating them would let one
 				// editor's stale full-bag write revert another editor's live UI.
+				// Global-scoped changes fan out as a SIGNAL (merging is
+				// idempotent — the sender re-merging its own patch is a no-op).
+				// Workspace prefs (layout, navigation mode) are per-editor view
+				// state: propagating them would let one editor's stale write
+				// revert another editor's live UI.
 				if (Object.keys(globalUpdates).length > 0) {
-					this.broadcastPreferences(globalUpdates, originatingWebview);
+					this.busHost.retained.signal('pipeline:prefs', { prefs: globalUpdates });
 				}
 			})
 			.catch((err: unknown) => {
@@ -374,8 +368,52 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			return editorState;
 		};
 		const impls: OpImplTable<PipelineHostOpMap> = {
+			'host.pipeline.load': (p) => this.loadForRealm(p.doc),
+			'host.pipeline.contentSet': async (p) => {
+				const editorState = stateFor(p.doc);
+				const document = editorState.document;
+				if (p.project === undefined || p.project === null) return;
+				const content = typeof p.project === 'string' ? p.project : JSON.stringify(p.project);
+				const { applied } = await this.applyDocumentEdit(document, content);
+				// Auto-backup untitled pipelines so in-progress work survives a
+				// VS Code restart (hot exit does not preserve custom-editor
+				// untitled documents). Cleared when the editor closes.
+				if (document.isUntitled) {
+					void this.context.workspaceState.update(`${UNTITLED_BACKUP_PREFIX}${document.uri.toString()}`, document.getText());
+				}
+				// One-shot save after an OAuth token apply: the realm stamps the
+				// exact change that applied the tokens (no host-side arming, no
+				// next-change race).
+				if (p.saveAfter && (applied || document.isDirty)) {
+					await document.save();
+				}
+			},
+			'host.pipeline.viewState': (p) => {
+				if (!p.viewState) return;
+				const allLayouts = this.context.workspaceState.get<Record<string, unknown>>(LAYOUTS_KEY) ?? {};
+				allLayouts[p.doc] = p.viewState;
+				this.context.workspaceState.update(LAYOUTS_KEY, allLayouts).then(undefined, (err: unknown) => {
+					this.logger.error(`Failed to persist layout: ${err}`);
+				});
+			},
+			'host.pipeline.prefsChange': async (p) => {
+				if (typeof p.prefs === 'object' && p.prefs !== null && !Array.isArray(p.prefs)) {
+					await this.updatePreferences(p.prefs);
+				}
+			},
+			'host.pipeline.oauthStart': (p) => this.startOAuth(stateFor(p.doc).document, p.url),
 			'host.pipeline.run': (p) => this.runFromRealm(stateFor(p.doc), p.action, p.source),
 			'host.pipeline.stop': async (p) => {
+				// The readonly live-task viewer stops through the task registry
+				// (it has no document).
+				const task = parseTaskDoc(p.doc);
+				if (task) {
+					const client = this.connectionManager.getClient();
+					if (!client) throw new Error('Not connected to server');
+					const token = await client.getTaskToken({ projectId: task.projectId, source: p.source });
+					if (token) await client.terminate(token);
+					return;
+				}
 				const editorState = stateFor(p.doc);
 				await this.stopPipeline(p.source, editorState.document);
 			},
@@ -449,6 +487,161 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		}, 2000);
 	}
 
+	/**
+	 * The document's full boot state (host.pipeline.load). Task docs
+	 * (`task:<projectId>.<sourceId>`) answer the READONLY live-task viewer:
+	 * the pipeline comes off the running task, falling back to a synthesized
+	 * single-node project so the page always renders something.
+	 */
+	private async loadForRealm(doc: string): Promise<PipelineLoadPayload> {
+		const task = parseTaskDoc(doc);
+		if (task) {
+			const client = this.connectionManager.getClient();
+			let project: unknown;
+			try {
+				const token = client ? await client.getTaskToken({ projectId: task.projectId, source: task.sourceId }) : undefined;
+				project = token ? await client!.getTaskPipeline(token) : undefined;
+			} catch {
+				project = undefined;
+			}
+			if (!project) {
+				project = { project_id: task.projectId, components: [{ id: task.sourceId, provider: 'unknown', name: task.sourceId, config: {} }] };
+			}
+			return {
+				project,
+				viewState: { mode: 'design' },
+				prefs: {},
+				statuses: {},
+				isSubscribed: true,
+				isReadonly: true,
+				isDirty: false,
+				isNew: false,
+			};
+		}
+
+		const editorState = this.findLiveEditorState(doc);
+		if (!editorState) throw new Error(`No open pipeline editor for ${doc}`);
+		const document = editorState.document;
+
+		const text = document.getText();
+		const parsed = parsePipelineContent(text, document.uri.fsPath);
+		let project: Record<string, unknown> | undefined;
+		if (parsed.isValid) {
+			try {
+				project = JSON.parse(this.enrichComponentNames(text));
+			} catch {
+				/* invalid JSON */
+			}
+		}
+
+		const layouts = this.context.workspaceState.get<Record<string, Record<string, unknown>>>(LAYOUTS_KEY) ?? {};
+		const layout = layouts[doc] ?? {};
+		const client = this.connectionManager.getClient();
+		let envKeys: string[] | undefined;
+		try {
+			envKeys = await client?.account?.getEnvironmentKeys();
+		} catch {
+			envKeys = undefined;
+		}
+
+		// Seed the doc's dirty topic alongside the load so late subscribers
+		// replay a current value.
+		this.busHost.retained.publish(`pipeline:doc:${doc}`, { isDirty: document.isDirty, isNew: document.isUntitled });
+
+		// Kick off background services refresh (the realm reads the mirrored
+		// services topic as it lands).
+		this.connectionManager.refreshServices().catch((err) => {
+			this.logger.error(`Background services refresh failed: ${err}`);
+		});
+
+		return {
+			project,
+			viewState: { mode: 'design', ...layout },
+			prefs: this.getPreferences(),
+			statuses: editorState.cachedStatuses,
+			isSubscribed: isSubscribed(client, PIPE_BUILDER_APP_ID),
+			isDirty: document.isDirty,
+			isNew: document.isUntitled,
+			// The OAuth broker only allows https://*.rocketride.ai redirect URLs,
+			// so tokens bounce off the CLOUD SERVER's hosted page, which forwards
+			// them to the `<uriScheme>://rocketride.rocketride/auth/google` deep
+			// link. The bounce host is the effective cloud target (a setting,
+			// never a bake) — a custom server hosts its own bounce endpoint.
+			oauthReturnUrl: `${ConfigManager.getInstance().getEffectiveCloudUrl()}/auth/vscode/google?scheme=${vscode.env.uriScheme}`,
+			...(envKeys ? { envKeys } : {}),
+		};
+	}
+
+	/**
+	 * OAuth login: open the broker URL in the system browser (Google's
+	 * consent screen refuses to render in a webview iframe) and arm a
+	 * one-shot callback — the deep-link return publishes the tokens on the
+	 * doc's retained oauth topic.
+	 */
+	private async startOAuth(document: vscode.TextDocument, url: string): Promise<void> {
+		if (!url) return;
+		// Realm-supplied URL: require a parseable https target before arming
+		// any OAuth state (OAuth brokers are https-only).
+		let parsedUrl: URL;
+		try {
+			parsedUrl = new URL(url);
+		} catch {
+			this.logger.error('[ProjectProvider] Blocked unparseable OAuth URL');
+			return;
+		}
+		if (parsedUrl.protocol !== 'https:') {
+			this.logger.error(`[ProjectProvider] Blocked OAuth URL scheme: ${parsedUrl.protocol}`);
+			vscode.window.showErrorMessage(`Sign-in blocked: the OAuth broker URL must use https (got "${parsedUrl.protocol}//"). Rebuild the extension without a non-https REACT_APP_OAUTH_ROOT_URL override.`);
+			return;
+		}
+		// Key the waiter by the node that started the login so the deep-link
+		// return routes to the right document's topic.
+		const nodeId = parsedUrl.searchParams.get('node_id') || url;
+		const docKey = document.uri.toString();
+		const unregister = CloudAuthProvider.getInstance().setPendingGoogleOAuth(nodeId, (tokens, state) => {
+			this.deliverOAuthTokens(docKey, tokens, state);
+		});
+		// Pass the raw string: Uri.parse re-encodes the query and un-escapes
+		// %3B/%3A, and Zitadel's Go parser rejects raw semicolons in queries
+		// (microsoft/vscode#85930). openExternal accepts a string at runtime.
+		try {
+			const opened = await vscode.env.openExternal(url as unknown as vscode.Uri);
+			if (!opened) throw new Error('the system browser refused to open');
+		} catch (error) {
+			// A dead waiter would swallow a later unrelated deep link.
+			unregister();
+			this.logger.error(`[ProjectProvider] Failed to open OAuth URL: ${error}`);
+			vscode.window.showErrorMessage('Could not open the browser for sign-in. Check your default browser and try again.');
+		}
+	}
+
+	/**
+	 * Opens (or reveals) the READONLY live-task viewer for a running task
+	 * with no local .pipe file — the same pipeline page served with a
+	 * `task:` doc (the StatusProvider replacement: one panel per task,
+	 * stop-only, no persistence).
+	 */
+	public openTaskStatus(projectId: string, sourceId: string): void {
+		const doc = `task:${projectId}.${sourceId}`;
+		const existing = this.taskPanels.get(doc);
+		if (existing) {
+			existing.reveal(vscode.ViewColumn.One);
+			return;
+		}
+		const panel = vscode.window.createWebviewPanel('rocketride.page.status', `Task: ${sourceId}`, vscode.ViewColumn.One, {
+			enableScripts: true,
+			retainContextWhenHidden: true,
+			localResourceRoots: [this.context.extensionUri],
+		});
+		this.taskPanels.set(doc, panel);
+		panel.webview.html = this.getHtmlForWebview(panel.webview, doc);
+		const detachRealm = this.busHost.attachWebview(panel.webview, `page:project/${doc}`);
+		panel.onDidDispose(() => {
+			detachRealm();
+			this.taskPanels.delete(doc);
+		});
+	}
+
 	private findLiveEditorState(docKey: string): EditorState | undefined {
 		for (const editorState of this.editorStates.values()) {
 			if (!editorState.isDisposed && editorState.isReady && editorState.document.uri.toString() === docKey) {
@@ -459,40 +652,13 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	}
 
 	/**
-	 * Deliver broker OAuth tokens to the live webview for the document that
-	 * started the login. The webview instance that armed the waiter may have
-	 * been disposed during the browser round-trip, so the target is resolved
-	 * at delivery time; with no live target the tokens are stashed and
-	 * redelivered after the next view:ready.
+	 * Deliver broker OAuth tokens as the document's retained oauth topic —
+	 * retention IS the redelivery stash (the editor that started the login
+	 * may be recycled during the browser round-trip; its replacement replays
+	 * the topic on subscribe). The consuming page RETRACTS after applying.
 	 */
 	private deliverOAuthTokens(docKey: string, tokens: string, state: string): void {
-		const stash = () => {
-			this.undeliveredOAuthTokens.set(docKey, { tokens, state, expiresAt: Date.now() + OAUTH_REDELIVERY_TTL_MS });
-		};
-
-		const editorState = this.findLiveEditorState(docKey);
-		if (!editorState) {
-			this.logger.info('[ProjectProvider] OAuth tokens arrived with no live editor; holding for redelivery');
-			stash();
-			return;
-		}
-
-		// Arm the one-shot save before posting: the token apply surfaces as the
-		// next project:contentChanged, which must reach disk without Ctrl+S.
-		editorState.saveAfterOAuthApply = true;
-		editorState.webviewPanel.webview.postMessage({ type: 'project:oauthTokens', tokens, state }).then(
-			(posted) => {
-				if (!posted) {
-					editorState.saveAfterOAuthApply = false;
-					stash();
-				}
-			},
-			(err: unknown) => {
-				editorState.saveAfterOAuthApply = false;
-				stash();
-				this.logger.error(`[ProjectProvider] Failed to deliver OAuth tokens: ${err}`);
-			}
-		);
+		this.busHost.retained.publish(`pipeline:doc:${docKey}:oauth`, { tokens, state });
 	}
 
 	// =========================================================================
@@ -525,7 +691,8 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			webviewPanel,
 			projectId,
 			isDisposed: false,
-			isReady: false,
+			// No handshake: the realm pulls host.pipeline.load when it boots.
+			isReady: true,
 			cachedStatuses: {},
 		};
 
@@ -536,7 +703,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			localResourceRoots: [this.context.extensionUri],
 		};
 
-		webview.html = this.getHtmlForWebview(webview);
+		webview.html = this.getHtmlForWebview(webview, document.uri.toString());
 
 		// The editor is also a bus realm: shell components inside it (checkout,
 		// stripe key) use request('client.*')/host.* ops over the `__rrbus`
@@ -547,172 +714,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 
 		webview.onDidReceiveMessage(async (data) => {
 			switch (data.type) {
-				case 'view:ready': {
-					editorState.isReady = true;
-					// The panel's bus identity — ops carry it as `doc`.
-					void webview.postMessage({ type: 'pipeline:init', doc: document.uri.toString() });
-
-					// Build project from document
-					const text = document.getText();
-					const parsed = parsePipelineContent(text, document.uri.fsPath);
-					let project: Record<string, unknown> | undefined;
-					if (parsed.isValid) {
-						try {
-							project = JSON.parse(this.enrichComponentNames(text));
-						} catch {
-							/* invalid JSON */
-						}
-					}
-
-					// Load layout defaults + prefs
-					const layouts = this.context.workspaceState.get<Record<string, Record<string, unknown>>>(LAYOUTS_KEY) ?? {};
-					const layout = layouts[document.uri.toString()] ?? {};
-					const storedPrefs = this.getPreferences();
-					const cached = this.connectionManager.getCachedServices();
-					const client = this.connectionManager.getClient();
-					let envKeys: string[] | undefined;
-					try {
-						envKeys = await client?.account?.getEnvironmentKeys();
-					} catch {
-						envKeys = undefined;
-					}
-
-					// Send everything in one message
-					webview.postMessage({
-						type: 'project:load',
-						project,
-						viewState: { mode: 'design', ...layout },
-						prefs: storedPrefs,
-						services: cached.services,
-						icons: cached.icons,
-						isConnected: this.connectionManager.isConnected(),
-						isSubscribed: isSubscribed(client, PIPE_BUILDER_APP_ID),
-						cloudConnectionConfigured: this.isCloudConnectionConfigured(),
-						statuses: editorState.cachedStatuses,
-						serverHost: this.connectionManager.getHttpUrl(),
-						// The OAuth broker only allows https://*.rocketride.ai redirect URLs,
-						// so tokens bounce off the CLOUD SERVER's hosted page, which forwards
-						// them to the `<uriScheme>://rocketride.rocketride/auth/google` deep
-						// link. The bounce host is the effective cloud target (a setting,
-						// never a bake) — a custom server hosts its own bounce endpoint.
-						oauthReturnUrl: `${ConfigManager.getInstance().getEffectiveCloudUrl()}/auth/vscode/google?scheme=${vscode.env.uriScheme}`,
-						envKeys,
-					});
-					webview.postMessage({ type: 'project:dirtyState', isDirty: document.isDirty, isNew: document.isUntitled });
-
-					// Redeliver OAuth tokens that arrived while this document had no
-					// live webview. Safe ordering: the webview clears its pending
-					// tokens in the project:load handler above, so this arrives after.
-					const oauthKey = document.uri.toString();
-					const undelivered = this.undeliveredOAuthTokens.get(oauthKey);
-					if (undelivered) {
-						this.undeliveredOAuthTokens.delete(oauthKey);
-						if (undelivered.expiresAt > Date.now()) {
-							this.deliverOAuthTokens(oauthKey, undelivered.tokens, undelivered.state);
-						}
-					}
-
-					// Kick off background services refresh
-					this.connectionManager.refreshServices().catch((err) => {
-						this.logger.error(`Background services refresh failed: ${err}`);
-					});
-
-					break;
-				}
-
-				// Canvas messages
-				case 'project:contentChanged': {
-					if (data.project) {
-						const content = typeof data.project === 'string' ? data.project : JSON.stringify(data.project);
-						const { applied } = await this.applyDocumentEdit(document, content);
-						// Auto-backup untitled pipelines so in-progress work survives
-						// a VS Code restart (hot exit does not preserve custom-editor
-						// untitled documents). Cleared when the editor closes.
-						if (document.isUntitled) {
-							void this.context.workspaceState.update(`${UNTITLED_BACKUP_PREFIX}${document.uri.toString()}`, document.getText());
-						}
-						// One-shot save after an OAuth token apply: tokens must reach
-						// the .pipe on disk without requiring a manual save.
-						if (editorState.saveAfterOAuthApply) {
-							editorState.saveAfterOAuthApply = false;
-							if (applied || document.isDirty) {
-								await document.save();
-							}
-						}
-					}
-					break;
-				}
-
-				// OAuth login: open the broker URL in the system browser (Google's
-				// consent screen refuses to render in a webview iframe) and arm a
-				// one-shot callback so the deep-link return delivers tokens back to
-				// this panel via project:oauthTokens.
-				case 'project:openExternal': {
-					if (data.url) {
-						// Webview-supplied URL: require a parseable https target
-						// before arming any OAuth state (same spirit as openLink's
-						// scheme allowlist; OAuth brokers are https-only).
-						let parsedUrl: URL;
-						try {
-							parsedUrl = new URL(data.url as string);
-						} catch {
-							this.logger.error('[ProjectProvider] Blocked unparseable OAuth URL');
-							break;
-						}
-						if (parsedUrl.protocol !== 'https:') {
-							this.logger.error(`[ProjectProvider] Blocked OAuth URL scheme: ${parsedUrl.protocol}`);
-							// A silent break here turns a misconfigured broker URL
-							// (e.g. an http:// dev override baked into the webview)
-							// into a dead button with no feedback — say so instead.
-							vscode.window.showErrorMessage(`Sign-in blocked: the OAuth broker URL must use https (got "${parsedUrl.protocol}//"). Rebuild the extension without a non-https REACT_APP_OAUTH_ROOT_URL override.`);
-							break;
-						}
-						// Key the waiter by the node that started the login so the
-						// deep-link return routes to the right editor. The callback
-						// resolves the live webview at delivery time — this webview
-						// instance may be disposed during the browser round-trip.
-						const nodeId = parsedUrl.searchParams.get('node_id') || (data.url as string);
-						const docKey = document.uri.toString();
-						const unregister = CloudAuthProvider.getInstance().setPendingGoogleOAuth(nodeId, (tokens, state) => {
-							this.deliverOAuthTokens(docKey, tokens, state);
-						});
-						// Pass the raw string: Uri.parse re-encodes the query and un-escapes
-						// %3B/%3A, and Zitadel's Go parser rejects raw semicolons in queries
-						// (microsoft/vscode#85930). openExternal accepts a string at runtime.
-						try {
-							const opened = await vscode.env.openExternal(data.url as unknown as vscode.Uri);
-							if (!opened) throw new Error('the system browser refused to open');
-						} catch (error) {
-							// A dead waiter would swallow a later unrelated deep link.
-							unregister();
-							this.logger.error(`[ProjectProvider] Failed to open OAuth URL: ${error}`);
-							vscode.window.showErrorMessage('Could not open the browser for sign-in. Check your default browser and try again.');
-						}
-					}
-					break;
-				}
-
-				// View state change — not persisted in VS Code
-				case 'project:viewStateChange': {
-					// Update layouts (per-document defaults for future opens)
-					if (data.viewState) {
-						const allLayouts = this.context.workspaceState.get<Record<string, unknown>>(LAYOUTS_KEY) ?? {};
-						allLayouts[document.uri.toString()] = data.viewState;
-						this.context.workspaceState.update(LAYOUTS_KEY, allLayouts).then(undefined, (err: unknown) => {
-							this.logger.error(`Failed to persist layout: ${err}`);
-						});
-					}
-					break;
-				}
-
-				// Prefs change — dismissal is global; other preferences remain workspace-scoped.
-				case 'project:prefsChange': {
-					if (typeof data.prefs === 'object' && data.prefs !== null && !Array.isArray(data.prefs)) {
-						await this.updatePreferences(data.prefs, webview);
-					}
-					break;
-				}
-
 				// Checkout rides the bus (client.billing.* ops + host.stripeKey)
 				// — no checkout:* request handling here. checkout:required and
 				// checkout:subscriptionUpdate remain host-originated pushes.
@@ -763,28 +764,32 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			}
 		});
 
-		// Listen for document changes (undo/redo) and sync to webview
+		// Document changes (undo/redo, external edits) ride the doc topics:
+		// the canvas echo is a SIGNAL (transient by nature — a retained
+		// snapshot would fight the document), dirty state is RETAINED.
+		const docKey = document.uri.toString();
 		const changeDocumentSubscription = vscode.workspace.onDidChangeTextDocument((e) => {
-			if (e.document.uri.toString() === document.uri.toString()) {
+			if (e.document.uri.toString() === docKey) {
 				const { projectId: newProjectId } = this.extractPipelineIds(e.document);
 				editorState.projectId = newProjectId;
-				this.sendCanvasUpdate(webview, e.document);
-				if (editorState.isReady) {
-					webview.postMessage({ type: 'project:dirtyState', isDirty: e.document.isDirty, isNew: e.document.isUntitled });
-				}
+				this.sendCanvasUpdate(e.document);
+				this.busHost.retained.publish(`pipeline:doc:${docKey}`, { isDirty: e.document.isDirty, isNew: e.document.isUntitled });
 			}
 		});
 
-		// Listen for saves to clear dirty state in canvas
+		// Saves clear dirty state in the canvas.
 		const saveDocumentSubscription = vscode.workspace.onDidSaveTextDocument((savedDoc) => {
-			if (savedDoc.uri.toString() === document.uri.toString() && editorState.isReady) {
-				webview.postMessage({ type: 'project:dirtyState', isDirty: false, isNew: savedDoc.isUntitled });
+			if (savedDoc.uri.toString() === docKey) {
+				this.busHost.retained.publish(`pipeline:doc:${docKey}`, { isDirty: false, isNew: savedDoc.isUntitled });
 			}
 		});
 
-		// Clean up when panel is disposed
+		// Clean up when panel is disposed — the doc's retained topics RETRACT
+		// (one snapshot per ever-opened URI would otherwise leak at the root).
 		webviewPanel.onDidDispose(async () => {
 			detachRealm();
+			this.busHost.retained.publish(`pipeline:doc:${docKey}`, undefined);
+			this.busHost.retained.publish(`pipeline:doc:${docKey}:oauth`, undefined);
 			editorState.cachedStatuses = {};
 			editorState.isDisposed = true;
 			this.editorStates.delete(webviewPanel);
@@ -798,7 +803,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	// DOCUMENT I/O
 	// =========================================================================
 
-	private sendCanvasUpdate(webview: vscode.Webview, document: vscode.TextDocument): void {
+	private sendCanvasUpdate(document: vscode.TextDocument): void {
 		const text = document.getText();
 		const parsed = parsePipelineContent(text, document.uri.fsPath);
 		if (!parsed.isValid) {
@@ -808,7 +813,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		const enriched = this.enrichComponentNames(text);
 		try {
 			const project = JSON.parse(enriched);
-			webview.postMessage({ type: 'project:update', project });
+			this.busHost.retained.signal(`pipeline:doc:${document.uri.toString()}:canvas`, { project });
 		} catch {
 			// Invalid JSON — skip
 		}
@@ -955,7 +960,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	// HTML GENERATION
 	// =========================================================================
 
-	private getHtmlForWebview(webview: vscode.Webview): string {
+	private getHtmlForWebview(webview: vscode.Webview, doc: string): string {
 		const nonce = this.generateNonce();
 		const htmlPath = vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'page-project.html');
 
@@ -963,6 +968,9 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			let htmlContent = require('fs').readFileSync(htmlPath.fsPath, 'utf8');
 
 			htmlContent = htmlContent.replace(/\{\{nonce\}\}/g, nonce).replace(/\{\{cspSource\}\}/g, webview.cspSource);
+			// The panel's bus identity, present before any script runs — the
+			// realm reads it synchronously (no handshake).
+			htmlContent = htmlContent.replace('<body', `<body data-rr-doc="${doc.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}"`);
 
 			// Inject CSP meta tag allowing Stripe Elements (js.stripe.com for scripts/frames,
 			// api.stripe.com for network calls). Required for the in-editor checkout flow.

@@ -44,7 +44,6 @@ import { SidebarProvider } from './providers/SidebarProvider';
 import { ProjectProvider } from './providers/ProjectProvider';
 import { HtmlPageProvider } from './providers/HtmlPageProvider';
 // DeployProvider removed — Docker/Service operations now live in Settings panels
-import { StatusProvider } from './providers/StatusProvider';
 import { BarStatus } from './providers/BarStatusProvider';
 import { FrameworkProvider } from './providers/toolhost/frameworkProvider';
 import { DevToolStore } from './providers/DevToolStore';
@@ -76,7 +75,6 @@ let sidebar: SidebarProvider | undefined;
 let project: ProjectProvider | undefined;
 let _htmlPages: HtmlPageProvider | undefined;
 // deploy removed — functionality moved to Settings panels
-let status: StatusProvider | undefined;
 let appScreen: AppScreenProvider | undefined;
 let barStatus: BarStatus | undefined;
 
@@ -386,7 +384,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				_htmlPages = new HtmlPageProvider(context);
 				// deploy removed — register redirect command so sidebar "Deploy" opens Settings
 				context.subscriptions.push(vscode.commands.registerCommand('rocketride.page.deploy.open', () => vscode.commands.executeCommand('rocketride.page.settings.open', 'deployment')));
-				status = new StatusProvider(context);
 				// App Builder — a first-class DOCUMENT, .pipe-style: a custom
 				// editor over the app's real <name>.rrapp file (VSCode owns tab
 				// identity, dedupe, and restore-on-reload; double-clicking the
@@ -662,8 +659,10 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 				vscode.window.showErrorMessage(`RocketRide: failed to reconnect: ${msg}`);
 			}
 		}),
-		vscode.commands.registerCommand('rocketride.page.status.open', (projectId: string, sourceId: string, displayName: string) => {
-			void status?.show(projectId, sourceId, displayName);
+		vscode.commands.registerCommand('rocketride.page.status.open', (projectId: string, sourceId: string) => {
+			// Readonly live-task viewer — the pipeline page served with a
+			// task: doc (the StatusProvider replacement).
+			project?.openTaskStatus(projectId, sourceId);
 		}),
 		vscode.commands.registerCommand('rocketride.app.open', (appId: string) => {
 			// Fire-and-forget: a rejection has no other surface here — say it.

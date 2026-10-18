@@ -16,8 +16,7 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 
-import { applyTheme } from 'shell';
-import type { IProject, ThemeTokens } from 'shell';
+import type { IProject } from 'shell';
 // Project module is imported via subpath (not the 'shared' barrel): the
 // barrel is the shell's MF share and must stay canvas-free; this webview
 // bundles the project module directly.
@@ -133,9 +132,13 @@ const ProjectWebview: React.FC = () => {
 	// Stable ref into the message fold below — the bus listeners deliver
 	// through it so the big switch stays the one fold for both carriers.
 	const handleMessageRef = useRef<(msg: ProjectHostToWebview) => void>(() => {});
-	// This panel's bus identity (the document URI) — host.pipeline.* ops
-	// carry it as `doc`. Stamped by pipeline:init before project:load.
-	const docRef = useRef<string>('');
+	// This panel's bus identity (the document URI, or task:<pid>.<sid> for
+	// the readonly live-task viewer) — stamped into the served HTML, present
+	// before any script ran.
+	const docRef = useRef<string>(document.body.dataset.rrDoc ?? '');
+	// OAuth tokens were just applied: the next contentSet must reach disk
+	// without a manual save (the one-shot coupling, stamped realm-side).
+	const saveAfterOAuthRef = useRef(false);
 
 	// --- Framework state off the bus (mirror events + retained topics) --------
 	// Connection, services, env keys, and cloud-setup state all ride the
@@ -159,7 +162,70 @@ const ProjectWebview: React.FC = () => {
 		};
 		applyConnection();
 		applyServices(cm.getCachedServices() as { services: Record<string, unknown>; icons?: Record<string, string> } | null);
+		const doc = docRef.current;
+		// The document's boot state — pulled, with one retry when the first
+		// attempt raced the connection (the load op itself is host-local).
+		const applyLoad = (payload: Record<string, any>): void => {
+			// Restore saved webview state if available (survives tab switches)
+			const saved = getStateRef.current();
+			const vs = (saved && Object.keys(saved).length > 0 ? saved : payload.viewState) as ViewState | undefined;
+			setProject(payload.project);
+			setProjectId((payload.project as { project_id?: string } | undefined)?.project_id ?? '');
+			if (payload.isSubscribed !== undefined) setSubscribed(payload.isSubscribed);
+			setIsReadonly(payload.isReadonly ?? false);
+			setStatusMap(payload.statuses ?? {});
+			setViewState({
+				mode: vs?.mode ?? 'design',
+				flowViewMode: vs?.flowViewMode ?? 'pipeline',
+				viewport: vs?.viewport,
+			});
+			setPrefs(payload.prefs ?? {});
+			setLiveLogEvents([]);
+			// Unconditional: a load without a return URL must clear any stale
+			// one, and a reload must not keep tokens from a previous session.
+			setOauthReturnUrl(payload.oauthReturnUrl);
+			setPendingOAuthTokens(undefined);
+			if (payload.envKeys) setEnvKeys(payload.envKeys);
+		};
+		void cm.request('host.pipeline.load', { doc } as never).then(
+			(payload) => applyLoad(payload as Record<string, any>),
+			() => {
+				const offRetry = cm.on('shell:connected', () => {
+					offRetry();
+					void cm.request('host.pipeline.load', { doc } as never).then((payload) => applyLoad(payload as Record<string, any>), () => {});
+				});
+			}
+		);
+
 		const offs = [
+			// The document's dirty state (RETAINED; retracted when the editor
+			// closes — an undefined delivery is that retraction).
+			cm.subscribe(`pipeline:doc:${doc}`, (snap) => {
+				const d = snap as { isDirty?: boolean; isNew?: boolean } | undefined;
+				if (!d) return;
+				if (typeof d.isDirty === 'boolean') setIsDirty(d.isDirty);
+				if (typeof d.isNew === 'boolean') setIsNew(d.isNew);
+			}),
+			// The canvas echo (undo/redo, external edits) — a SIGNAL.
+			cm.subscribe(`pipeline:doc:${doc}:canvas`, (payload) => {
+				const c = payload as { project?: unknown } | undefined;
+				if (c?.project !== undefined) setProject(c.project);
+			}),
+			// OAuth tokens — retained until APPLIED; this page retracts after
+			// taking them (a one-shot credential, not state) and stamps the
+			// applying content change with saveAfter.
+			cm.subscribe(`pipeline:doc:${doc}:oauth`, (snap) => {
+				const t = snap as { tokens?: string; state?: string } | undefined;
+				if (!t?.tokens || !t.state) return;
+				saveAfterOAuthRef.current = true;
+				setPendingOAuthTokens({ tokens: t.tokens, state: t.state });
+				cm.publish(`pipeline:doc:${doc}:oauth`, undefined);
+			}),
+			// Global-scoped project-preference changes from any editor.
+			cm.subscribe('pipeline:prefs', (payload) => {
+				const pr = payload as { prefs?: Record<string, unknown> } | undefined;
+				if (pr?.prefs) setPrefs((prev) => mergeProjectPreferences(prev, pr.prefs ?? {}));
+			}),
 			// The engine event stream arrives realm-locally (mirror.event →
 			// shell:event) — feed the same fold the typed push used to.
 			cm.on('shell:event', (payload) => {
@@ -240,44 +306,6 @@ const ProjectWebview: React.FC = () => {
 
 	const handleMessage = useCallback((msg: ProjectHostToWebview) => {
 		switch (msg.type) {
-			case 'pipeline:init' as never:
-				docRef.current = (msg as unknown as { doc: string }).doc;
-				break;
-			case 'project:load': {
-				// Restore saved webview state if available (survives tab switches)
-				const saved = getStateRef.current();
-				const vs = saved && Object.keys(saved).length > 0 ? saved : msg.viewState;
-
-				setProject(msg.project);
-				setProjectId(msg.project?.project_id ?? '');
-				registerServiceIcons({ services: msg.services, icons: msg.icons });
-				setServicesJson(msg.services);
-				setIsConnected(msg.isConnected);
-				if (msg.isSubscribed !== undefined) setSubscribed(msg.isSubscribed);
-				setIsReadonly(msg.isReadonly ?? false);
-				setStatusMap(msg.statuses ?? {});
-				setCloudConnectionConfigured(msg.cloudConnectionConfigured ?? false);
-				setViewState({
-					mode: vs?.mode ?? 'design',
-					flowViewMode: vs?.flowViewMode ?? 'pipeline',
-					viewport: vs?.viewport,
-				});
-				setPrefs(msg.prefs ?? {});
-				setLiveLogEvents([]);
-				if (msg.serverHost) setServerHost(msg.serverHost);
-				// Unconditional: a load without a return URL must clear any stale
-				// one, and a reload must not keep tokens from a previous session.
-				setOauthReturnUrl(msg.oauthReturnUrl);
-				setPendingOAuthTokens(undefined);
-				setEnvKeys(msg.envKeys ?? []);
-				break;
-			}
-			case 'project:oauthTokens':
-				setPendingOAuthTokens({ tokens: msg.tokens, state: msg.state });
-				break;
-			case 'project:update':
-				setProject(msg.project);
-				break;
 			case 'shell:event': {
 				const pid = projectIdRef.current;
 				// statusMap keeps feeding the canvas (per-node badges + page
@@ -356,14 +384,6 @@ const ProjectWebview: React.FC = () => {
 				}
 				break;
 			}
-			case 'project:initialPrefs':
-				// Merge: the host broadcasts only the keys that changed, not the whole bag.
-				setPrefs((prev) => mergeProjectPreferences(prev, msg.prefs ?? {}));
-				break;
-			case 'project:dirtyState':
-				setIsDirty(msg.isDirty);
-				setIsNew(msg.isNew);
-				break;
 		}
 	}, []);
 
@@ -385,7 +405,9 @@ const ProjectWebview: React.FC = () => {
 	const handleContentChanged = useCallback(
 		(updatedProject: any) => {
 			setProject(updatedProject);
-			sendMessage({ type: 'project:contentChanged', project: updatedProject });
+			const saveAfter = saveAfterOAuthRef.current;
+			saveAfterOAuthRef.current = false;
+			ConnectionManager.getInstance().emitOp('host.pipeline.contentSet', { doc: docRef.current, project: updatedProject, ...(saveAfter ? { saveAfter } : {}) });
 		},
 		[sendMessage]
 	);
@@ -433,7 +455,7 @@ const ProjectWebview: React.FC = () => {
 			// Persist to VS Code webview state (survives tab switches)
 			const current = getState() ?? ({} as ViewState);
 			setState({ ...current, ...vs });
-			sendMessage({ type: 'project:viewStateChange', viewState: vs });
+			ConnectionManager.getInstance().emitOp('host.pipeline.viewState', { doc: docRef.current, viewState: vs });
 		},
 		[sendMessage, getState, setState]
 	);
@@ -441,7 +463,7 @@ const ProjectWebview: React.FC = () => {
 	const handlePrefsChange = useCallback(
 		(updatedPrefs: Record<string, unknown>) => {
 			setPrefs((prev) => mergeProjectPreferences(prev, updatedPrefs));
-			sendMessage({ type: 'project:prefsChange', prefs: updatedPrefs });
+			ConnectionManager.getInstance().emitOp('host.pipeline.prefsChange', { prefs: updatedPrefs });
 		},
 		[sendMessage]
 	);
@@ -452,7 +474,7 @@ const ProjectWebview: React.FC = () => {
 
 	const handleOpenExternal = useCallback(
 		(url: string) => {
-			sendMessage({ type: 'project:openExternal', url });
+			ConnectionManager.getInstance().emitOp('host.pipeline.oauthStart', { doc: docRef.current, url });
 		},
 		[sendMessage]
 	);

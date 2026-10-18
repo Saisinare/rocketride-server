@@ -20,8 +20,56 @@
 
 import type { ShellOpMap, ShellOpSpec } from 'shell/src/ops/busOps';
 
+/**
+ * What `host.pipeline.load` answers: the document's full boot state. The
+ * framework-global facts (connection, services, env keys, cloud setup) ride
+ * their own topics — this is only what is PER-DOCUMENT.
+ *
+ * `doc` kinds: a document URI for the editor, or `task:<projectId>.<sourceId>`
+ * for the readonly live-task viewer (the StatusProvider replacement) — the
+ * host fetches that pipeline off the running task.
+ */
+export interface PipelineLoadPayload {
+	project?: unknown;
+	viewState: Record<string, unknown>;
+	prefs: Record<string, unknown>;
+	statuses: Record<string, unknown>;
+	isSubscribed: boolean;
+	isDirty: boolean;
+	isNew: boolean;
+	isReadonly?: boolean;
+	oauthReturnUrl?: string;
+	envKeys?: string[];
+}
+
+// RETAINED TOPICS / SIGNALS the pipeline page rides (host = the writer,
+// except where noted):
+//   pipeline:doc:<doc>          RETAINED {isDirty,isNew} — RETRACTED on close
+//   pipeline:doc:<doc>:canvas   SIGNAL   {project} (undo/redo echo)
+//   pipeline:doc:<doc>:oauth    RETAINED {tokens,state} — retention IS the
+//                               redelivery stash; the CONSUMING page retracts
+//                               after applying (the one sanctioned
+//                               consumer-retract: the value is a one-shot
+//                               credential, not state)
+//   pipeline:prefs              SIGNAL   {prefs} (global-scoped delta fan-out)
+//   pipeline:env / pipeline:cloudSetup — see steps above (global retained)
+
 /** The pipeline editor's host-verb op map. */
 export interface PipelineHostOpMap extends ShellOpMap {
+	/** The document's full boot state (see {@link PipelineLoadPayload}). */
+	'host.pipeline.load': ShellOpSpec<{ doc: string }, PipelineLoadPayload>;
+	/** Applies the canvas's edited content to the document (emitOp).
+	 *  `saveAfter` is the one-shot OAuth coupling: the change that applies
+	 *  freshly delivered tokens must reach disk without a manual save. */
+	'host.pipeline.contentSet': ShellOpSpec<{ doc: string; project: unknown; saveAfter?: boolean }, void>;
+	/** Persists the document's layout defaults (emitOp). */
+	'host.pipeline.viewState': ShellOpSpec<{ doc: string; viewState: Record<string, unknown> }, void>;
+	/** Persists a project-preferences patch (emitOp); global-scoped keys fan
+	 *  back out on the pipeline:prefs signal. */
+	'host.pipeline.prefsChange': ShellOpSpec<{ prefs: Record<string, unknown> }, void>;
+	/** Starts the browser OAuth flow (https-only guard host-side); tokens
+	 *  come back on the doc's retained oauth topic. */
+	'host.pipeline.oauthStart': ShellOpSpec<{ doc: string; url: string }, void>;
 	/** Runs (or restarts) the document's pipeline: the host saves first
 	 *  (untitled documents drive the OS Save dialog; a cancelled dialog
 	 *  cancels the run), injects run policy, and gates on the subscription
