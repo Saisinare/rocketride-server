@@ -37,9 +37,9 @@ import { useShellConnection, ConnectionManager, ConfirmDialog, useWorkspace } fr
 import type { ShellNotification } from 'shell';
 import { getDocs } from '../docs';
 import { SidebarChrome } from 'shared/tools/core/chrome/SidebarChrome';
-import type { SidebarToolItem } from 'shared/tools/core/chrome/SidebarChrome';
-import { getBuiltinTools, ToolHostProvider } from 'shared/tools/core';
-import { scopedPrefs } from 'shell';
+import { ToolHostProvider } from 'shared/tools/core';
+import { useToolStrip } from 'shared/tools/core/chrome/useToolStrip';
+import { toolDocUri } from 'shell';
 import { useWorkspacePrefsStore } from '../workspace/workspacePrefsStore';
 import type { BuiltinToolServices } from 'shared/tools/core';
 import { registerBuiltinTools } from 'shared/tools/builtins';
@@ -89,8 +89,8 @@ const SidebarCollapsedGate: React.FC<{ children: ReactNode }> = ({ children }) =
 /**
  * RocketRide sidebar container.
  *
- * Uses shared's SidebarView which internally composes the Explorer
- * file tree component.  Builds pipeline-specific data (entries with
+ * Renders shared's SidebarChrome over the builtin-tool registry and the
+ * pinned store tools. Builds pipeline-specific data (entries with
  * sources, active tasks) and provides callbacks for all actions, and
  * renders the resulting node — RocketApp passes this component as its
  * AppLayout `sidebar` prop. A SidebarCollapsedGate hides the Explorer
@@ -456,12 +456,9 @@ const SidebarProvider: React.FC = () => {
 		getDocs()?.openStaticDocument(`tool:${id}`, name);
 	}, [toolCatalog]);
 
-	/** Strip tab selection: bring an OPEN document of the tool forward —
-	 *  never create one here; the TOOL's controller decides whether being
-	 *  activated opens its pane (single-pane tools do, per-document tools
-	 *  don't — see the shell:toolSidebarActivated event). */
-	const handleFocusTool = useCallback((id: string) => {
-		ConnectionManager.getInstance().emit('shell:toolSidebarActivated', { appId: id });
+	/** Host REVEAL verb: bring an OPEN document of the tool forward — never
+	 *  create one here (the activation emit lives in useToolStrip). */
+	const revealTool = useCallback((id: string) => {
 		const docs = getDocs();
 		if (!docs) return;
 		const state = docs.getState();
@@ -497,37 +494,8 @@ const SidebarProvider: React.FC = () => {
 		updatePrefs({ disabledBuiltins: next });
 	}, [disabledBuiltins, updatePrefs]);
 
-	/** Store rows for the builtin tools (enable/disable, never uninstall). */
-	const builtinStoreRows = useMemo(() =>
-		getBuiltinTools()
-			.filter((t) => !t.hosts || t.hosts.includes('rocket'))
-			.map((t) => ({ id: t.id, name: t.name, ...(t.description !== undefined ? { description: t.description } : {}), enabled: !disabledBuiltins.includes(t.id) })),
-	[disabledBuiltins]);
 
 
-	const toolTabs: ToolTabsSidebar = useMemo(() => ({
-		tools: pinnedTools,
-		available: toolCatalog.map(toToolTab),
-		onOpenTool: handleOpenTool,
-		onFocusTool: handleFocusTool,
-		onShowTool: (id: string) => {
-			const name = toolCatalog.find((a) => a.id === id)?.name ?? id;
-			getDocs()?.openStaticDocument(`toolreadme:${id}`, `Dev Tool: ${name}`);
-		},
-		onRemoveTool: (id: string) => {
-			// A removed tool keeps no live surface — close its open frame and
-			// every per-document tab it opened (`tool:<id>/<docKey>`).
-			unpinTool(id);
-			const docs = getDocs();
-			if (!docs) return;
-			for (const uri of Object.keys(docs.getState().documents)) {
-				if (uri === `tool:${id}` || uri.startsWith(`tool:${id}/`)) docs.discardDocument(uri);
-			}
-		},
-		renderToolPanel: (id: string) => <DevToolMount appId={id} name={pinnedTools.find((t) => t.id === id)?.name ?? id} slot="sidebar" />,
-		builtins: builtinStoreRows,
-		onToggleBuiltin: handleToggleBuiltin,
-	}), [pinnedTools, toolCatalog, handleOpenTool, handleFocusTool, unpinTool, builtinStoreRows, handleToggleBuiltin]);
 
 	/** Opens an embedded page by key — the tools' generic page surface.
 	 *  Intro keys derive their title from the page table; everything else
@@ -571,32 +539,48 @@ const SidebarProvider: React.FC = () => {
 		},
 	}), [openPage, handleOpenFile, handleFileManage, handleExportPipeline, handleSourceAction, handleNavigate, handleOpenUnknownTask, showConfirm, activeFilePath, appdevApps, refresh]);
 
-	// The builtin tool tabs, straight off the registry — ordinary DevTool
-	// mounts over this realm's per-tool peer/channel.
-	const builtinItems = useMemo<SidebarToolItem[]>(() =>
-		getBuiltinTools()
-			.filter((t) => (!t.hosts || t.hosts.includes('rocket')) && !disabledBuiltins.includes(t.id))
-			.map((t) => {
-				const Sidebar = t.sidebar;
-				const documents = {
-					open: (key: string, title: string) => getDocs()?.openStaticDocument(key ? `tool:${t.id}/${key}` : `tool:${t.id}`, title),
-					close: (key: string) => getDocs()?.discardDocument(key ? `tool:${t.id}/${key}` : `tool:${t.id}`),
-				};
-				return {
-					id: t.id,
-					label: t.name,
-					...(t.icon !== undefined ? { icon: t.icon } : {}),
-					// Nested provider: this tool's services carry ITS prefs
-					// partition — a tool's handle cannot address another
-					// app's keys (isolation by construction).
-					render: () => (
-						<ToolHostProvider value={{ ...toolServices, prefs: scopedPrefs(prefsStore, `app:${t.id}`) }}>
-							<Sidebar peer={getSidebarPeer(t.id)} channel={getToolChannel(t.id, 'sidebar')} documents={documents} />
-						</ToolHostProvider>
-					),
-				};
-			}),
-	[disabledBuiltins, toolServices, prefsStore]);
+	// Shared builtin-strip glue: items (with per-tool scoped prefs), store
+	// rows, and the activation/deactivation discipline — over this host's
+	// per-tool peer/channel/documents and the Documents reveal verb.
+	const documentsFor = useCallback((toolId: string) => ({
+		open: (key: string, title: string) => getDocs()?.openStaticDocument(toolDocUri(toolId, key), title),
+		close: (key: string) => getDocs()?.discardDocument(toolDocUri(toolId, key)),
+	}), []);
+	const channelFor = useCallback((toolId: string) => getToolChannel(toolId, 'sidebar'), []);
+	const { builtinItems, builtinStoreRows, focusTool: handleFocusTool, deactivateReplacedTab } = useToolStrip({
+		host: 'rocket',
+		services: toolServices,
+		prefsStore,
+		disabledBuiltins,
+		peerFor: getSidebarPeer,
+		channelFor,
+		documentsFor,
+		revealTool,
+	});
+
+	const toolTabs: ToolTabsSidebar = useMemo(() => ({
+		tools: pinnedTools,
+		available: toolCatalog.map(toToolTab),
+		onOpenTool: handleOpenTool,
+		onFocusTool: handleFocusTool,
+		onShowTool: (id: string) => {
+			const name = toolCatalog.find((a) => a.id === id)?.name ?? id;
+			getDocs()?.openStaticDocument(`toolreadme:${id}`, `Dev Tool: ${name}`);
+		},
+		onRemoveTool: (id: string) => {
+			// A removed tool keeps no live surface — close its open frame and
+			// every per-document tab it opened (`tool:<id>/<docKey>`).
+			unpinTool(id);
+			const docs = getDocs();
+			if (!docs) return;
+			for (const uri of Object.keys(docs.getState().documents)) {
+				if (uri === `tool:${id}` || uri.startsWith(`tool:${id}/`)) docs.discardDocument(uri);
+			}
+		},
+		renderToolPanel: (id: string) => <DevToolMount appId={id} name={pinnedTools.find((t) => t.id === id)?.name ?? id} slot="sidebar" />,
+		builtins: builtinStoreRows,
+		onToggleBuiltin: handleToggleBuiltin,
+	}), [pinnedTools, toolCatalog, handleOpenTool, handleFocusTool, unpinTool, builtinStoreRows, handleToggleBuiltin]);
 
 
 
@@ -616,17 +600,11 @@ const SidebarProvider: React.FC = () => {
 
 	const handleSidebarModeChange = useCallback(
 		(mode: SidebarMode) => {
-			// Deactivation for a deselected tool tab FIRST (the successor's
-			// activation follows from handleFocusTool); same-tab reselects
-			// deactivate nothing.
-			const prev = prevSidebarModeRef.current;
-			if (prev !== mode && prev.startsWith('tool:')) {
-				ConnectionManager.getInstance().emit('shell:toolSidebarDeactivated', { appId: prev.slice('tool:'.length) });
-			}
+			deactivateReplacedTab(prevSidebarModeRef.current, mode);
 			setSidebarMode(mode);
 			updatePrefs({ sidebarMode: mode });
 		},
-		[updatePrefs]
+		[updatePrefs, deactivateReplacedTab]
 	);
 
 	// The shell workbench rail (AppLayout sidebarMode 'vscode'/'cursor') owns
@@ -654,9 +632,7 @@ const SidebarProvider: React.FC = () => {
 		if (!id || id === prev) return;
 		// Deactivation for the rail container a tool tab just lost, FIRST —
 		// then the successor's activation (inside handleFocusTool).
-		if (prev?.startsWith('tool:')) {
-			ConnectionManager.getInstance().emit('shell:toolSidebarDeactivated', { appId: prev.slice('tool:'.length) });
-		}
+		if (prev?.startsWith('tool:')) deactivateReplacedTab(prev, id);
 		if (prev !== undefined && id.startsWith('tool:')) handleFocusTool(id.slice('tool:'.length));
 	}, [shellView?.activeViewId, handleFocusTool]);
 

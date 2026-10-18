@@ -52,3 +52,30 @@ export interface ProfilerEngine {
 	 */
 	call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
 }
+
+/** The raw-DAP commands the profiler issues, mapped onto the bus's NAMED
+ *  client.* allowlist (the bus has no generic passthrough by design). */
+const COMMAND_OPS: Record<string, string> = {
+	rrext_cprofile_start: 'client.cprofileStart',
+	rrext_cprofile_stop: 'client.cprofileStop',
+	rrext_cprofile_status: 'client.cprofileStatus',
+	rrext_cprofile_report: 'client.cprofileReport',
+	rrext_cprofile_report_tree: 'client.cprofileReportTree',
+	rrext_cprofile_threads: 'client.cprofileThreads',
+	rrext_get_tasks: 'client.getTasks',
+};
+
+/**
+ * Executes one profiler command over the shell bus — the LOCAL engine impl
+ * for realms with no client object (every realm now).
+ *
+ * @param request - The realm's request function (ConnectionManager.request).
+ * @param command - The raw command name (COMMAND_OPS key).
+ * @param args - The command's arguments.
+ * @returns The command's result.
+ */
+export async function callProfilerOp<T>(request: (op: string, params: unknown) => Promise<unknown>, command: string, args?: Record<string, unknown>): Promise<T> {
+	const op = COMMAND_OPS[command];
+	if (!op) throw new Error(`Profiler command '${command}' is not on the bus allowlist`);
+	return request(op, args ?? {}) as Promise<T>;
+}

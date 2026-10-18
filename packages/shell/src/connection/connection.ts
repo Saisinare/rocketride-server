@@ -51,6 +51,8 @@ import { BaseManager } from './base-manager';
 import { RemoteManager } from './remote-manager';
 import { AUTH_REJECTED_MESSAGE, ConnectionFailure } from './errors';
 import { shouldReloadForTokenStorageUpdate } from './tokenStorageUpdate';
+import { createOpBus } from './busOps';
+import type { IOpBus, IBusRequestOptions, BusOpHandler } from './busOps';
 import { isEmbeddedDevShell, isSameOriginEmbed, tokenStore, sessionScopedStore } from '../util/devGate';
 import { getStoredVerifier, clearStoredVerifier } from '../util/pkce';
 import {
@@ -296,6 +298,11 @@ export class ConnectionManager implements IConnectionManager {
 	// --- Event bus ---
 	private listeners = new Map<string, Set<Handler>>();
 	private wildcardListeners = new Set<WildcardHandler>();
+
+	/** The bus's ADDRESSED-OP lane (request/handle/emitOp) — see busOps.ts.
+	 *  The event lane above broadcasts; this lane routes to THE registered
+	 *  handler, across realms when a bridge is attached (busBridge.ts). */
+	private opBus: IOpBus = createOpBus();
 	private debugLog: DebugLogEntry[] = [];
 
 	/**
@@ -1200,9 +1207,15 @@ export class ConnectionManager implements IConnectionManager {
 
 	/** Returns true if the WebSocket is authenticated and connected. */
 	public isConnected(): boolean {
+		// A bus-mirrored realm has NO client — the framework root's mirrored
+		// liveness is the answer (primeMirror). Null = not a mirrored realm.
+		if (this.mirrorConnected !== null) return this.mirrorConnected;
 		return this.connectionStatus.state === ConnectionState.CONNECTED &&
 			(this.client?.isConnected() ?? false);
 	}
+
+	/** Root-mirrored liveness for socketless realms (null = unmirrored). */
+	private mirrorConnected: boolean | null = null;
 
 	/** Returns true if a connection attempt is in progress. */
 	public isConnecting(): boolean {
@@ -1532,6 +1545,100 @@ export class ConnectionManager implements IConnectionManager {
 	public onAny(handler: WildcardHandler): () => void {
 		this.wildcardListeners.add(handler);
 		return () => this.wildcardListeners.delete(handler);
+	}
+
+	// =========================================================================
+	// BUS OPS — the addressed-operation lane (request / handle / emitOp)
+	// =========================================================================
+
+	/**
+	 * Invokes an addressed op and awaits its result — the bus's second lane.
+	 * Resolution: this realm's handler, else the bridge to the framework
+	 * root (router: root handlers -> owning realm -> summon -> reject).
+	 *
+	 * Op names are `ns.verb` by convention (the `.`/`:` split against events
+	 * is voluntary style; the bus matches full strings). Prefer the typed
+	 * facade (`typedBusOps<MyOps>(cm.ops())`) at call sites.
+	 *
+	 * @param op - The op's wire name.
+	 * @param params - The op's payload.
+	 * @param opts - Timeout override.
+	 * @returns The handler's result.
+	 */
+	public request(op: string, params: unknown, opts?: IBusRequestOptions): Promise<unknown> {
+		this.logDebug(op, params);
+		return this.opBus.request(op, params, opts);
+	}
+
+	/**
+	 * Fires an addressed op without awaiting a result — the SAME handler an
+	 * equivalent request() would reach; its return value is discarded. The
+	 * caller chooses the lane, not the name.
+	 *
+	 * @param op - The op's wire name.
+	 * @param params - The op's payload.
+	 */
+	public emitOp(op: string, params: unknown): void {
+		this.logDebug(op, params);
+		this.opBus.emitOp(op, params);
+	}
+
+	/**
+	 * Registers THE handler for an op — registration is the allowlist and
+	 * the routing entry (one handler per name; a second registration
+	 * throws). When this realm is bridged, the registration is announced to
+	 * the root router so any realm can address the op.
+	 *
+	 * @param op - The op's wire name.
+	 * @param handler - Plain async function answering the op.
+	 * @returns An unregister function.
+	 */
+	public handle(op: string, handler: BusOpHandler): () => void {
+		return this.opBus.handle(op, handler);
+	}
+
+	/**
+	 * The raw op bus — for the bridge/router (busBridge.ts) and the typed
+	 * facade (`typedBusOps`). Application code prefers request/handle above.
+	 *
+	 * @returns This realm's op bus.
+	 */
+	public ops(): IOpBus {
+		return this.opBus;
+	}
+
+	/**
+	 * Primes this realm's SYNCHRONOUS state from the framework root's mirror
+	 * feed — a SOCKETLESS realm's isConnected()/getConnectionStatus()/
+	 * getAccountInfo()/getCachedServices() answer from here, so consumers
+	 * written against the ambient manager work unchanged. Emits the matching
+	 * shell events for anything that changed (the realm's listeners fold
+	 * them exactly as they folded socket-fed state).
+	 *
+	 * ONLY the bus-realm attachment calls this (a realm with a real client
+	 * never needs it — its state is first-hand).
+	 *
+	 * @param mirror - The root's snapshot (busHost mirrorSnapshot shape).
+	 */
+	public primeMirror(mirror: { connected: boolean; status: ConnectionStatus; account: ConnectResult | null; services: { services: Record<string, unknown>; icons?: Record<string, string>; servicesError?: string } | null }): void {
+		const wasConnected = this.isConnected();
+		this.mirrorConnected = mirror.connected;
+		// Normalize the root's status onto this realm's enum so every state
+		// reader agrees with the liveness flag.
+		this.connectionStatus = { ...mirror.status, state: mirror.connected ? ConnectionState.CONNECTED : ConnectionState.DISCONNECTED };
+		this.emit('shell:statusChange', this.connectionStatus);
+		if (mirror.account) {
+			this.accountInfo = mirror.account;
+			this.emit('shell:accountUpdate', mirror.account);
+		}
+		if (mirror.services) {
+			this.cachedServices = (mirror.services.services ?? null) as Record<string, unknown> | null;
+			this.cachedServiceIcons = (mirror.services.icons ?? null) as Record<string, string> | null;
+			this.cachedServicesError = mirror.services.servicesError ?? null;
+			this.emit('shell:servicesUpdated', { services: this.cachedServices ?? {}, ...(this.cachedServiceIcons ? { icons: this.cachedServiceIcons } : {}), ...(this.cachedServicesError ? { servicesError: this.cachedServicesError } : {}) } as never);
+		}
+		if (mirror.connected && !wasConnected) this.emit('shell:connected', undefined as never);
+		else if (!mirror.connected && wasConnected) this.emit('shell:disconnected', { reason: 'root disconnected', hasError: false } as never);
 	}
 
 	// =========================================================================

@@ -16,6 +16,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getLogger } from '../../shared/util/output';
 
 /** One framework page's identity and wiring. */
 export interface FrameworkPageSpec {
@@ -82,7 +83,7 @@ export abstract class FrameworkPageProvider {
 			try {
 				await this.handleMessage(message);
 			} catch (error) {
-				console.error(`[${this.spec.entry}] message failed:`, error);
+				getLogger().error(`[${this.spec.entry}] message failed: ${String(error)}`);
 			}
 		});
 		this.panel.onDidDispose(() => {
@@ -125,7 +126,7 @@ export abstract class FrameworkPageProvider {
 				return match.replace(relativePath, resourceUri.toString());
 			});
 		} catch (error) {
-			console.error(`Error loading ${this.spec.entry} HTML:`, error);
+			getLogger().error(`Error loading ${this.spec.entry} HTML: ${String(error)}`);
 			return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Error</title></head><body>
 				<div style="padding: 20px; color: #f44336;">
 					<h3>Error Loading ${this.spec.title}</h3>

@@ -26,12 +26,12 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { getClient, useShellConnection, useShellEvent } from 'shell';
+import { ConnectionManager, useShellConnection, useShellEvent } from 'shell';
 import { Explorer, createToolOpServer } from 'shell';
 import type { ExplorerOps } from './ops';
 import { BxDownload, BxDockLeft, SidebarCollapsedGate } from 'shell';
 import type { ExplorerEntry, ExplorerConfig, ExplorerFileAction } from 'shell';
-import type { IVirtualFileSystem, RocketRideClient, DevToolProps } from 'shell';
+import type { IVirtualFileSystem, DevToolProps } from 'shell';
 import { getMediaInfo } from './mediaTypes';
 import { getCompatibleViewers, VIEWER_LABELS } from './viewerRegistry';
 import type { ViewerId } from './viewerRegistry';
@@ -91,7 +91,10 @@ const styles = {
  * prop. Files open in the Documents tab system on click.
  */
 const ExplorerSidebar: React.FC<{ bridge?: ExplorerDocsBridge; gated?: boolean }> = ({ bridge = localDocsBridge, gated = true }) => {
-	const { client, isConnected } = useShellConnection();
+	const { isConnected } = useShellConnection();
+	// Engine access rides the SHELL BUS (brokered client.* ops) — this realm
+	// holds no client object and no socket.
+	const cm = ConnectionManager.getInstance();
 	const [entries, setEntries] = useState<ExplorerEntry[]>([]);
 
 	// Active file path (for highlighting) — from the bridge: the Documents
@@ -102,14 +105,14 @@ const ExplorerSidebar: React.FC<{ bridge?: ExplorerDocsBridge; gated?: boolean }
 	// --- Refresh file list (recursive) ----------------------------------------
 
 	const refresh = useCallback(async () => {
-		if (!client || !isConnected) { setEntries([]); return; }
+		if (!isConnected) { setEntries([]); return; }
 		try {
-			const allEntries = await listRecursive(client, '@');
+			const allEntries = await listRecursive('@');
 			setEntries(allEntries);
 		} catch {
 			setEntries([]);
 		}
-	}, [client, isConnected]);
+	}, [isConnected]);
 
 	// Refresh on mount and when connection changes
 	useEffect(() => { refresh(); }, [refresh]);
@@ -130,7 +133,7 @@ const ExplorerSidebar: React.FC<{ bridge?: ExplorerDocsBridge; gated?: boolean }
 		path: string,
 		newName?: string,
 	) => {
-		if (!client) return;
+		if (!isConnected) return;
 		try {
 			switch (action) {
 				case 'rename': {
@@ -138,28 +141,28 @@ const ExplorerSidebar: React.FC<{ bridge?: ExplorerDocsBridge; gated?: boolean }
 					const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
 					const newPath = dir ? `${dir}/${newName}` : newName;
 					if (newPath === path) break;
-					await client.fsRename(path, newPath);
+					await cm.request('client.fsRename', { from: path, to: newPath });
 					// Re-point open editor tabs (local or over the peer channel)
 					bridge.renamed(path, newPath);
 					break;
 				}
 				case 'delete': {
-					const stat = await client.fsStat(path);
+					const stat = await cm.request('client.fsStat', { path }) as { type?: string };
 					if (stat.type === 'dir') {
-						await client.fsRmdir(path, true);
+						await cm.request('client.fsRmdir', { path, recursive: true });
 					} else {
-						await client.fsDelete(path);
+						await cm.request('client.fsDelete', { path });
 					}
 					bridge.deleted(path);
 					break;
 				}
 				case 'createFile': {
-					await client.fsWriteString(path, '');
+					await cm.request('client.fsWriteString', { path, text: '' });
 					bridge.open(path);
 					break;
 				}
 				case 'createFolder': {
-					await client.fsMkdir(path);
+					await cm.request('client.fsMkdir', { path });
 					break;
 				}
 			}
@@ -167,12 +170,12 @@ const ExplorerSidebar: React.FC<{ bridge?: ExplorerDocsBridge; gated?: boolean }
 		} catch (err) {
 			console.error(`[ExplorerSidebar] ${action} failed:`, err);
 		}
-	}, [client, refresh]);
+	}, [isConnected, cm, refresh]);
 
 	// --- Move (drag within tree) ----------------------------------------------
 
 	const handleMove = useCallback(async (sourcePath: string, targetDir: string) => {
-		if (!client) return;
+		if (!isConnected) return;
 		try {
 			const name = sourcePath.includes('/') ? sourcePath.substring(sourcePath.lastIndexOf('/') + 1) : sourcePath;
 			// The tree is rooted at the '@' mount (listRecursive above), so an
@@ -180,49 +183,51 @@ const ExplorerSidebar: React.FC<{ bridge?: ExplorerDocsBridge; gated?: boolean }
 			// letting a bare name silently target the plain user store.
 			const newPath = `${targetDir || '@'}/${name}`;
 			if (newPath === sourcePath) return;
-			await client.fsRename(sourcePath, newPath);
+			await cm.request('client.fsRename', { from: sourcePath, to: newPath });
 			// Keep open editor tabs in sync with the move (local or peer).
 			bridge.moved(sourcePath, newPath);
 			await refresh();
 		} catch (err) {
 			console.error('[ExplorerSidebar] move failed:', err);
 		}
-	}, [client, refresh, bridge]);
+	}, [isConnected, cm, refresh, bridge]);
 
 	// --- Upload (drop from OS) ------------------------------------------------
 
 	const handleUpload = useCallback(async (files: File[], targetDir: string) => {
-		if (!client) return;
+		if (!isConnected) return;
 		try {
 			for (const file of files) {
 				// Same root rule as handleMove: '' targetDir is the '@' mount.
 				const path = `${targetDir || '@'}/${file.name}`;
-				const { handle } = await client.fsOpen(path, 'w');
-				const chunkSize = 4 * 1024 * 1024; // 4 MB
+				const { handle } = await cm.request('client.fsOpen', { path, mode: 'w' }) as { handle: unknown };
+				// 1 MB chunks: write bytes ride the bus base64-encoded (the
+				// JSON-safe binary rule), so keep frames postMessage-friendly.
+				const chunkSize = 1024 * 1024;
 				try {
 					// Stream the file in chunks via File.slice so we never
 					// buffer the entire file in memory at once.
 					let offset = 0;
 					while (offset < file.size) {
 						const chunk = new Uint8Array(await file.slice(offset, offset + chunkSize).arrayBuffer());
-						await client.fsWrite(handle, chunk);
+						await cm.request('client.fsWrite', { handle, dataB64: bytesToB64(chunk) });
 						offset += chunkSize;
 					}
 				} finally {
 					// Always close the handle, even if a write throws mid-stream.
-					await client.fsClose(handle, 'w');
+					await cm.request('client.fsClose', { handle, mode: 'w' });
 				}
 			}
 			await refresh();
 		} catch (err) {
 			console.error('[ExplorerSidebar] upload failed:', err);
 		}
-	}, [client, refresh]);
+	}, [isConnected, cm, refresh]);
 
 	// --- Download (kebab menu action) -----------------------------------------
 
 	const handleDownload = useCallback(async (path: string) => {
-		if (!client) return;
+		if (!isConnected) return;
 		try {
 			const name = path.includes('/') ? path.substring(path.lastIndexOf('/') + 1) : path;
 			// Pass downloadName so the server bakes `Content-Disposition:
@@ -230,7 +235,7 @@ const ExplorerSidebar: React.FC<{ bridge?: ExplorerDocsBridge; gated?: boolean }
 			// cloud, /task/fetch header for local). This makes the download
 			// filename work even for cross-origin cloud URLs, where the
 			// `<a download>` attribute is otherwise ignored.
-			const url = await client.fsGetUrl(path, undefined, name);
+			const url = await cm.request('client.fsGetUrl', { path, downloadName: name }) as string;
 			if (!url) return;
 			const a = document.createElement('a');
 			a.href = url;
@@ -241,7 +246,7 @@ const ExplorerSidebar: React.FC<{ bridge?: ExplorerDocsBridge; gated?: boolean }
 		} catch (err) {
 			console.error('[ExplorerSidebar] download failed:', err);
 		}
-	}, [client]);
+	}, [isConnected, cm]);
 
 	// --- Open with... handler ----------------------------------------------------
 
@@ -321,31 +326,33 @@ export const ExplorerDevToolSidebar: React.FC<DevToolProps> = ({ peer, documents
 	// The frame's store surface, served on this mount's engine connection.
 	useEffect(() => {
 		const ops = createToolOpServer<ExplorerOps>(peer);
-		const needClient = () => {
-			const live = getClient();
-			if (!live || !live.isConnected()) throw new Error('Not connected to a server.');
-			return live;
+		// Served over the SHELL BUS — the controller realm needs no client
+		// object (brokered client.* ops; connection liveness is bus-mirrored).
+		const cm = ConnectionManager.getInstance();
+		const need = (): void => {
+			if (!cm.isConnected()) throw new Error('Not connected to a server.');
 		};
 		ops.serve('explorer.listDir', async ({ dir }) => {
-			const result = await needClient().fsListDir(dir);
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			return (result.entries ?? []).map((e: any) => ({ name: e.name as string, type: e.type === 'dir' ? 'dir' as const : 'file' as const }));
+			need();
+			const result = await cm.request('client.fsListDir', { path: dir }) as { entries?: Array<{ name: string; type: string }> };
+			return (result.entries ?? []).map((e) => ({ name: e.name, type: e.type === 'dir' ? 'dir' as const : 'file' as const }));
 		});
-		ops.serve('explorer.readString', async ({ path }) => needClient().fsReadString(path));
-		ops.serve('explorer.getUrl', async ({ path }) => needClient().fsGetUrl(path));
-		ops.serve('explorer.writeString', async ({ path, content }) => { await needClient().fsWriteString(path, content); });
-		ops.serve('explorer.rename', async ({ oldPath, newPath }) => { await needClient().fsRename(oldPath, newPath); });
+		ops.serve('explorer.readString', async ({ path }) => { need(); return cm.request('client.fsReadString', { path }) as Promise<string>; });
+		ops.serve('explorer.getUrl', async ({ path }) => { need(); return cm.request('client.fsGetUrl', { path }) as Promise<string>; });
+		ops.serve('explorer.writeString', async ({ path, content }) => { need(); await cm.request('client.fsWriteString', { path, text: content }); });
+		ops.serve('explorer.rename', async ({ oldPath, newPath }) => { need(); await cm.request('client.fsRename', { from: oldPath, to: newPath }); });
 		ops.serve('explorer.stat', async ({ path }) => {
-			const stat = await needClient().fsStat(path);
+			need();
+			const stat = await cm.request('client.fsStat', { path }) as { type?: 'file' | 'dir'; size?: number };
 			return { ...(stat.type !== undefined ? { type: stat.type } : {}), ...(stat.size !== undefined ? { size: stat.size } : {}) };
 		});
 		ops.serve('explorer.remove', async ({ path }) => {
-			const live = needClient();
-			const stat = await live.fsStat(path);
-			if (stat.type === 'dir') await live.fsRmdir(path, true);
-			else await live.fsDelete(path);
+			need();
+			const stat = await cm.request('client.fsStat', { path }) as { type?: string };
+			if (stat.type === 'dir') await cm.request('client.fsRmdir', { path, recursive: true });
+			else await cm.request('client.fsDelete', { path });
 		});
-		ops.serve('explorer.mkdir', async ({ path }) => { await needClient().fsMkdir(path); });
+		ops.serve('explorer.mkdir', async ({ path }) => { need(); await cm.request('client.fsMkdir', { path }); });
 		return () => ops.dispose();
 	}, [peer]);
 
@@ -362,10 +369,9 @@ export const ExplorerDevToolSidebar: React.FC<DevToolProps> = ({ peer, documents
  * can derive its tree hierarchy from.
  */
 async function listRecursive(
-	client: RocketRideClient,
 	dir: string,
 ): Promise<ExplorerEntry[]> {
-	const result = await client.fsListDir(dir);
+	const result = await ConnectionManager.getInstance().request('client.fsListDir', { path: dir }) as { entries?: Array<{ name: string; type?: 'file' | 'dir' }> };
 	const entries: ExplorerEntry[] = [];
 
 	for (const item of result.entries ?? []) {
@@ -374,7 +380,7 @@ async function listRecursive(
 
 		if (item.type === 'dir') {
 			try {
-				const children = await listRecursive(client, path);
+				const children = await listRecursive(path);
 				entries.push(...children);
 			} catch {
 				// Skip inaccessible directories
@@ -386,3 +392,19 @@ async function listRecursive(
 }
 
 export default ExplorerSidebar;
+
+/**
+ * Encodes bytes for the bus's JSON-safe binary rule (clientOps fsWrite) —
+ * chunked so large frames never blow the call stack via spread.
+ *
+ * @param bytes - The chunk to encode.
+ * @returns Base64 text.
+ */
+function bytesToB64(bytes: Uint8Array): string {
+	let bin = '';
+	const step = 0x8000;
+	for (let i = 0; i < bytes.length; i += step) {
+		bin += String.fromCharCode(...bytes.subarray(i, i + step));
+	}
+	return btoa(bin);
+}

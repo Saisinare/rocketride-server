@@ -10,5 +10,5 @@ import { Project } from './Project';
 import { mountComponent } from '../../../shared/util/mount';
 
 // Mount the Project view directly — it renders its own TabControl strip.
-mountComponent(Project, 'PageProject');
+mountComponent(Project, 'Project');
 export default Project;

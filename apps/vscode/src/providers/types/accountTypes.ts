@@ -20,6 +20,8 @@ import type { CheckoutResultHostToWebview, CheckoutRequestWebviewToHost } from '
 
 /** All messages the extension host can send to the AccountWebview. */
 export type AccountHostToWebview =
+	| { type: 'account:transactionsResult'; requestId: number; result: unknown }
+	| { type: 'account:transactionDistinctResult'; requestId: number; values: (string | number | boolean)[] }
 	| ShellHostToWebview
 	| CheckoutResultHostToWebview
 	| { type: 'account:init'; isConnected: boolean; profile: ConnectResult | null; org: OrgDetail | null; members: MemberRecord[]; teams: TeamRecord[]; keys: ApiKeyRecord[] }
@@ -46,6 +48,9 @@ export type AccountHostToWebview =
 
 /** All messages the AccountWebview can send to the extension host. */
 export type AccountWebviewToHost =
+	// Direct ledger queries for the transaction grid (requestId-correlated).
+	| { type: 'account:fetchTransactions'; requestId: number; req: unknown }
+	| { type: 'account:fetchTransactionDistinct'; requestId: number; field: string }
 	| ShellWebviewToHost
 	| CheckoutRequestWebviewToHost
 	| { type: 'account:saveProfile'; fields: ProfileUpdate }

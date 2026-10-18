@@ -264,9 +264,37 @@ export default tseslint.config(
 					// gitignore semantics: a file under an excluded dir cannot be
 					// re-included, so un-ignore shell/themes first, then re-ban its
 					// contents except the one exported stylesheet.
-					{ group: ['shell/*', '!shell/themes', 'shell/themes/*', '!shell/themes/rocketride-default.css'], message: "The shell surface is barrel-only: import the name from 'shell' (the theme stylesheet is the one exported subpath; SDK values/types come from 'rocketride')." },
+					// EXCEPTIONS: the dependency-free leaves the EXTENSION HOST
+					// types against (it cannot resolve the React barrel) —
+					// toolRelay (the relay policy + host:connection payload)
+					// and toolWorkspaceFs (the fs capability interface).
+					{ group: ['shell/*', '!shell/themes', 'shell/themes/*', '!shell/themes/rocketride-default.css', '!shell/src', 'shell/src/*', '!shell/src/components', 'shell/src/components/*', '!shell/src/components/workspace', 'shell/src/components/workspace/*', '!shell/src/components/workspace/toolRelay', '!shell/src/components/workspace/toolWorkspaceFs', '!shell/src/connection', 'shell/src/connection/*', '!shell/src/connection/busOps', '!shell/src/connection/busBridge', '!shell/src/connection/clientOps'], message: "The shell surface is barrel-only: import the name from 'shell' (the theme stylesheet is the one exported subpath; SDK values/types come from 'rocketride'; the ext-host-safe leaves toolRelay/toolWorkspaceFs are the sanctioned deep imports)." },
 				],
 			}],
+		},
+	},
+
+	// vscode EXTENSION HOST: the Output-channel logger is the one sink
+	// (AGENTS.md) — console.* is invisible to users; and a floating promise
+	// in a message handler reorders init sequences silently.
+	{
+		files: ['apps/vscode/src/**/*.{ts,tsx}'],
+		ignores: ['apps/vscode/src/providers/views/**', '**/*.test.ts'],
+		rules: {
+			'no-console': 'error',
+		},
+	},
+	{
+		files: ['apps/vscode/src/**/*.{ts,tsx}'],
+		ignores: ['**/*.test.ts'],
+		languageOptions: {
+			parserOptions: {
+				projectService: true,
+				tsconfigRootDir: import.meta.dirname,
+			},
+		},
+		rules: {
+			'@typescript-eslint/no-floating-promises': 'error',
 		},
 	},
 

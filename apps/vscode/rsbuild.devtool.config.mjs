@@ -95,7 +95,7 @@ export default defineConfig({
 		include: ['./src/**/*', path.resolve(__dirname, '../../packages/shell'), path.resolve(__dirname, '../../packages/client-typescript')],
 		exclude: ['./dist/**', './node_modules/**', './**/*.test.*', './**/*.spec.*'],
 		entry: {
-			'page-devtool': './src/providers/views/DevTool/index.tsx',
+			'page-devtool': './src/providers/views/devtool/index.tsx',
 		},
 	},
 

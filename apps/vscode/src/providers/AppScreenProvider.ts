@@ -600,7 +600,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 					}
 				}
 			} catch (error) {
-				console.error('[AppScreenProvider] Message handling error:', error);
+				getLogger().error(`[AppScreenProvider] Message handling error: ${String(error)}`);
 			}
 		});
 

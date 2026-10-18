@@ -31,7 +31,7 @@
 // file is the only place that changes.
 // =============================================================================
 
-import type { RocketRideClient } from 'shell';
+import type { SqlWireClient } from './busClient';
 import type { SqlEndpoint } from './types';
 
 // =============================================================================
@@ -82,14 +82,17 @@ interface PipelineDict {
  * @param client - The shell's RocketRide client.
  * @returns Endpoints sorted by pipeline name, then node id.
  */
-export async function discoverSqlEndpoints(client: RocketRideClient): Promise<SqlEndpoint[]> {
+export async function discoverSqlEndpoints(client: SqlWireClient): Promise<SqlEndpoint[]> {
 	// One page of 100 covers realistic task counts; discovery re-runs on demand.
 	const tasks = await client.listTasks({ page_size: 100 });
+	/** The task-row shape this discovery reads (loose adapter result). */
+	interface TaskRow { projectId: string; source: string; completed?: boolean; state: number; name?: string }
+	const rows = (tasks.rows ?? []) as TaskRow[];
 
 	// Deduplicate tasks by project+source: restarts can leave multiple task
 	// rows for the same pipeline; the token resolver returns the live one.
 	const seen = new Set<string>();
-	const candidates = tasks.rows.filter((task) => {
+	const candidates = rows.filter((task) => {
 		// TASK_STATE >= 4 (STOPPING/COMPLETED/CANCELLED) is not attachable;
 		// `completed` alone misses the stopping window.
 		if (task.completed || task.state >= 4) return false;
@@ -118,7 +121,7 @@ export async function discoverSqlEndpoints(client: RocketRideClient): Promise<Sq
 					// several tasks, each exposing a component with this id.
 					key: `${task.projectId}:${task.source}:${component.id}`,
 					projectId: task.projectId,
-					pipelineName: task.name,
+					pipelineName: task.name ?? task.source,
 					source: task.source,
 					nodeId: component.id,
 					nodeName: component.name ?? component.id,

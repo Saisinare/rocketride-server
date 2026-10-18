@@ -41,6 +41,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getLogger } from '../shared/util/output';
 import * as crypto from 'crypto';
 import { readFileSync } from 'fs';
 import { ConnectionManager } from '../connection/connection';
@@ -106,7 +107,7 @@ export class NewAppProvider {
 		}
 
 		// Step 2: create a new webview panel.
-		const panel = vscode.window.createWebviewPanel('rocketride.pageNewApp', 'New App', vscode.ViewColumn.One, {
+		const panel = vscode.window.createWebviewPanel('rocketride.page.newApp', 'New App', vscode.ViewColumn.One, {
 			enableScripts: true,
 			retainContextWhenHidden: true,
 			localResourceRoots: [this.context.extensionUri],
@@ -122,7 +123,7 @@ export class NewAppProvider {
 			try {
 				await this.handleWebviewMessage(panel, message);
 			} catch (error) {
-				console.error(`[NewAppProvider] Message handling error: ${error}`);
+				getLogger().error(`[NewAppProvider] Message handling error: ${error}`);
 				this.postError(panel, String(error));
 			}
 		});
@@ -263,7 +264,7 @@ export class NewAppProvider {
 		void this.buildIdentity()
 			.then((identity) => panel.webview.postMessage({ type: 'newapp:identityUpdate', identity }))
 			.catch((err: unknown) => {
-				console.error(`[NewAppProvider] Failed to push identity update: ${err}`);
+				getLogger().error(`[NewAppProvider] Failed to push identity update: ${err}`);
 			});
 	}
 
@@ -279,7 +280,7 @@ export class NewAppProvider {
 	 */
 	private postError(panel: vscode.WebviewPanel, message: string): void {
 		panel.webview.postMessage({ type: 'newapp:error', error: message }).then(undefined, (err: unknown) => {
-			console.error(`[NewAppProvider] Failed to post error: ${err}`);
+			getLogger().error(`[NewAppProvider] Failed to post error: ${err}`);
 		});
 	}
 

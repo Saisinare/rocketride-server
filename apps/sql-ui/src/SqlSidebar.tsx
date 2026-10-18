@@ -42,6 +42,7 @@ import { useShellConnection } from 'shell';
 import { SidebarMenu, BxPlus, BxCheck, BxEditAlt, BxTrash } from 'shell';
 import type { DevToolProps, ViewMenu } from 'shell';
 import { useSavedConnections, useSavedConnectionsStatus, loadSavedConnections, deleteSavedConnection, endpointKeyForConnection, releaseDirectEndpoint } from './connect';
+import { getBusSqlClient } from './connect/busClient';
 import type { SavedSqlConnection } from './connect';
 import { localSidebarBridge, createSidebarToolBridge } from './sqlBridge';
 import type { SqlSidebarBridge } from './sqlBridge';
@@ -282,7 +283,7 @@ const SqlSidebar: React.FC<SqlSidebarProps> = ({ bridge = localSidebarBridge, ho
 											e.stopPropagation();
 											// Best-effort stop of a direct connection's temp
 											// pipeline; the idle TTL reaps it otherwise.
-											if (conn.mode === 'direct' && client) void releaseDirectEndpoint(client, endpointKeyForConnection(conn));
+											if (conn.mode === 'direct' && isConnected) void releaseDirectEndpoint(getBusSqlClient(), endpointKeyForConnection(conn));
 											deleteSavedConnection(conn.id);
 											setConfirmDeleteId(null);
 										}}
@@ -367,8 +368,8 @@ export const SqlDevToolSidebar: React.FC<DevToolProps> = ({ peer, channel, docum
 	// editor saves arriving over the channel — commits in this realm, and
 	// each commit republishes the state topic to every document.
 	useEffect(() => {
-		if (client && isConnected) void loadSavedConnections(client);
-	}, [client, isConnected]);
+		if (isConnected) void loadSavedConnections(getBusSqlClient());
+	}, [isConnected]);
 
 	return <SqlSidebar bridge={bridge} {...(activeDocKey !== undefined ? { hostActiveDoc: activeDocKey } : {})} />;
 };

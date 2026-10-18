@@ -58,7 +58,7 @@ export class HtmlPageProvider {
 			return;
 		}
 		// Static content — scripts stay disabled, no local resources needed.
-		const panel = vscode.window.createWebviewPanel(`rocketride.pageHtml.${key}`, title, vscode.ViewColumn.One, {
+		const panel = vscode.window.createWebviewPanel(`rocketride.page.html.${key}`, title, vscode.ViewColumn.One, {
 			enableScripts: false,
 		});
 		panel.webview.html = html;

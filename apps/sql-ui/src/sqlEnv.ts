@@ -40,7 +40,9 @@
 // =============================================================================
 
 import { createContext, useContext } from 'react';
-import type { RocketRideClient, ToolControllerFn } from 'shell';
+import type { ToolControllerFn } from 'shell';
+import { getBusSqlClient } from './connect/busClient';
+import type { SqlWireClient } from './connect/busClient';
 import type { SqlOps } from './ops';
 import { createSqlSession, discoverSqlEndpoints, releaseDirectEndpoint, resolveEndpoint } from './connect';
 import type { SqlEndpoint, SqlExecuteResult, SqlSchemaResponse, SqlSession, SavedSqlConnection, SqlDialect } from './connect';
@@ -96,7 +98,7 @@ export function useSqlEnv(): SqlEnv {
 /** Session cache per endpoint key, tied to the client that created it so a
  *  reconnect (new client instance) transparently rebuilds sessions. Module
  *  level: shared across env instances in the realm (token caching). */
-const localSessions = new Map<string, { client: RocketRideClient; session: SqlSession }>();
+const localSessions = new Map<string, { client: SqlWireClient; session: SqlSession }>();
 
 /**
  * The cached local session for an endpoint. Exported for the sidebar
@@ -106,7 +108,7 @@ const localSessions = new Map<string, { client: RocketRideClient; session: SqlSe
  * @param endpoint - The endpoint to bind.
  * @returns The cached or freshly created session.
  */
-export function getLocalSession(client: RocketRideClient, endpoint: SqlEndpoint): SqlSession {
+export function getLocalSession(client: SqlWireClient, endpoint: SqlEndpoint): SqlSession {
 	const cached = localSessions.get(endpoint.key);
 	if (cached && cached.client === client) return cached.session;
 	const session = createSqlSession(client, endpoint);
@@ -121,26 +123,26 @@ export function getLocalSession(client: RocketRideClient, endpoint: SqlEndpoint)
  * @param isConnected - The shell's connection flag.
  * @returns The environment (rebuild on client/connection change).
  */
-export function createLocalSqlEnv(client: RocketRideClient | null, isConnected: boolean): SqlEnv {
-	const need = (): RocketRideClient => {
-		if (!client || !isConnected) throw new Error('Not connected to a server.');
+export function createLocalSqlEnv(isConnected: boolean): SqlEnv {
+	// The bus-backed adapter — one stable identity per realm (busClient.ts).
+	const client = getBusSqlClient();
+	const need = (): SqlWireClient => {
+		if (!isConnected) throw new Error('Not connected to a server.');
 		return client;
 	};
 	return {
-		ready: !!client && isConnected,
+		ready: isConnected,
 		getSession: (endpoint) => getLocalSession(need(), endpoint),
 		resolveEndpoint: (conn) => resolveEndpoint(need(), conn),
 		releaseEndpoint: (key) => {
-			if (client) void releaseDirectEndpoint(client, key);
+			void releaseDirectEndpoint(client, key);
 		},
 		discoverEndpoints: () => discoverSqlEndpoints(need()),
 		getService: (provider) => need().getService(provider),
 		validate: (pipeline) => need().validate({ pipeline }),
 		getEnvironmentKeys: async () => {
 			try {
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				const keys = await (need() as any).account?.getEnvironmentKeys?.();
-				return (keys as string[] | undefined) ?? [];
+				return await need().getEnvironmentKeys();
 			} catch {
 				return [];
 			}

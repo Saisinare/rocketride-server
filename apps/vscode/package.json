@@ -32,7 +32,7 @@
 	"contributes": {
 		"customEditors": [
 			{
-				"viewType": "rocketride.PageProject",
+				"viewType": "rocketride.page.project",
 				"displayName": "Pipeline Grid Editor",
 				"selector": [
 					{
@@ -488,7 +488,7 @@
 				"command": "rocketride.pipeline.save",
 				"key": "ctrl+s",
 				"mac": "cmd+s",
-				"when": "activeCustomEditorId == 'rocketride.PageProject'"
+				"when": "activeCustomEditorId == 'rocketride.page.project'"
 			}
 		],
 		"menus": {

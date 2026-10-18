@@ -35,6 +35,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getLogger } from '../shared/util/output';
 import { ConnectionManager } from '../connection/connection';
 import { ConnectionStatus, ConnectionState } from '../shared/types';
 
@@ -69,10 +70,10 @@ export class BarStatus {
 			if (this.connectionManager) {
 				this.setupEventListeners();
 			} else {
-				console.warn('[BarStatus] Connection manager not available yet');
+				getLogger().info('[BarStatus] Connection manager not available yet');
 			}
 		} catch (error) {
-			console.warn('[BarStatus] Could not access connection manager:', error);
+			getLogger().info(`[BarStatus] Could not access connection manager: ${String(error)}`);
 		}
 	}
 
@@ -106,7 +107,7 @@ export class BarStatus {
 
 	private setupEventListeners(): void {
 		if (!this.connectionManager) {
-			console.warn('[BarStatus] No connection manager available for event listeners');
+			getLogger().info('[BarStatus] No connection manager available for event listeners');
 			return;
 		}
 
@@ -257,7 +258,7 @@ export class BarStatus {
 			const { getConnectionManager } = require('../extension');
 			return getConnectionManager();
 		} catch (error) {
-			console.warn('[BarStatus] Could not access connection manager:', error);
+			getLogger().info(`[BarStatus] Could not access connection manager: ${String(error)}`);
 			return undefined;
 		}
 	}

@@ -39,8 +39,9 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { SidebarCollapsedGate, createToolOpServer, getClient, useShellEvent } from 'shell';
+import { ConnectionManager, SidebarCollapsedGate, createToolOpServer, useShellEvent } from 'shell';
 import type { DevToolProps } from 'shell';
+import { callProfilerOp } from './ops';
 import type { ProfilerOps } from './ops';
 import { localSidebarChannel, createPeerSidebarChannel } from './profilerBridge';
 import type { ProfilerControlsState, ProfilerSidebarChannel } from './profilerBridge';
@@ -291,10 +292,11 @@ export const ProfilerDevToolSidebar: React.FC<DevToolProps> = ({ peer, documents
 	// engine connection (frames hold none).
 	useEffect(() => {
 		const ops = createToolOpServer<ProfilerOps>(peer);
+		// Served over the SHELL BUS — named client.* ops, no client object.
+		const cm = ConnectionManager.getInstance();
 		ops.serve('profiler.call', async ({ command, args }) => {
-			const live = getClient();
-			if (!live || !live.isConnected()) throw new Error('Not connected to a server.');
-			return live.call(command, args ?? {});
+			if (!cm.isConnected()) throw new Error('Not connected to a server.');
+			return callProfilerOp((op, params) => cm.request(op, params), command, args);
 		});
 		return () => ops.dispose();
 	}, [peer]);

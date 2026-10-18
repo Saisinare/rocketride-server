@@ -13,6 +13,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getLogger } from '../shared/util/output';
 import { readPref, writePref } from './PrefsBag';
 
 /** The system prefs key holding the pinned tool ids (ShellPrefsMap). */
@@ -40,7 +41,7 @@ export class DevToolStore {
 		if (current.includes(appId)) return;
 		writePref(this.context, PINS_KEY, [...current, appId], 'workspace').then(
 			() => this.changeEmitter.fire(),
-			(err: unknown) => console.error(`[DevToolStore] Failed to persist add: ${err}`),
+			(err: unknown) => getLogger().error(`[DevToolStore] Failed to persist add: ${err}`),
 		);
 	}
 
@@ -54,7 +55,7 @@ export class DevToolStore {
 		if (!current.includes(appId)) return;
 		writePref(this.context, PINS_KEY, current.filter((id) => id !== appId), 'workspace').then(
 			() => this.changeEmitter.fire(),
-			(err: unknown) => console.error(`[DevToolStore] Failed to persist remove: ${err}`),
+			(err: unknown) => getLogger().error(`[DevToolStore] Failed to persist remove: ${err}`),
 		);
 	}
 

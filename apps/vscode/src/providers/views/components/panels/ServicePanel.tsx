@@ -17,8 +17,8 @@ import React, { useCallback, useRef, useState } from 'react';
 import { AnchoredPopup } from 'shell';
 import ServiceIcon from '../../../../assets/service.svg';
 import { ServiceStatus, VersionOption, displayVersion, stateLabels, panelStyles as S, statusIndicatorStyle, primaryBtnStyle, secondaryBtnStyle, optionStyle } from './shared';
-import { MessageData } from '../../Settings/SettingsWebview';
-import { MessageDisplay } from '../../Settings/MessageDisplay';
+import { MessageData } from '../../settings/SettingsWebview';
+import { MessageDisplay } from '../../settings/MessageDisplay';
 
 // =============================================================================
 // TYPES

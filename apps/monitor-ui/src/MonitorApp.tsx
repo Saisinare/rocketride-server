@@ -34,7 +34,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { DevToolProps, ShellAppProps } from 'shell';
-import { useShellConnection, useDashboardData, usePolling, AppLayout, createToolChannel, createToolController, typedToolChannel, useConnectionReady, useToolState } from 'shell';
+import { ConnectionManager, useShellConnection, useDashboardData, usePolling, AppLayout, createToolChannel, createToolController, typedToolChannel, useConnectionReady, useToolState } from 'shell';
 import { commonStyles } from 'shell';
 import { MonitorView } from 'shell';
 import type { DashboardConnection, DashboardTask, ListPageRequest, ListPageResponse, MonitorPageId } from 'shell';
@@ -89,7 +89,9 @@ export interface IMonitorSurfaceProps {
  * singleton, which the host has connected before mounting.
  */
 export const MonitorSurface: React.FC<IMonitorSurfaceProps> = ({ page }) => {
-	const { client, isConnected } = useShellConnection();
+	const { isConnected } = useShellConnection();
+	// Engine access rides the SHELL BUS (brokered client.* ops).
+	const cm = ConnectionManager.getInstance();
 
 	// Shared 3s dashboard snapshot + activity feed (module-level singleton hook,
 	// so data survives view switches without re-fetching).
@@ -104,9 +106,9 @@ export const MonitorSurface: React.FC<IMonitorSurfaceProps> = ({ page }) => {
 	const listConnections = useCallback(async (req: ListPageRequest): Promise<ListPageResponse<DashboardConnection>> => {
 		// No client yet (shell still connecting): an empty page — the
 		// connection-gated poll refetches as soon as the shell comes up.
-		if (!client) return { rows: [], total: 0, page: 1, pageSize: req.page_size ?? 0 };
-		return client.listConnections(req);
-	}, [client]);
+		if (!cm.isConnected()) return { rows: [], total: 0, page: 1, pageSize: req.page_size ?? 0 };
+		return cm.request('client.listConnections', req) as Promise<ListPageResponse<DashboardConnection>>;
+	}, [cm]);
 
 	/**
 	 * Paged tasks fetcher for the shared Tasks grid (REMOTE mode).
@@ -116,9 +118,9 @@ export const MonitorSurface: React.FC<IMonitorSurfaceProps> = ({ page }) => {
 	 */
 	const listTasks = useCallback(async (req: ListPageRequest): Promise<ListPageResponse<DashboardTask>> => {
 		// Same shell-connecting guard as listConnections.
-		if (!client) return { rows: [], total: 0, page: 1, pageSize: req.page_size ?? 0 };
-		return client.listTasks(req);
-	}, [client]);
+		if (!cm.isConnected()) return { rows: [], total: 0, page: 1, pageSize: req.page_size ?? 0 };
+		return cm.request('client.listTasks', req) as Promise<ListPageResponse<DashboardTask>>;
+	}, [cm]);
 
 	// Combined remote-grid refetch handed up by MonitorView; polled at the
 	// same 3s cadence as the dashboard snapshot so the current page of each

@@ -95,6 +95,27 @@ const AccountWebview: React.FC = () => {
 
 	const sendMessageRef = useRef<(msg: AccountWebviewToHost) => void>(() => {});
 
+	// Direct ledger queries for the transaction grid (requestId-correlated
+	// round trips to the extension host — the same DIRECT mode the web
+	// shell's AccountProvider gives BillingDashboard).
+	const ledgerRequestCounter = useRef(0);
+	const pendingLedgerFetches = useRef(new Map<number, (result: unknown) => void>());
+	const pendingDistinctFetches = useRef(new Map<number, (values: (string | number | boolean)[]) => void>());
+	const fetchTransactions = useCallback((req: unknown): Promise<any> => {
+		return new Promise((resolve) => {
+			const requestId = ++ledgerRequestCounter.current;
+			pendingLedgerFetches.current.set(requestId, resolve as (result: unknown) => void);
+			sendMessageRef.current({ type: 'account:fetchTransactions', requestId, req });
+		});
+	}, []);
+	const fetchTransactionDistinct = useCallback((field: string): Promise<(string | number | boolean)[]> => {
+		return new Promise((resolve) => {
+			const requestId = ++ledgerRequestCounter.current;
+			pendingDistinctFetches.current.set(requestId, resolve);
+			sendMessageRef.current({ type: 'account:fetchTransactionDistinct', requestId, field });
+		});
+	}, []);
+
 	// This realm's prefs store (hydrate-once, host-seeded via prefs:init);
 	// grid layouts answer synchronously from it, so DataGrid persistence
 	// works in this webview exactly as in the web shell.
@@ -131,6 +152,14 @@ const AccountWebview: React.FC = () => {
 			// -- Connection -------------------------------------------------------
 			case 'prefs:init':
 				prefsBridgeRef.current?.seed(message.values);
+				break;
+			case 'account:transactionsResult':
+				pendingLedgerFetches.current.get(message.requestId)?.(message.result);
+				pendingLedgerFetches.current.delete(message.requestId);
+				break;
+			case 'account:transactionDistinctResult':
+				pendingDistinctFetches.current.get(message.requestId)?.(message.values);
+				pendingDistinctFetches.current.delete(message.requestId);
 				break;
 			case 'shell:connectionChange':
 				setIsConnected(message.isConnected);
@@ -478,7 +507,8 @@ const AccountWebview: React.FC = () => {
 				usageByTeam={usageByTeam}
 				activeTasks={[]}
 				dashboardLoading={billingLoading}
-				onTransactionPage={() => {}}
+				fetchTransactions={fetchTransactions}
+				fetchTransactionDistinct={fetchTransactionDistinct}
 				topupPlans={topupPlans}
 				allPlans={allPlans}
 				onPurchaseTopup={async (plan: any) => {

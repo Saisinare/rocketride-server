@@ -39,6 +39,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getLogger } from '../shared/util/output';
 import * as crypto from 'crypto';
 import { readFileSync } from 'fs';
 import { ConnectionManager } from '../connection/connection';
@@ -111,7 +112,7 @@ export class EnvironmentProvider {
 		}
 
 		// Step 2: create a new webview panel.
-		const panel = vscode.window.createWebviewPanel('rocketride.pageEnvironment', 'Variables', vscode.ViewColumn.One, {
+		const panel = vscode.window.createWebviewPanel('rocketride.page.environment', 'Variables', vscode.ViewColumn.One, {
 			enableScripts: true,
 			retainContextWhenHidden: true,
 			localResourceRoots: [this.context.extensionUri],
@@ -127,7 +128,7 @@ export class EnvironmentProvider {
 			try {
 				await this.handleWebviewMessage(panel, message);
 			} catch (error) {
-				console.error(`[EnvironmentProvider] Message handling error: ${error}`);
+				getLogger().error(`[EnvironmentProvider] Message handling error: ${error}`);
 				this.postError(panel, String(error));
 			}
 		});
@@ -149,7 +150,7 @@ export class EnvironmentProvider {
 		Promise.resolve(
 			panel.webview.postMessage({ type: 'env:prefill', keys })
 		).catch((err: unknown) => {
-			console.error(`[EnvironmentProvider] Failed to send prefill keys: ${err}`);
+			getLogger().error(`[EnvironmentProvider] Failed to send prefill keys: ${err}`);
 		});
 	}
 
@@ -395,7 +396,7 @@ export class EnvironmentProvider {
 				slot: slotState,
 			})
 		).catch((err: unknown) => {
-			console.error(`[EnvironmentProvider] Failed to push slot update for ${slot}: ${err}`);
+			getLogger().error(`[EnvironmentProvider] Failed to push slot update for ${slot}: ${err}`);
 		});
 	}
 
@@ -417,7 +418,7 @@ export class EnvironmentProvider {
 		context?: { slot: 'development' | 'deployment'; scope: 'org' | 'team' | 'user'; scopeId?: string },
 	): void {
 		panel.webview.postMessage({ type: 'env:error', error: message, ...context }).then(undefined, (err: unknown) => {
-			console.error(`[EnvironmentProvider] Failed to post error: ${err}`);
+			getLogger().error(`[EnvironmentProvider] Failed to post error: ${err}`);
 		});
 	}
 

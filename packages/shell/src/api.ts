@@ -97,6 +97,9 @@ import { createToolController, createToolOpServer, asToolCallMessage, asToolRepl
 import { typedToolChannel, useToolState, useConnectionReady, publishHostConnectionState, HOST_CONNECTION_TOPIC } from './components/workspace/toolProtocol';
 import { typedPrefs, scopedPrefs, createBridgedPrefsStore, usePref } from './components/workspace/prefsStore';
 import { ToolHostProvider, useToolHost, createLoopbackPeer } from './components/workspace/toolHost';
+import { createOpBus, typedBusOps, BusNoHandlerError, DEFAULT_BUS_REQUEST_TIMEOUT_MS } from './connection/busOps';
+import { attachRealmToRoot, createBusRouter, createLocalEndpointPair, DEFAULT_SUMMON_TIMEOUT_MS } from './connection/busBridge';
+import { registerClientOps } from './connection/clientOps';
 import { useGridConfigAnswering } from './components/data-grid/gridConfigAnswering';
 import { createToolRelay, hostConnectionPayload, TOOL_RELAY_BUFFER_LIMIT } from './components/workspace/toolRelay';
 import { toolDocUri, parseToolDocUri, activeDocKeyFor, TOOL_DOC_PREFIX } from './components/workspace/toolDocUri';
@@ -220,6 +223,18 @@ export type { ToolRelay, ToolRelayEnds } from './components/workspace/toolRelay'
 
 // Tool document URIs — the `tool:<appId>[/<docKey>]` convention, spelled once.
 export { toolDocUri, parseToolDocUri, activeDocKeyFor, TOOL_DOC_PREFIX } from './components/workspace/toolDocUri';
+
+// Shell bus OPS — the addressed-operation lane (request/handle/emitOp) and
+// its cross-realm plumbing: hub-and-spoke with the framework root as the
+// router; hosts supply only transport endpoints. Registration is the
+// allowlist is the routing entry; summon wakes installed-but-dormant
+// owners and never installs.
+export { createOpBus, typedBusOps, BusNoHandlerError, DEFAULT_BUS_REQUEST_TIMEOUT_MS } from './connection/busOps';
+export type { ShellOpMap, ShellOpSpec, ShellOpParams, ShellOpResult, IOpBus, IBusForwarder, IBusRequestOptions, ITypedBusOps, BusOpHandler } from './connection/busOps';
+export { attachRealmToRoot, createBusRouter, createLocalEndpointPair, DEFAULT_SUMMON_TIMEOUT_MS } from './connection/busBridge';
+export { registerClientOps } from './connection/clientOps';
+export type { ClientOpMap, ClientMonitorKey, IClientOpsSource, IClientOpsOptions } from './connection/clientOps';
+export type { IBusEndpoint, IBusRouter, IBusRouterOptions, SummonLookup } from './connection/busBridge';
 
 // Top-level shell + sidebar component prop types
 export type { ShellProps } from './components/layout/Shell';
@@ -585,6 +600,15 @@ export const shellApi = {
 	get parseToolDocUri() { return parseToolDocUri; },
 	get activeDocKeyFor() { return activeDocKeyFor; },
 	get TOOL_DOC_PREFIX() { return TOOL_DOC_PREFIX; },
+	get createOpBus() { return createOpBus; },
+	get typedBusOps() { return typedBusOps; },
+	get BusNoHandlerError() { return BusNoHandlerError; },
+	get DEFAULT_BUS_REQUEST_TIMEOUT_MS() { return DEFAULT_BUS_REQUEST_TIMEOUT_MS; },
+	get attachRealmToRoot() { return attachRealmToRoot; },
+	get createBusRouter() { return createBusRouter; },
+	get createLocalEndpointPair() { return createLocalEndpointPair; },
+	get DEFAULT_SUMMON_TIMEOUT_MS() { return DEFAULT_SUMMON_TIMEOUT_MS; },
+	get registerClientOps() { return registerClientOps; },
 	get useIframeBridge() { return useIframeBridge; },
 	get useSubscriptions() { return useSubscriptions; },
 	get usePolling() { return usePolling; },

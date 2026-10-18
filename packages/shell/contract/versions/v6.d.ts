@@ -23,8 +23,8 @@
 // =============================================================================
 // FROZEN shell-api contract — ShellApiV6 — never edit by hand
 // =============================================================================
-// Generated:     2026-10-17T21:28:46.286Z
-// Source commit: a6baf1f379cc205ff1d65805560569521f3b290d
+// Generated:     2026-10-18T00:03:46.575Z
+// Source commit: f3665416e5c0180a352734c0f7620650398fe195
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder shell:freeze
 // =============================================================================
@@ -8269,6 +8269,118 @@ export declare function useFixedPopupPosition(triggerRef: React$1.RefObject<HTML
  * new code.
  */
 export declare function getClient(): RocketRideClient | null;
+/** Default per-request timeout — matches the tool-op lane's generosity
+ *  (engine-side work can legitimately run long); override per call. */
+export declare const DEFAULT_BUS_REQUEST_TIMEOUT_MS = 120000;
+/** One operation's compile-time shape: params in, result out. */
+export interface ShellOpSpec<P, R> {
+    /** Phantom carriers — never read at runtime. */
+    readonly params: P;
+    readonly result: R;
+}
+/**
+ * The base op map a domain's op vocabulary extends — the protocol-map
+ * pattern (ShellConnectionEventMap, ToolOpMap) applied to the bus. A domain
+ * declares, in its own module:
+ *
+ *   interface ClientOps extends ShellOpMap {
+ *       'client.setTeam': ShellOpSpec<{ teamId: string }, void>;
+ *   }
+ *
+ * The interface key is the wire name, so a typo'd string or drifted payload
+ * shape fails to compile at both ends.
+ */
+export interface ShellOpMap {
+}
+/** The params type of one op in a map. */
+export type ShellOpParams<O, K extends keyof O> = O[K] extends ShellOpSpec<infer P, unknown> ? P : never;
+/** The result type of one op in a map. */
+export type ShellOpResult<O, K extends keyof O> = O[K] extends ShellOpSpec<unknown, infer R> ? R : never;
+/** Per-request options. */
+export interface IBusRequestOptions {
+    /** Overrides {@link DEFAULT_BUS_REQUEST_TIMEOUT_MS}. */
+    timeoutMs?: number;
+}
+/** A registered op handler — a plain async function, no transport knowledge. */
+export type BusOpHandler = (params: unknown) => unknown | Promise<unknown>;
+/**
+ * Where an unresolved op goes when this realm is bridged (set by
+ * busBridge.ts). Absent on the framework root (nothing above it) and in
+ * unbridged realms (tests, standalone).
+ */
+export interface IBusForwarder {
+    /** Forwards a request; resolves/rejects with the remote outcome. */
+    request(op: string, params: unknown, timeoutMs: number): Promise<unknown>;
+    /** Forwards a fire-and-forget op invocation. */
+    emitOp(op: string, params: unknown): void;
+    /** Announces a local registration (routing entry at the root). */
+    register(op: string): void;
+    /** Withdraws a local registration. */
+    unregister(op: string): void;
+}
+/** Thrown when a request resolves to no handler anywhere. */
+export declare class BusNoHandlerError extends Error {
+    constructor(op: string);
+}
+/** The op lane of one realm's bus. */
+export interface IOpBus {
+    /**
+     * Registers THE handler for an op. One handler per name — a second
+     * registration throws (registration is the allowlist; ambiguity is a
+     * bug, not a fan-out).
+     *
+     * @param op - The wire name (`ns.verb` by convention).
+     * @param handler - Plain async function; its return value answers requests.
+     * @returns An unregister function.
+     */
+    handle(op: string, handler: BusOpHandler): () => void;
+    /**
+     * Invokes an op and awaits its result — local handler first, else the
+     * forwarder (the bridge to the framework root), else rejects with
+     * {@link BusNoHandlerError}.
+     */
+    request(op: string, params: unknown, opts?: IBusRequestOptions): Promise<unknown>;
+    /**
+     * Invokes an op fire-and-forget — the handler runs (local or forwarded),
+     * the return value is discarded, failures are debug-logged, an unknown
+     * op is DROPPED with a debug trace (never buffered at this layer).
+     */
+    emitOp(op: string, params: unknown): void;
+    /** True when THIS realm registered the op. */
+    hasHandler(op: string): boolean;
+    /** The ops this realm registered (the bridge announces these). */
+    localOps(): string[];
+    /** Wires the realm's upstream (bridge-owned; root has none). */
+    setForwarder(forwarder: IBusForwarder | null): void;
+    /** Observes registration changes (the bridge re-announces on change). */
+    onRegistrationChange(cb: (op: string, registered: boolean) => void): () => void;
+}
+/**
+ * Creates one realm's op bus. ConnectionManager holds exactly one and
+ * exposes it as `request`/`handle`/`emitOp`; the bridge and router build on
+ * the same object.
+ *
+ * @returns The op bus.
+ */
+export declare function createOpBus(): IOpBus;
+/** The typed facade over a bus for one op map. */
+export interface ITypedBusOps<O extends ShellOpMap> {
+    /** Awaits the op's result. */
+    request<K extends keyof O & string>(op: K, params: ShellOpParams<O, K>, opts?: IBusRequestOptions): Promise<ShellOpResult<O, K>>;
+    /** Fires the op without a result (same handler, return value discarded). */
+    emit<K extends keyof O & string>(op: K, params: ShellOpParams<O, K>): void;
+    /** Registers the op's handler. */
+    handle<K extends keyof O & string>(op: K, handler: (params: ShellOpParams<O, K>) => ShellOpResult<O, K> | Promise<ShellOpResult<O, K>>): () => void;
+}
+/**
+ * Types one op map over a bus — the `typedToolChannel` convention applied
+ * to the bus lane. Domains hold one of these; raw string ops never appear
+ * at call sites.
+ *
+ * @param bus - The realm's op bus.
+ * @returns The typed facade.
+ */
+export declare function typedBusOps<O extends ShellOpMap>(bus: IOpBus): ITypedBusOps<O>;
 /**
  * Options for ConnectionManager.initialize().
  */
@@ -8936,6 +9048,48 @@ on(event: 'store:changed', handler: (payload: ShellConnectionEventMap['store:cha
      * @returns An unsubscribe function.
      */
     onAny(handler: WildcardHandler): () => void;
+    /**
+     * Invokes an addressed op and awaits its result — the bus's second lane.
+     * Resolution: this realm's handler, else the bridge to the framework
+     * root (router: root handlers -> owning realm -> summon -> reject).
+     *
+     * Op names are `ns.verb` by convention (the `.`/`:` split against events
+     * is voluntary style; the bus matches full strings). Prefer the typed
+     * facade (`typedBusOps<MyOps>(cm.ops())`) at call sites.
+     *
+     * @param op - The op's wire name.
+     * @param params - The op's payload.
+     * @param opts - Timeout override.
+     * @returns The handler's result.
+     */
+    request(op: string, params: unknown, opts?: IBusRequestOptions): Promise<unknown>;
+    /**
+     * Fires an addressed op without awaiting a result — the SAME handler an
+     * equivalent request() would reach; its return value is discarded. The
+     * caller chooses the lane, not the name.
+     *
+     * @param op - The op's wire name.
+     * @param params - The op's payload.
+     */
+    emitOp(op: string, params: unknown): void;
+    /**
+     * Registers THE handler for an op — registration is the allowlist and
+     * the routing entry (one handler per name; a second registration
+     * throws). When this realm is bridged, the registration is announced to
+     * the root router so any realm can address the op.
+     *
+     * @param op - The op's wire name.
+     * @param handler - Plain async function answering the op.
+     * @returns An unregister function.
+     */
+    handle(op: string, handler: BusOpHandler): () => void;
+    /**
+     * The raw op bus — for the bridge/router (busBridge.ts) and the typed
+     * facade (`typedBusOps`). Application code prefers request/handle above.
+     *
+     * @returns This realm's op bus.
+     */
+    ops(): IOpBus;
     /** Returns a snapshot of the debug log (newest last). */
     getDebugLog(): DebugLogEntry[];
     /** Clears all entries from the debug log. */
@@ -9382,6 +9536,81 @@ export declare function useToolHost<T extends ToolHostServices = ToolHostService
  * @returns The loopback peer.
  */
 export declare function createLoopbackPeer(): DevToolProps["peer"];
+/** How long a summoned owner gets to register before waiting requests fail. */
+export declare const DEFAULT_SUMMON_TIMEOUT_MS = 30000;
+/** One side of a transport between two realms. */
+export interface IBusEndpoint {
+    /** Sends one message to the other side. */
+    post(message: unknown): void;
+    /** Subscribes to messages from the other side; returns unsubscribe. */
+    subscribe(cb: (message: unknown) => void): () => void;
+}
+/**
+ * Attaches a realm's op bus to the framework root over one endpoint.
+ *
+ * Outbound: unresolved requests/emitOps forward to the root; local
+ * registrations are announced (including ones made before attach — the bus
+ * replays them into the forwarder). Inbound: requests from the root (ops
+ * THIS realm registered) run against local handlers and answer by id.
+ *
+ * @param bus - This realm's op bus.
+ * @param endpoint - Transport to the root.
+ * @returns Detach function (rejects this realm's in-flight outbound requests).
+ */
+export declare function attachRealmToRoot(bus: IOpBus, endpoint: IBusEndpoint): () => void;
+/** Summon lookup: an activation thunk when the op's owner is INSTALLED but
+ *  not yet registered, null otherwise. Installed-only is the caller's
+ *  contract (pinned store tools + enabled builtins); summon NEVER installs. */
+export type SummonLookup = (op: string) => (() => void) | null;
+/** Router options. */
+export interface IBusRouterOptions {
+    /** The summon table (see {@link SummonLookup}). Absent = no summoning. */
+    summon?: SummonLookup;
+    /** How long a summoned owner gets to register. */
+    summonTimeoutMs?: number;
+}
+/** The framework root's router. */
+export interface IBusRouter {
+    /**
+     * Attaches one realm. Returns a detach function — detaching clears the
+     * realm's registrations and rejects every in-flight request routed to it.
+     *
+     * @param endpoint - Transport to the realm.
+     * @param label - For diagnostics ('sidebar', 'page:account', ...).
+     */
+    addRealm(endpoint: IBusEndpoint, label: string): () => void;
+    /**
+     * Pushes one fire-and-forget op to EVERY attached realm — the broker's
+     * mirror feed (connection/account/services state into each realm's local
+     * bus). Realms that registered no handler for the op drop it silently;
+     * this is the ONE root→all path, outside the registration routing.
+     */
+    broadcastEmitOp(op: string, params: unknown): void;
+    /** Disposes every realm attachment. */
+    dispose(): void;
+}
+/**
+ * Creates the router over the ROOT's own op bus. The root's bus gets a
+ * forwarder too, so root-initiated requests reach realm-registered ops
+ * through the same resolution path.
+ *
+ * @param rootBus - The framework root's op bus (the broker registers here).
+ * @param options - Summon configuration.
+ * @returns The router.
+ */
+export declare function createBusRouter(rootBus: IOpBus, options?: IBusRouterOptions): IBusRouter;
+/**
+ * An in-process endpoint pair — the transport for two "realms" sharing one
+ * JS realm (cloud root↔local attachments, tests). Delivery is a microtask,
+ * matching postMessage semantics closely enough that code written against
+ * one transport behaves on the other.
+ *
+ * @returns Two connected endpoints.
+ */
+export declare function createLocalEndpointPair(): [
+    IBusEndpoint,
+    IBusEndpoint
+];
 /**
  * Answers the realm's grid-config channel from a prefs store.
  *
@@ -13626,6 +13855,14 @@ export declare const shellApi: {
     readonly parseToolDocUri: typeof parseToolDocUri;
     readonly activeDocKeyFor: typeof activeDocKeyFor;
     readonly TOOL_DOC_PREFIX: string;
+    readonly createOpBus: typeof createOpBus;
+    readonly typedBusOps: typeof typedBusOps;
+    readonly BusNoHandlerError: typeof BusNoHandlerError;
+    readonly DEFAULT_BUS_REQUEST_TIMEOUT_MS: number;
+    readonly attachRealmToRoot: typeof attachRealmToRoot;
+    readonly createBusRouter: typeof createBusRouter;
+    readonly createLocalEndpointPair: typeof createLocalEndpointPair;
+    readonly DEFAULT_SUMMON_TIMEOUT_MS: number;
     readonly useIframeBridge: typeof useIframeBridge;
     readonly useSubscriptions: typeof useSubscriptions;
     readonly usePolling: typeof usePolling;

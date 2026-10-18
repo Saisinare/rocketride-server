@@ -13,6 +13,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getLogger } from '../shared/util/output';
 import { ConnectionManager } from '../connection/connection';
 import { GenericEvent } from '../shared/types';
 
@@ -60,7 +61,7 @@ export class StatusProvider {
 					pipeline = await client.getTaskPipeline(token);
 				}
 			} catch (err) {
-				console.error('[StatusProvider] Could not fetch task pipeline:', err);
+				getLogger().error(`[StatusProvider] Could not fetch task pipeline: ${String(err)}`);
 			}
 		}
 
@@ -78,7 +79,7 @@ export class StatusProvider {
 		};
 
 		// Step 3: create the panel using the same page-project webview
-		const panel = vscode.window.createWebviewPanel('rocketride.pageStatus', displayName, vscode.ViewColumn.One, {
+		const panel = vscode.window.createWebviewPanel('rocketride.page.status', displayName, vscode.ViewColumn.One, {
 			enableScripts: true,
 			retainContextWhenHidden: true,
 			localResourceRoots: [this.context.extensionUri],
@@ -112,7 +113,7 @@ export class StatusProvider {
 						const c = this.connectionManager.getClient();
 						if (c) {
 							c.addMonitor({ projectId, source: sourceId }, ['summary', 'flow']).catch((err) => {
-								console.error('[StatusProvider] Failed to subscribe to task events:', err);
+								getLogger().error(`[StatusProvider] Failed to subscribe to task events: ${String(err)}`);
 							});
 						}
 						break;
@@ -127,7 +128,7 @@ export class StatusProvider {
 								const token = await c.getTaskToken({ projectId, source: sourceId });
 								if (token) await c.terminate(token);
 							} catch (err) {
-								console.error('[StatusProvider] Stop failed:', err);
+								getLogger().error(`[StatusProvider] Stop failed: ${String(err)}`);
 							}
 						}
 						break;
@@ -151,7 +152,7 @@ export class StatusProvider {
 						break;
 				}
 			} catch (error) {
-				console.error('[StatusProvider] Message handling error:', error);
+				getLogger().error(`[StatusProvider] Message handling error: ${String(error)}`);
 			}
 		});
 

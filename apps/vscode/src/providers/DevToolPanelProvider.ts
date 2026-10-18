@@ -40,6 +40,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getLogger } from '../shared/util/output';
 import * as crypto from 'crypto';
 import { readFileSync } from 'fs';
 import { ConnectionManager } from '../connection/connection';
@@ -52,7 +53,7 @@ import type { DevToolInitPayload, DevToolWebviewToHost } from './types/devToolTy
 
 /** viewType prefix — the tab's identity is `<prefix><appId>`, so a restored
     tab identifies its tool by itself (no webview state involved). */
-const VIEWTYPE_PREFIX = 'rocketride.pageDevTool.';
+const VIEWTYPE_PREFIX = 'rocketride.page.devTool.';
 
 /** One open panel: the webview plus its identity and bridge sink. */
 interface PanelEntry {
@@ -278,7 +279,7 @@ export class DevToolPanelProvider {
 						break;
 				}
 			} catch (error) {
-				console.error(`[DevToolPanelProvider] Message handling error: ${error}`);
+				getLogger().error(`[DevToolPanelProvider] Message handling error: ${error}`);
 			}
 		});
 

@@ -35,6 +35,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getLogger } from '../shared/util/output';
 import { ConfigManager } from '../config';
 import { getConnectionManager, getEngineRegistry } from '../extension';
 import { commitStagedCloudCredentials } from '../connection/connection';
@@ -55,7 +56,7 @@ export class WelcomeProvider extends FrameworkPageProvider {
 	constructor(context: vscode.ExtensionContext, extensionUri: vscode.Uri) {
 		super(context, extensionUri, {
 			command: 'rocketride.page.welcome.open',
-			viewType: 'rocketrideWelcome',
+			viewType: 'rocketride.page.welcome',
 			title: 'Welcome to RocketRide',
 			entry: 'page-welcome',
 			retain: true,
@@ -107,16 +108,16 @@ export class WelcomeProvider extends FrameworkPageProvider {
 					await this.connHandler.startStatusPolling();
 					break;
 
-				case 'saveAndConnect':
+				case 'settings:saveAndConnect':
 					await this.saveAndConnect(message.settings as Record<string, unknown>);
 					break;
 
-				case 'openSettings':
+				case 'settings:open':
 					this.panel?.dispose();
 					vscode.commands.executeCommand('rocketride.page.settings.open');
 					break;
 
-				case 'openExternal':
+				case 'settings:openExternal':
 					if (message.url) {
 						vscode.env.openExternal(vscode.Uri.parse(String(message.url)));
 					}
@@ -127,19 +128,19 @@ export class WelcomeProvider extends FrameworkPageProvider {
 					const handled = this.panel ? await this.connHandler.handleMessage(message, this.panel.webview) : false;
 					if (handled) break;
 
-					console.warn('[WelcomeProvider] Unhandled message type:', message.type);
+					getLogger().info(`[WelcomeProvider] Unhandled message type: ${String(message.type)}`);
 					break;
 				}
 			}
 		} catch (error) {
-			console.error('[WelcomeProvider] Message handling error:', error);
+			getLogger().error(`[WelcomeProvider] Message handling error: ${String(error)}`);
 			const msgType = message.type;
 			if (msgType.startsWith('docker')) {
-				this.post({ type: 'dockerError', message: `${error}` });
+				this.post({ type: 'docker:error', message: `${error}` });
 			} else if (msgType.startsWith('service')) {
-				this.post({ type: 'serviceError', message: `${error}` });
+				this.post({ type: 'service:error', message: `${error}` });
 			} else {
-				this.post({ type: 'showMessage', level: 'error', message: `Error: ${error}` });
+				this.post({ type: 'settings:showMessage', level: 'error', message: `Error: ${error}` });
 			}
 		}
 	}
@@ -174,7 +175,7 @@ export class WelcomeProvider extends FrameworkPageProvider {
 		// Save & Connect — a missing field would be written as `undefined`,
 		// silently resetting that setting to its default.
 		this.post({
-			type: 'settingsLoaded',
+			type: 'settings:loaded',
 			logoDarkUri: logoDarkUri.toString(),
 			logoLightUri: logoLightUri.toString(),
 			settings: {
@@ -260,8 +261,8 @@ export class WelcomeProvider extends FrameworkPageProvider {
 			// Step 6: Close panel — engines are starting, CMs will auto-connect
 			this.panel?.dispose();
 		} catch (error) {
-			console.error('[WelcomeProvider] Failed to save settings:', error);
-			this.post({ type: 'showMessage', level: 'error', message: `Failed to save settings: ${error}` });
+			getLogger().error(`[WelcomeProvider] Failed to save settings: ${String(error)}`);
+			this.post({ type: 'settings:showMessage', level: 'error', message: `Failed to save settings: ${error}` });
 		}
 	}
 

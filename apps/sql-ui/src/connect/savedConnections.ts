@@ -54,7 +54,7 @@
 import { useSyncExternalStore } from 'react';
 // The client type comes from the rocketride module itself (an MF shared
 // singleton beside 'shell') — the full SDK surface, no barrel indirection.
-import type { RocketRideClient } from 'rocketride';
+import type { SqlWireClient } from './busClient';
 
 // =============================================================================
 // TYPES
@@ -150,7 +150,7 @@ function commit(next: SavedSqlConnection[]): void {
  *
  * @param client - The shell's RocketRide client.
  */
-export async function loadSavedConnections(client: RocketRideClient): Promise<void> {
+export async function loadSavedConnections(client: SqlWireClient): Promise<void> {
 	const seq = ++loadSeq;
 	status = 'loading';
 	notify();
@@ -158,7 +158,7 @@ export async function loadSavedConnections(client: RocketRideClient): Promise<vo
 	try { await client.fsMkdir(STORE_DIR); } catch { /* already exists */ }
 	let list: SavedSqlConnection[] = [];
 	try {
-		const raw = await client.fsReadJson<SavedSqlConnection[]>(STORE_PATH);
+		const raw = (await client.fsReadJson(STORE_PATH)) as SavedSqlConnection[] | null | undefined;
 		if (Array.isArray(raw)) list = raw;
 	} catch {
 		// No file yet (or unreadable) — start empty; the first save writes it.

@@ -26,6 +26,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getLogger } from './shared/util/output';
 import { RocketRideClient } from 'rocketride';
 
 export type ConnectionMode = 'cloud' | 'docker' | 'service' | 'onprem' | 'local';
@@ -241,7 +242,7 @@ export class ConfigManager {
 		const defaultMode = group === 'development' ? 'local' : null;
 		const connectionMode = gc.get<ConnectionMode | null>('connectionMode', defaultMode);
 		let hostUrl = gc.get<string>('hostUrl', '');
-		let apiKey = await this.getApiKeyFromStorage(group);
+		const apiKey = await this.getApiKeyFromStorage(group);
 		const useCustomServer = gc.get<boolean>('useCustomServer', false);
 		const cloudUrl = gc.get<string>('cloudUrl', '');
 
@@ -293,7 +294,7 @@ export class ConfigManager {
 	private async getApiKeyFromStorage(group: ConnectionGroup): Promise<string> {
 		if (this.isDisposing) return '';
 		if (!this.context) {
-			console.warn('ConfigManager not initialized with context - cannot access secure storage');
+			getLogger().info('ConfigManager not initialized with context - cannot access secure storage');
 			return '';
 		}
 		try {
@@ -301,7 +302,7 @@ export class ConfigManager {
 			return (await this.context.secrets.get(key)) || '';
 		} catch (error: unknown) {
 			if (error instanceof Error && error.name === 'Canceled') return '';
-			console.error(`Failed to retrieve ${group} API key from secure storage:`, error);
+			getLogger().error(`Failed to retrieve ${group} API key from secure storage: ${String(error)}`);
 			return '';
 		}
 	}
@@ -464,7 +465,7 @@ export class ConfigManager {
 			}
 		} catch (error: unknown) {
 			if (error instanceof Error && error.name === 'Canceled') return;
-			console.error(`Failed to store ${group} API key in secure storage:`, error);
+			getLogger().error(`Failed to store ${group} API key in secure storage: ${String(error)}`);
 			throw new Error(`Failed to store ${group} API key securely`);
 		}
 	}
@@ -486,7 +487,7 @@ export class ConfigManager {
 			}
 		} catch (error: unknown) {
 			if (error instanceof Error && error.name === 'Canceled') return;
-			console.error(`Failed to delete ${group} API key from secure storage:`, error);
+			getLogger().error(`Failed to delete ${group} API key from secure storage: ${String(error)}`);
 			throw new Error(`Failed to delete ${group} API key`);
 		}
 	}
@@ -612,7 +613,7 @@ export class ConfigManager {
 			try {
 				disposable.dispose();
 			} catch (error) {
-				console.error('Error disposing ConfigManager resource:', error);
+				getLogger().error(`Error disposing ConfigManager resource: ${String(error)}`);
 			}
 		});
 		this.disposables = [];

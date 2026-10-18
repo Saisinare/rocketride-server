@@ -96,10 +96,11 @@ const styles = {
 // TYPES
 // =============================================================================
 
-/** Connection facts delivered by the extension host. */
+/** Connection facts delivered by the extension host. NO TOKEN: engine
+ *  access rides the shell bus (brokered client.* ops); the URL exists only
+ *  to resolve the tool's MF remote entry. */
 export interface DevToolHostInfo {
 	engineHttpUrl: string;
-	authToken: string;
 }
 
 export interface DevToolSidebarMountProps {
@@ -163,12 +164,10 @@ export const DevToolSidebarMount: React.FC<DevToolSidebarMountProps> = ({ tool, 
 			try {
 				ensureMfHost();
 
-				// This document's shell connection singleton — the mounted
-				// sidebar's shell hooks read it, exactly like the frame panel.
-				const cm = ConnectionManager.getInstance();
-				cm.initialize({ uri: host.engineHttpUrl });
-				if (!cm.isConnected()) await cm.connect(host.authToken || undefined);
-
+				// NO realm socket: the mounted sidebar's shell hooks read the
+				// realm singleton, whose state is BUS-MIRRORED from the
+				// extension host (busRealm.ts primeMirror) and whose engine
+				// access is request('client.*') through the broker.
 				registerRemotes([{ name: tool.moduleId!, entry: `${host.engineHttpUrl}/apps/${encodeURIComponent(tool.id)}/v${tool.registryVersion}/remoteEntry.js` }], { force: true });
 				const mod = (await loadRemote(`${tool.moduleId}/AppDescriptor`)) as { default: AppDescriptor } | null;
 				if (mountKeyRef.current !== mountKey) return;

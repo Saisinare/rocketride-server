@@ -53,6 +53,7 @@ import { EnvironmentProvider } from './providers/EnvironmentProvider';
 import { NewAppProvider } from './providers/NewAppProvider';
 import { DevToolStore } from './providers/DevToolStore';
 import { DevToolBridge } from './providers/DevToolBridge';
+import { BusHost } from './providers/toolhost/busHost';
 import { writePref } from './providers/PrefsBag';
 import { DevToolPanelProvider } from './providers/DevToolPanelProvider';
 import { DevToolReadmeProvider } from './providers/DevToolReadmeProvider';
@@ -322,11 +323,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					devToolBridge.setHostConnected(engineConnection.isConnected());
 				});
 
+				// SHELL BUS ROOT: this process owns the engine connection, so
+				// the bus router + client broker live here. Webview realms
+				// attach as spokes (SidebarProvider wires its webview on
+				// resolve) and reach the engine only through request() —
+				// named client.* ops, broker-owned monitors, mirrored state.
+				const busHost = new BusHost(engineConnection);
+				busHost.registerBrokerOps();
+				busHost.startMirrors();
+				context.subscriptions.push({ dispose: () => busHost.dispose() });
+
 				// Register unified sidebar webview. retainContextWhenHidden: the
 				// sidebar carries live state (dev-tool sidebar mounts, their SDK
 				// connections, task indicators) that must survive switching to
 				// another activity-bar container (Explorer, Git, ...).
-				sidebar = new SidebarProvider(context.extensionUri, context, devTools, devToolBridge);
+				sidebar = new SidebarProvider(context.extensionUri, context, devTools, devToolBridge, busHost);
 				const sidebarWebviewProvider = vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, sidebar, {
 					webviewOptions: { retainContextWhenHidden: true },
 				});
@@ -393,7 +404,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 				// Register unified project editor (canvas + status + trace)
 				project = new ProjectProvider(context);
-				const pageProjectRegistration = vscode.window.registerCustomEditorProvider('rocketride.PageProject', project, {
+				const pageProjectRegistration = vscode.window.registerCustomEditorProvider('rocketride.page.project', project, {
 					webviewOptions: {
 						retainContextWhenHidden: true,
 					},
@@ -444,7 +455,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					logger.output(`${icons.info} First run detected — showing welcome page`);
 					progress.report({ increment: 110, message: 'Showing welcome...' });
 					barStatus.setNeedsSetup();
-					welcome!.show();
+					void welcome!.show();
 				} else {
 					// Normal flow: initialize CMs first so they validate credentials
 					// and set their connection mode. This must happen BEFORE reconcile
@@ -459,7 +470,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					// Reconcile kicks off engine downloads/starts. Engines emit 'ready'
 					// events which handleEngineStatus() picks up to connect the WebSocket.
 					engineRegistry.reconcile().catch((err) => {
-						console.error('[ROCKETRIDE] Initial engine reconcile failed:', err);
+						getLogger().error(`[ROCKETRIDE] Initial engine reconcile failed: ${String(err)}`);
 					});
 				}
 
@@ -493,7 +504,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 		logger.output(`${icons.success} RocketRide extension activated successfully`);
 	} catch (error) {
-		console.error('[ROCKETRIDE] Extension activation failed with error:', error);
+		getLogger().error(`[ROCKETRIDE] Extension activation failed with error: ${String(error)}`);
 		barStatus?.setError(String(error));
 		logger.output(`${icons.warning} Extension activation failed: ${error}`);
 
@@ -531,7 +542,7 @@ async function createUntitledPipeline(): Promise<void> {
 		// step: open a NAMELESS untitled document seeded with the empty-pipeline
 		// template (born dirty), then show it in the pipeline grid editor.
 		const doc = await vscode.workspace.openTextDocument({ language: 'json', content: JSON.stringify({ components: [] }, null, 2) });
-		await vscode.commands.executeCommand('vscode.openWith', doc.uri, 'rocketride.PageProject');
+		await vscode.commands.executeCommand('vscode.openWith', doc.uri, 'rocketride.page.project');
 	} catch (error) {
 		vscode.window.showErrorMessage(`Failed to create pipeline: ${error}`);
 	}
@@ -576,7 +587,7 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 			}
 		}),
 		vscode.commands.registerCommand('rocketride.page.status.open', (projectId: string, sourceId: string, displayName: string) => {
-			status?.show(projectId, sourceId, displayName);
+			void status?.show(projectId, sourceId, displayName);
 		}),
 		vscode.commands.registerCommand('rocketride.app.open', (appId: string) => {
 			// Fire-and-forget: a rejection has no other surface here — say it.
@@ -632,7 +643,7 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 		// directory) for untitled ones.
 		vscode.commands.registerCommand('rocketride.pipeline.save', async () => {
 			const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
-			if (!(input instanceof vscode.TabInputCustom) || input.viewType !== 'rocketride.PageProject') return;
+			if (!(input instanceof vscode.TabInputCustom) || input.viewType !== 'rocketride.page.project') return;
 			const document = vscode.workspace.textDocuments.find((d) => d.uri.toString() === input.uri.toString());
 			if (!document) return;
 			try {
@@ -769,7 +780,7 @@ export async function deactivate(): Promise<void> {
 			_htmlPages.dispose();
 		} catch (error: unknown) {
 			if (!(error instanceof Error) || error.name !== 'Canceled') {
-				console.error('[ROCKETRIDE] Error disposing html pages:', error);
+				getLogger().error(`[ROCKETRIDE] Error disposing html pages: ${String(error)}`);
 			}
 		}
 	}
@@ -780,7 +791,7 @@ export async function deactivate(): Promise<void> {
 			await engineRegistry.disposeAll();
 		} catch (error: unknown) {
 			if (!(error instanceof Error) || error.name !== 'Canceled') {
-				console.error('[ROCKETRIDE] Error disposing engine registry:', error);
+				getLogger().error(`[ROCKETRIDE] Error disposing engine registry: ${String(error)}`);
 			}
 		}
 	}
@@ -792,7 +803,7 @@ export async function deactivate(): Promise<void> {
 		} catch (error: unknown) {
 			// Silently ignore cancellation errors during shutdown
 			if (!(error instanceof Error) || error.name !== 'Canceled') {
-				console.error('[ROCKETRIDE] Error disposing connection manager:', error);
+				getLogger().error(`[ROCKETRIDE] Error disposing connection manager: ${String(error)}`);
 			}
 		}
 	}
@@ -804,7 +815,7 @@ export async function deactivate(): Promise<void> {
 		} catch (error: unknown) {
 			// Silently ignore cancellation errors during shutdown
 			if (!(error instanceof Error) || error.name !== 'Canceled') {
-				console.error('[ROCKETRIDE] Error disposing config manager:', error);
+				getLogger().error(`[ROCKETRIDE] Error disposing config manager: ${String(error)}`);
 			}
 		}
 	}

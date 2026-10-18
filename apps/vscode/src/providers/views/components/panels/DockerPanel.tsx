@@ -16,8 +16,8 @@ import React, { useCallback, useRef, useState } from 'react';
 import { AnchoredPopup } from 'shell';
 import DockerIcon from '../../../../assets/docker.svg';
 import { DockerStatus, VersionOption, displayVersion, stateLabels, IMAGE_BASE, panelStyles as S, statusIndicatorStyle, primaryBtnStyle, secondaryBtnStyle, optionStyle } from './shared';
-import { MessageData } from '../../Settings/SettingsWebview';
-import { MessageDisplay } from '../../Settings/MessageDisplay';
+import { MessageData } from '../../settings/SettingsWebview';
+import { MessageDisplay } from '../../settings/MessageDisplay';
 
 // =============================================================================
 // TYPES

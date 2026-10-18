@@ -35,6 +35,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getLogger } from '../shared/util/output';
 import * as crypto from 'crypto';
 import { readFileSync } from 'fs';
 import { ConnectionManager } from '../connection/connection';
@@ -102,7 +103,7 @@ export class DevToolReadmeProvider {
 		}
 
 		const row = this.findApp(appId);
-		const panel = vscode.window.createWebviewPanel('rocketride.pageDevToolReadme', `Dev Tool: ${row?.name ?? appId}`, vscode.ViewColumn.One, {
+		const panel = vscode.window.createWebviewPanel('rocketride.page.devToolReadme', `Dev Tool: ${row?.name ?? appId}`, vscode.ViewColumn.One, {
 			enableScripts: true,
 			retainContextWhenHidden: true,
 			localResourceRoots: [this.context.extensionUri],
@@ -131,7 +132,7 @@ export class DevToolReadmeProvider {
 						break;
 				}
 			} catch (error) {
-				console.error(`[DevToolReadmeProvider] Message handling error: ${error}`);
+				getLogger().error(`[DevToolReadmeProvider] Message handling error: ${error}`);
 			}
 		});
 

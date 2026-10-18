@@ -56,8 +56,10 @@
 // =============================================================================
 
 import { createToolChannel, createToolOpServer, typedToolChannel } from 'shell';
-import { getClient } from 'shell';
-import type { DevToolProps, RocketRideClient, ToolChannel, TypedToolChannel } from 'shell';
+import { ConnectionManager } from 'shell';
+import { getBusSqlClient } from './connect/busClient';
+import type { SqlWireClient } from './connect/busClient';
+import type { DevToolProps, ToolChannel, TypedToolChannel } from 'shell';
 import { applySavedConnections, discoverSqlEndpoints, getSavedConnection, getSavedConnections, getSavedConnectionsStatus, releaseDirectEndpoint, resolveEndpoint, subscribeSavedConnections, upsertSavedConnection } from './connect';
 import type { SavedSqlConnection } from './connect';
 import { getLocalSession } from './sqlEnv';
@@ -119,8 +121,8 @@ function channelOf(ctx: SqlToolMountContext): TypedToolChannel<SqlStateMap, SqlE
  * @throws When resolution fails (no client, pipeline start failure).
  */
 async function openSavedConnection(conn: SavedSqlConnection): Promise<void> {
-	const client = getClient();
-	if (!client || !client.isConnected()) throw new Error('Not connected to a server.');
+	const client = getBusSqlClient();
+	if (!ConnectionManager.getInstance().isConnected()) throw new Error('Not connected to a server.');
 	const endpoint = await resolveEndpoint(client, conn);
 	getDocs()?.openStaticDocument(connectionUri(endpoint.key), conn.name, endpoint);
 }
@@ -185,9 +187,9 @@ export function createSidebarToolBridge(ctx: SqlToolMountContext): SqlSidebarBri
 	// Operations served on the controller's engine connection — plain
 	// handlers; correlation and replies are the op server's business. The
 	// session ops share the realm's local session cache (token caching).
-	const needClient = (): RocketRideClient => {
-		const client = getClient();
-		if (!client || !client.isConnected()) throw new Error('Not connected to a server.');
+	const needClient = (): SqlWireClient => {
+		const client = getBusSqlClient();
+		if (!ConnectionManager.getInstance().isConnected()) throw new Error('Not connected to a server.');
 		return client;
 	};
 	const ops = createToolOpServer<SqlOps>(ctx.peer);

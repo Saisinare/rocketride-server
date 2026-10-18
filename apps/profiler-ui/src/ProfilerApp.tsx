@@ -33,10 +33,11 @@
 
 import React, { useEffect, useMemo } from 'react';
 import type { DevToolProps, ShellAppProps } from 'shell';
-import { AppLayout, createToolChannel, createToolController, getClient, useConnectionReady, useShellConnection } from 'shell';
+import { ConnectionManager, AppLayout, createToolChannel, createToolController, useConnectionReady, useShellConnection } from 'shell';
 import ProfilerView from './views/ProfilerView';
 import ProfilerSidebar from './ProfilerSidebar';
 import { localFrameChannel, createPeerFrameChannel } from './profilerBridge';
+import { callProfilerOp } from './ops';
 import type { ProfilerEngine, ProfilerOps } from './ops';
 
 // =============================================================================
@@ -48,16 +49,19 @@ import type { ProfilerEngine, ProfilerOps } from './ops';
  * panel in the sidebar. Both ends share the in-document channel.
  */
 const ProfilerApp: React.FC<ShellAppProps> = (_props) => {
-	const { client, isConnected } = useShellConnection();
-	// The LOCAL engine: the full app's realm legitimately owns a client.
-	const engine = useMemo<ProfilerEngine>(() => ({
-		ready: !!client && isConnected,
-		call: <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
-			const live = getClient();
-			if (!live || !live.isConnected()) return Promise.reject(new Error('Not connected to a server.'));
-			return live.call<T>(command, args ?? {});
-		},
-	}), [client, isConnected]);
+	const { isConnected } = useShellConnection();
+	// The LOCAL engine over the SHELL BUS — named client.* ops, no client
+	// object in this realm.
+	const engine = useMemo<ProfilerEngine>(() => {
+		const cm = ConnectionManager.getInstance();
+		return {
+			ready: isConnected,
+			call: <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
+				if (!cm.isConnected()) return Promise.reject(new Error('Not connected to a server.'));
+				return callProfilerOp<T>((op, params) => cm.request(op, params), command, args);
+			},
+		};
+	}, [isConnected]);
 	return (
 		<AppLayout sidebar={<ProfilerSidebar />} showStatus>
 			<ProfilerView channel={localFrameChannel} engine={engine} />

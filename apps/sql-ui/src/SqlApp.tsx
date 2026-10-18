@@ -43,6 +43,7 @@ import { commonStyles } from 'shell';
 import { closeDocumentByUri, connectionEditorIdFromUri, createDocs, destroyDocs, endpointKeyFromAnyUri, endpointKeyFromUri, getDocs, isConnectionEditorUri, isDesignUri, isDiagramUri, isQueryUri, isTableDataUri, parseConnectionEditorDocKey } from './docs';
 import type { QueryDocPayload } from './docs';
 import { setActiveConnection } from './navigation';
+import { getBusSqlClient } from './connect/busClient';
 import { loadSavedConnections, resetSavedConnections, isDirectEndpointKey, useSavedConnections, useSavedConnectionsStatus } from './connect';
 import type { SavedSqlConnection } from './connect';
 import { createToolChannel, createToolController, useConnectionReady } from 'shell';
@@ -149,8 +150,8 @@ const SqlApp: React.FC<ShellAppProps> = (_props) => {
 	// per-user-per-server, so every host (app, preview, VS Code tool) sees
 	// the same list. Reconnects re-load against the new server.
 	useEffect(() => {
-		if (client && isConnected) void loadSavedConnections(client);
-	}, [client, isConnected]);
+		if (isConnected) void loadSavedConnections(getBusSqlClient());
+	}, [isConnected]);
 
 	// Sidebar node memoized once: SqlSidebar takes no props and reads all its
 	// state from the shared singletons, so the slot registration is stable.
@@ -158,7 +159,7 @@ const SqlApp: React.FC<ShellAppProps> = (_props) => {
 
 	// The FULL APP's engine surface: the realm legitimately owns a client, so
 	// the views get the LOCAL environment (dev-tool frames get the remote one).
-	const env = useMemo(() => createLocalSqlEnv(client, isConnected), [client, isConnected]);
+	const env = useMemo(() => createLocalSqlEnv(isConnected), [isConnected]);
 
 	// Two-column app: the navigation/schema sidebar mounts once Documents is
 	// ready (it shares the singleton with the workbench documents).

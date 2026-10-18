@@ -34,6 +34,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getLogger } from '../shared/util/output';
 import { ConfigManager, SettingsSnapshot } from '../config';
 import { getConnectionManager, getEngineRegistry } from '../extension';
 import { AgentManager } from '../agents/agent-manager';
@@ -97,7 +98,7 @@ export class SettingsProvider {
 					const connectionManager = getConnectionManager();
 
 					// Disconnect since credentials are now invalid
-					connectionManager?.disconnect();
+					void connectionManager?.disconnect();
 				}
 			}),
 		];
@@ -125,10 +126,10 @@ export class SettingsProvider {
 			this.panel.reveal(vscode.ViewColumn.One);
 			// Panel already open — send focus update directly
 			if (focus) {
-				this.panel.webview.postMessage({ type: 'setFocus', focus });
+				this.panel.webview.postMessage({ type: 'settings:setFocus', focus });
 			}
 			if (authError) {
-				this.panel.webview.postMessage({ type: 'authError', message: authError });
+				this.panel.webview.postMessage({ type: 'settings:authError', message: authError });
 			}
 			// Only drop the pending replay once the webview is listening; otherwise a second
 			// openSettings landing before `view:ready` would lose both the direct message
@@ -162,21 +163,21 @@ export class SettingsProvider {
 						await this.loadAllSettings(panel.webview);
 						// Server probe is triggered by CloudPanel when cloud mode is selected
 						if (this.pendingFocus) {
-							panel.webview.postMessage({ type: 'setFocus', focus: this.pendingFocus });
+							panel.webview.postMessage({ type: 'settings:setFocus', focus: this.pendingFocus });
 							this.pendingFocus = undefined;
 						}
 						if (this.pendingAuthError) {
-							panel.webview.postMessage({ type: 'authError', message: this.pendingAuthError });
+							panel.webview.postMessage({ type: 'settings:authError', message: this.pendingAuthError });
 							this.pendingAuthError = undefined;
 						}
 						await this.connHandler.startStatusPolling();
 						break;
 
-					case 'saveSettings':
+					case 'settings:save':
 						await this.saveAllSettings(message.settings, panel.webview);
 						break;
 
-					case 'clearCredentials':
+					case 'settings:clearCredentials':
 						await this.clearCredentials(panel.webview);
 						break;
 
@@ -248,12 +249,12 @@ export class SettingsProvider {
 					}
 				}
 			} catch (error) {
-				console.error('[SettingsProvider] Message handling error:', error);
+				getLogger().error(`[SettingsProvider] Message handling error: ${String(error)}`);
 				const msgType = message.type as string;
 				if (msgType.startsWith('docker')) {
-					panel.webview.postMessage({ type: 'dockerError', message: `${error}` });
+					panel.webview.postMessage({ type: 'docker:error', message: `${error}` });
 				} else if (msgType.startsWith('service')) {
-					panel.webview.postMessage({ type: 'serviceError', message: `${error}` });
+					panel.webview.postMessage({ type: 'service:error', message: `${error}` });
 				} else {
 					this.showMessage(panel.webview, 'error', `Error: ${error}`);
 				}
@@ -304,7 +305,7 @@ export class SettingsProvider {
 			try {
 				apiKey = config.development.apiKey || '';
 			} catch (error) {
-				console.warn('Could not load API key for editing:', error);
+				getLogger().info(`Could not load API key for editing: ${String(error)}`);
 			}
 		}
 
@@ -363,7 +364,7 @@ export class SettingsProvider {
 		const cm = getConnectionManager();
 		const client = cm?.getClient();
 		webview.postMessage({
-			type: 'settingsLoaded',
+			type: 'settings:loaded',
 			settings: allSettings,
 			isSubscribed: isSubscribed(client, PIPE_BUILDER_APP_ID),
 		});
@@ -431,7 +432,7 @@ export class SettingsProvider {
 				}
 			}
 		} catch (error) {
-			console.error('[SettingsProvider] Failed to save settings:', error);
+			getLogger().error(`[SettingsProvider] Failed to save settings: ${String(error)}`);
 			this.showMessage(webview, 'error', `Failed to save settings: ${error}`);
 		} finally {
 			this._isSaving = false;
@@ -452,7 +453,7 @@ export class SettingsProvider {
 			// Force reload of all settings to update the UI
 			await this.loadAllSettings(webview);
 		} catch (error) {
-			console.error('[SettingsProvider] Failed to clear API key:', error);
+			getLogger().error(`[SettingsProvider] Failed to clear API key: ${String(error)}`);
 			this.showMessage(webview, 'error', `Failed to clear API key: ${error}`);
 		}
 	}
@@ -463,7 +464,7 @@ export class SettingsProvider {
 	 */
 	private showMessage(webview: vscode.Webview, level: string, message: string, context?: 'development' | 'save'): void {
 		webview.postMessage({
-			type: 'showMessage',
+			type: 'settings:showMessage',
 			level: level,
 			message: message,
 			...(context && { context }),
@@ -490,7 +491,7 @@ export class SettingsProvider {
 				return match.replace(relativePath, resourceUri.toString());
 			});
 		} catch (error) {
-			console.error('Error loading settings HTML:', error);
+			getLogger().error(`Error loading settings HTML: ${String(error)}`);
 			return this.getErrorHtml(error, htmlPath.fsPath);
 		}
 	}

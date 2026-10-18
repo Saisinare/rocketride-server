@@ -40,6 +40,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSPrope
 import type { ConnectResult } from 'rocketride';
 import { ShellIdentityContext } from '../../hooks/useAuthUser';
 import { ConnectionManager } from '../../connection/connection';
+import { registerClientOps } from '../../connection/clientOps';
 import { CloudAuthProvider } from '../../auth/CloudAuthProvider';
 import { useShellConnection } from '../../connection/ConnectionContext';
 import { ShellApiConfigProvider } from '../../connection/ShellApiConfigContext';
@@ -363,6 +364,12 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 				clientName: 'Cloud Shell-UI',
 				authProvider,
 			});
+
+			// FRAMEWORK ROOT: this realm owns the engine connection, so the
+			// brokered client surface registers HERE — request('client.*')
+			// resolves in-process for this realm and for any attached spokes.
+			// Idempotent across remounts (already-registered ops are kept).
+			registerClientOps(cm.ops(), cm);
 
 			// Run the optional init callback (e.g. theme initialisation)
 			config.onInit?.();

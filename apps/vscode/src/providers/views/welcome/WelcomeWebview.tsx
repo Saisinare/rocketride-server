@@ -39,8 +39,8 @@ import { useMessaging } from '../hooks/useMessaging';
 import { useTheme } from '../hooks/useTheme';
 import { commonStyles } from 'shell';
 import { ConnectionConfig } from '../components/ConnectionConfig';
-import { MessageDisplay } from '../Settings/MessageDisplay';
-import type { SettingsData, ConnectionMode, EngineVersionItem, MessageData } from '../Settings/SettingsWebview';
+import { MessageDisplay } from '../settings/MessageDisplay';
+import type { SettingsData, ConnectionMode, EngineVersionItem, MessageData } from '../settings/SettingsWebview';
 import type { ServiceStatus, DockerStatus, VersionOption } from '../components/panels/shared';
 
 import 'shell/themes/rocketride-default.css';
@@ -53,7 +53,7 @@ import '../../styles/root.css';
 
 interface WelcomeExtraSettings {}
 
-type IncomingMessage = { type: 'settingsLoaded'; settings: SettingsData & WelcomeExtraSettings; logoDarkUri?: string; logoLightUri?: string } | { type: 'showMessage'; level: 'success' | 'error' | 'info' | 'warning'; message: string } | { type: 'versionsLoaded'; versions: EngineVersionItem[] } | { type: 'cloud:status'; signedIn: boolean; userName: string; signedInUrl?: string; waitlisted?: boolean; waitlistedName?: string; pendingSignIn?: boolean; pendingSignOut?: boolean; pendingUserName?: string; pendingUrl?: string } | { type: 'serverInfo'; hostUrl?: string; capabilities?: string[]; version?: string; unreachable?: boolean } | { type: 'dockerStatus'; status: DockerStatus } | { type: 'dockerVersionsLoaded'; tags: string[] } | { type: 'serviceStatus'; status: ServiceStatus } | { type: 'serviceNeedsSudo' } | { type: 'ioProgress'; mode: string; command: string; message: string } | { type: 'ioResult'; mode: string; command: string; success: boolean; error?: string };
+type IncomingMessage = { type: 'settings:loaded'; settings: SettingsData & WelcomeExtraSettings; logoDarkUri?: string; logoLightUri?: string } | { type: 'settings:showMessage'; level: 'success' | 'error' | 'info' | 'warning'; message: string } | { type: 'versions:loaded'; versions: EngineVersionItem[] } | { type: 'cloud:status'; signedIn: boolean; userName: string; signedInUrl?: string; waitlisted?: boolean; waitlistedName?: string; pendingSignIn?: boolean; pendingSignOut?: boolean; pendingUserName?: string; pendingUrl?: string } | { type: 'service:serverInfo'; hostUrl?: string; capabilities?: string[]; version?: string; unreachable?: boolean } | { type: 'docker:status'; status: DockerStatus } | { type: 'docker:versionsLoaded'; tags: string[] } | { type: 'service:status'; status: ServiceStatus } | { type: 'service:needsSudo' } | { type: 'io:progress'; mode: string; command: string; message: string } | { type: 'io:result'; mode: string; command: string; success: boolean; error?: string };
 
 type OutgoingMessage = { type: string; [key: string]: unknown };
 
@@ -224,25 +224,25 @@ export const Welcome: React.FC = () => {
 	const { sendMessage } = useMessaging<OutgoingMessage, IncomingMessage>({
 		onMessage: (msg) => {
 			switch (msg.type) {
-				case 'settingsLoaded':
+				case 'settings:loaded':
 					setSettings(msg.settings);
 					if (msg.logoDarkUri) setLogoDarkUri(msg.logoDarkUri);
 					if (msg.logoLightUri) setLogoLightUri(msg.logoLightUri);
 					if (msg.settings.development.connectionMode === 'local') {
 						setEngineVersionsLoading(true);
-						sendMessage({ type: 'fetchVersions' });
+						sendMessage({ type: 'versions:fetch' });
 					}
 					sendMessage({ type: 'cloud:getStatus' });
 					break;
 
-				case 'showMessage': {
+				case 'settings:showMessage': {
 					const data = { level: msg.level, message: msg.message };
 					setMessage(data);
 					if (msg.level === 'success') setTimeout(() => setMessage(null), 5000);
 					break;
 				}
 
-				case 'versionsLoaded':
+				case 'versions:loaded':
 					setEngineVersions((msg as any).versions);
 					setEngineVersionsLoading(false);
 					break;
@@ -262,23 +262,23 @@ export const Welcome: React.FC = () => {
 					break;
 
 				// Status polling — actual OS/Docker daemon state
-				case 'dockerStatus':
+				case 'docker:status':
 					setDockerStatus((msg as any).status);
 					if (!dockerBusy) setDockerProgress(null);
 					break;
-				case 'serviceStatus':
+				case 'service:status':
 					setServiceStatus((msg as any).status);
 					if (!serviceBusy) setServiceProgress(null);
 					break;
-				case 'dockerVersionsLoaded':
+				case 'docker:versionsLoaded':
 					setDockerTags((msg as any).tags || []);
 					break;
-				case 'serviceNeedsSudo':
+				case 'service:needsSudo':
 					setSudoPromptVisible(true);
 					break;
 
 				// Unified ioControl progress — shows download/install status
-				case 'ioProgress': {
+				case 'io:progress': {
 					const mode = (msg as any).mode;
 					const progressMsg = (msg as any).message;
 					if (mode === 'service') {
@@ -292,7 +292,7 @@ export const Welcome: React.FC = () => {
 				}
 
 				// Unified ioControl result — clears busy state for the mode
-				case 'ioResult': {
+				case 'io:result': {
 					const mode = (msg as any).mode;
 					const command = (msg as any).command;
 					const success = (msg as any).success;
@@ -324,7 +324,7 @@ export const Welcome: React.FC = () => {
 					break;
 				}
 
-				case 'serverInfo': {
+				case 'service:serverInfo': {
 					const caps: string[] = msg.capabilities || [];
 					const unreachable = Boolean(msg.unreachable);
 					setProbe({ isSaas: unreachable ? undefined : caps.includes('saas'), unreachable });
@@ -375,7 +375,7 @@ export const Welcome: React.FC = () => {
 			const devMode = changes.development?.connectionMode;
 			if (devMode === 'local' && prev.development.connectionMode !== 'local') {
 				setEngineVersionsLoading(true);
-				sendMessage({ type: 'fetchVersions' });
+				sendMessage({ type: 'versions:fetch' });
 			}
 			if (devMode === 'cloud' && prev.development.connectionMode !== 'cloud') {
 				sendMessage({ type: 'cloud:getStatus' });
@@ -397,12 +397,12 @@ export const Welcome: React.FC = () => {
 	};
 
 	const handleSaveAndConnect = () => {
-		sendMessage({ type: 'saveAndConnect', settings });
+		sendMessage({ type: 'settings:saveAndConnect', settings });
 	};
 
 	const handleProbeCloudServer = (cloudUrl: string) => {
 		// The previous result stays on screen until the fresh one arrives.
-		sendMessage({ type: 'probeServerInfo', hostUrl: cloudUrl } as any);
+		sendMessage({ type: 'service:probeServerInfo', hostUrl: cloudUrl } as any);
 	};
 
 	/**
@@ -411,7 +411,7 @@ export const Welcome: React.FC = () => {
 	 */
 	const handleTestConnection = (mode: string, params?: Record<string, unknown>) => {
 		setTestMessage(null);
-		sendMessage({ type: 'ioControl', mode, command: 'test', params } as any);
+		sendMessage({ type: 'io:control', mode, command: 'test', params } as any);
 	};
 
 	/**
@@ -434,7 +434,7 @@ export const Welcome: React.FC = () => {
 		if (actionType === 'install' || actionType === 'update') {
 			params.version = selectedVersion;
 		}
-		sendMessage({ type: 'ioControl', mode, command: actionType, params } as any);
+		sendMessage({ type: 'io:control', mode, command: actionType, params } as any);
 	};
 
 	const makeDockerHandler = (actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => makeEngineHandler('docker', actionType);
@@ -444,7 +444,7 @@ export const Welcome: React.FC = () => {
 		const password = sudoPasswordInput;
 		setSudoPasswordInput('');
 		setSudoPromptVisible(false);
-		sendMessage({ type: 'sudoPassword', password });
+		sendMessage({ type: 'service:sudoPassword', password });
 	};
 
 	const dockerVersionOptions: VersionOption[] = [{ value: 'latest', label: '<Latest>' }, { value: 'prerelease', label: '<Prerelease>' }, ...dockerTags.filter((t) => t !== 'latest' && t !== 'prerelease').map((t) => ({ value: t, label: t }))];
@@ -497,7 +497,7 @@ export const Welcome: React.FC = () => {
 								onMouseLeave={() => setHoveredLink(null)}
 								onClick={(e) => {
 									e.preventDefault();
-									sendMessage({ type: 'openExternal', url });
+									sendMessage({ type: 'settings:openExternal', url });
 								}}
 							>
 								{label}
@@ -604,7 +604,7 @@ export const Welcome: React.FC = () => {
 							onMouseLeave={() => setHoveredLink(null)}
 							onClick={(e) => {
 								e.preventDefault();
-								sendMessage({ type: 'openSettings' });
+								sendMessage({ type: 'settings:open' });
 							}}
 						>
 							Advanced Settings

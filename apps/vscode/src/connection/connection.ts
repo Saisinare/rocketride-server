@@ -565,7 +565,7 @@ export class ConnectionManager extends EventEmitter {
 			}
 			this.configChangeTimeout = setTimeout(() => {
 				this.configChangeTimeout = undefined;
-				this.handleConfigurationChanged();
+				void this.handleConfigurationChanged();
 			}, 300);
 		});
 

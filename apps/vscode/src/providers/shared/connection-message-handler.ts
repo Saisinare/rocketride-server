@@ -153,7 +153,7 @@ export class ConnectionMessageHandler {
 				await this.sendCloudStatus(webview);
 				return true;
 
-			case 'fetchVersions':
+			case 'versions:fetch':
 				// Fetch GitHub releases + Docker GHCR tags in parallel.
 				// Both are cached, max 2 retries, broadcast to all active webviews.
 				await Promise.all([
@@ -162,7 +162,7 @@ export class ConnectionMessageHandler {
 				]);
 				return true;
 
-			case 'probeServerInfo': {
+			case 'service:probeServerInfo': {
 				// Untrusted webview input, same as cloudUrl above: the cast is
 				// erased at runtime, so a truthy non-string would clear the
 				// wrong cache key and reach getServerInfo, which needs a string.
@@ -173,7 +173,7 @@ export class ConnectionMessageHandler {
 				return true;
 			}
 
-			case 'sudoPassword':
+			case 'service:sudoPassword':
 				if (this.pendingSudoPassword) {
 					this.pendingSudoPassword(message.password as string);
 					this.pendingSudoPassword = null;
@@ -185,7 +185,7 @@ export class ConnectionMessageHandler {
 			// (e.g. 'install', 'start', 'stop', 'remove'). The EngineRegistry
 			// routes to the correct backend and returns the result. We broadcast
 			// the result to all active webviews so every open panel stays in sync.
-			case 'ioControl': {
+			case 'io:control': {
 				const mode = message.mode as ConnectionMode;
 				const command = message.command as string;
 				const params = message.params as Record<string, unknown> | undefined;
@@ -193,7 +193,7 @@ export class ConnectionMessageHandler {
 				if (!registry) return false;
 				const result = await registry.ioControl(mode, command, params);
 				for (const w of this.opts.getActiveWebviews()) {
-					w.postMessage({ type: 'ioResult', mode, command, ...result });
+					w.postMessage({ type: 'io:result', mode, command, ...result });
 				}
 				return true;
 			}
@@ -235,7 +235,7 @@ export class ConnectionMessageHandler {
 		if (registry) {
 			this.progressHandler = (event: { mode: string; command: string; message: string }) => {
 				for (const w of this.opts.getActiveWebviews()) {
-					w.postMessage({ type: 'ioProgress', mode: event.mode, command: event.command, message: event.message });
+					w.postMessage({ type: 'io:progress', mode: event.mode, command: event.command, message: event.message });
 				}
 			};
 			registry.on('progress', this.progressHandler);
@@ -246,7 +246,7 @@ export class ConnectionMessageHandler {
 
 		// Poll every 3 seconds for external state changes (pull-based)
 		this.statusPollInterval = setInterval(() => {
-			this.pollAndBroadcastStatus();
+			void this.pollAndBroadcastStatus();
 		}, 3000);
 	}
 
@@ -263,8 +263,8 @@ export class ConnectionMessageHandler {
 			]);
 
 			for (const w of this.opts.getActiveWebviews()) {
-				w.postMessage({ type: 'serviceStatus', status: serviceStatus });
-				w.postMessage({ type: 'dockerStatus', status: dockerStatus });
+				w.postMessage({ type: 'service:status', status: serviceStatus });
+				w.postMessage({ type: 'docker:status', status: dockerStatus });
 			}
 		} catch {
 			// Non-fatal — polling will retry on next interval
@@ -305,25 +305,25 @@ export class ConnectionMessageHandler {
 		// route the result to the panel (dev/deploy) that asked for it.
 		const cached = this.cachedServerInfo.get(uri);
 		if (cached) {
-			webview.postMessage({ type: 'serverInfo', hostUrl: uri, ...cached });
+			webview.postMessage({ type: 'service:serverInfo', hostUrl: uri, ...cached });
 			return;
 		}
 
-		console.log(`[ConnectionMessageHandler] probeServerInfo: uri=${uri}`);
+		getLogger().output(`[ConnectionMessageHandler] probeServerInfo: uri=${uri}`);
 
 		try {
 			const info = await RocketRideClient.getServerInfo(uri, 5000);
-			console.log(`[ConnectionMessageHandler] probeServerInfo result: capabilities=${JSON.stringify(info.capabilities)}, version=${info.version}`);
+			getLogger().output(`[ConnectionMessageHandler] probeServerInfo result: capabilities=${JSON.stringify(info.capabilities)}, version=${info.version}`);
 			this.cachedServerInfo.set(uri, info);
-			webview.postMessage({ type: 'serverInfo', hostUrl: uri, ...info });
+			webview.postMessage({ type: 'service:serverInfo', hostUrl: uri, ...info });
 		} catch (error) {
-			console.log(`[ConnectionMessageHandler] probeServerInfo FAILED: ${error}`);
+			getLogger().output(`[ConnectionMessageHandler] probeServerInfo FAILED: ${error}`);
 			// Distinguish "server cannot be reached" from "server answered but
 			// does not support the probe" (a legacy/OSS server): transport-level
 			// failures are ConnectionExceptions; anything else means a socket
 			// opened, so the server is reachable but not probe-capable.
 			const unreachable = error instanceof ConnectionException;
-			webview.postMessage({ type: 'serverInfo', hostUrl: uri, capabilities: [], version: '', unreachable });
+			webview.postMessage({ type: 'service:serverInfo', hostUrl: uri, capabilities: [], version: '', unreachable });
 		}
 	}
 
@@ -484,7 +484,7 @@ export class ConnectionMessageHandler {
 	 */
 	private broadcastVersions(versions: Array<{ tag_name: string; prerelease: boolean }>): void {
 		for (const w of this.opts.getActiveWebviews()) {
-			w.postMessage({ type: 'versionsLoaded', versions });
+			w.postMessage({ type: 'versions:loaded', versions });
 		}
 	}
 
@@ -557,7 +557,7 @@ export class ConnectionMessageHandler {
 				setCachedDockerTags(tags);
 				return;
 			} catch (error) {
-				console.error(`[ConnectionMessageHandler] Docker tag fetch attempt ${attempt}/${MAX_FETCH_ATTEMPTS} failed:`, error);
+				getLogger().error(`[ConnectionMessageHandler] Docker tag fetch attempt ${attempt}/${MAX_FETCH_ATTEMPTS} failed: ${String(error)}`);
 				if (attempt === MAX_FETCH_ATTEMPTS) {
 					this.dockerTagCache.tags = [];
 					this.dockerTagCache.fetchedAt = Date.now();
@@ -612,7 +612,7 @@ export class ConnectionMessageHandler {
 
 	private broadcastDockerTags(tags: string[]): void {
 		for (const w of this.opts.getActiveWebviews()) {
-			w.postMessage({ type: 'dockerVersionsLoaded', tags });
+			w.postMessage({ type: 'docker:versionsLoaded', tags });
 		}
 	}
 

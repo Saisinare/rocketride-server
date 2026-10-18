@@ -303,6 +303,27 @@ const RocketApp: React.FC<ShellAppProps> = (_props) => {
 		// Create the instance — both App and Sidebar will use it
 		const docs = createDocs(vfs, { appState, updateAppState });
 
+		// step: RESTORE-TIME DISCARD POLICY — a pure ALLOWLIST of this host's
+		// LIVE document vocabulary; any restored tab outside it is discarded.
+		// Deliberately knows NOTHING about what used to exist: retiring a URI
+		// form is complete the moment it leaves this list. A discarded tab is
+		// strictly better than a permanent "No content" pane, and this pass is
+		// what lets persisted-state compat retire on a schedule.
+		{
+			const LIVE_PREFIXES = ['tool:', 'toolreadme:', 'file:', 'diff:', 'intro:', 'html:', 'webview:', 'pipeline:'];
+			const state = docs.getState();
+			for (const editor of Object.values(state.editors)) {
+				const uri = editor?.documentUri;
+				if (!uri) continue;
+				// Live bare forms: the desktop page, and plain VFS paths (the
+				// pipeline editor's content documents — path-shaped, no scheme).
+				const live = /^[a-z][a-zA-Z]*:/.test(uri)
+					? LIVE_PREFIXES.some((p) => uri.startsWith(p))
+					: uri === 'desktop' || uri.includes('/') || uri.includes('.');
+				if (!live) docs.discardDocument(uri);
+			}
+		}
+
 		// step: an empty restored workspace opens straight into a fresh Agent
 		// conversation — the startup surface. Only when NO tabs were restored:
 		// an existing session's tabs come back exactly as left.

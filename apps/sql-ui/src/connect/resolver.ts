@@ -43,7 +43,7 @@
 // resolution comes up empty (one re-`use`, then one retry).
 // =============================================================================
 
-import type { RocketRideClient } from 'shell';
+import type { SqlWireClient } from './busClient';
 import type { SqlEndpoint } from './types';
 import type { DirectConnection, SavedSqlConnection } from './savedConnections';
 
@@ -165,7 +165,7 @@ export function endpointForConnection(conn: SavedSqlConnection): SqlEndpoint {
  * @param conn - The saved connection.
  * @returns The endpoint to open documents against.
  */
-export async function resolveEndpoint(client: RocketRideClient, conn: SavedSqlConnection): Promise<SqlEndpoint> {
+export async function resolveEndpoint(client: SqlWireClient, conn: SavedSqlConnection): Promise<SqlEndpoint> {
 	if (conn.mode === 'pipeline') {
 		return endpointForConnection(conn);
 	}
@@ -209,7 +209,7 @@ export async function resolveEndpoint(client: RocketRideClient, conn: SavedSqlCo
  * @param client - The shell's RocketRide client.
  * @param endpointKey - The endpoint key whose temp pipeline to stop.
  */
-export async function releaseDirectEndpoint(client: RocketRideClient, endpointKey: string): Promise<void> {
+export async function releaseDirectEndpoint(client: SqlWireClient, endpointKey: string): Promise<void> {
 	if (!isDirectEndpointKey(endpointKey)) return;
 	revivals.delete(endpointKey);
 	// Key shape `${projectId}:tools_1:${nodeId}` with a colon-free project id.

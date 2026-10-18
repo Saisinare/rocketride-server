@@ -142,12 +142,12 @@ const ExplorerApp: React.FC<ShellAppProps> = () => {
 
 	// The FULL APP's store surface: the realm legitimately owns a client, so
 	// the viewers get the LOCAL fs (dev-tool frames get the remote one).
-	const fs = useMemo(() => createLocalExplorerFs(client, isConnected), [client, isConnected]);
+	const fs = useMemo(() => createLocalExplorerFs(isConnected), [isConnected]);
 
 	useEffect(() => {
 		if (!client || !loaded) return;
 
-		const vfs = createStoreVfs(createLocalExplorerFs(client, true));
+		const vfs = createStoreVfs(createLocalExplorerFs(true));
 		createDocs(vfs, { appState, updateAppState });
 		setReady(true);
 

@@ -36,7 +36,8 @@
 //          they are plain HTTP, no engine connection involved.
 // =============================================================================
 
-import type { RocketRideClient, ToolControllerFn } from 'shell';
+import { ConnectionManager } from 'shell';
+import type { ToolControllerFn } from 'shell';
 import type { ExplorerDirEntry, ExplorerOps, ExplorerStat } from './ops';
 
 /** The store surface the explorer frame uses — never a client. */
@@ -65,39 +66,42 @@ export interface IExplorerFs {
 export type ExplorerViewerFs = Pick<IExplorerFs, 'getUrl' | 'stat'>;
 
 /**
- * The client-backed store surface (the full app's realm).
+ * The bus-backed store surface — the controller realm's implementation.
+ * Every call is a brokered `client.*` op: in-process at the framework root
+ * (cloud full app), bridged to the extension host in the VS Code sidebar
+ * realm. No client object, no socket, no token in this realm.
  *
- * @param client - The realm's client, or null while disconnected.
- * @param isConnected - The shell's connection flag.
- * @returns The fs (rebuild on client/connection change).
+ * @param isConnected - The realm's connection flag (mirror-primed off-root).
+ * @returns The fs (rebuild when the flag changes).
  */
-export function createLocalExplorerFs(client: RocketRideClient | null, isConnected: boolean): IExplorerFs {
-	const need = (): RocketRideClient => {
-		if (!client || !isConnected) throw new Error('Not connected to a server.');
-		return client;
+export function createLocalExplorerFs(isConnected: boolean): IExplorerFs {
+	const cm = ConnectionManager.getInstance();
+	const need = (): void => {
+		if (!isConnected) throw new Error('Not connected to a server.');
 	};
 	return {
-		ready: !!client && isConnected,
+		ready: isConnected,
 		list: async (dir) => {
-			const result = await need().fsListDir(dir);
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			return (result.entries ?? []).map((e: any) => ({ name: e.name as string, type: e.type === 'dir' ? 'dir' as const : 'file' as const }));
+			need();
+			const result = await cm.request('client.fsListDir', { path: dir }) as { entries?: Array<{ name: string; type: string }> };
+			return (result.entries ?? []).map((e) => ({ name: e.name, type: e.type === 'dir' ? 'dir' as const : 'file' as const }));
 		},
-		readString: (path) => need().fsReadString(path),
-		getUrl: (path) => need().fsGetUrl(path),
-		writeString: async (path, content) => { await need().fsWriteString(path, content); },
-		rename: async (oldPath, newPath) => { await need().fsRename(oldPath, newPath); },
+		readString: (path) => { need(); return cm.request('client.fsReadString', { path }) as Promise<string>; },
+		getUrl: (path) => { need(); return cm.request('client.fsGetUrl', { path }) as Promise<string>; },
+		writeString: async (path, content) => { need(); await cm.request('client.fsWriteString', { path, text: content }); },
+		rename: async (oldPath, newPath) => { need(); await cm.request('client.fsRename', { from: oldPath, to: newPath }); },
 		stat: async (path) => {
-			const stat = await need().fsStat(path);
+			need();
+			const stat = await cm.request('client.fsStat', { path }) as { type?: 'file' | 'dir'; size?: number };
 			return { ...(stat.type !== undefined ? { type: stat.type } : {}), ...(stat.size !== undefined ? { size: stat.size } : {}) };
 		},
 		remove: async (path) => {
-			const live = need();
-			const stat = await live.fsStat(path);
-			if (stat.type === 'dir') await live.fsRmdir(path, true);
-			else await live.fsDelete(path);
+			need();
+			const stat = await cm.request('client.fsStat', { path }) as { type?: string };
+			if (stat.type === 'dir') await cm.request('client.fsRmdir', { path, recursive: true });
+			else await cm.request('client.fsDelete', { path });
 		},
-		mkdir: async (path) => { await need().fsMkdir(path); },
+		mkdir: async (path) => { need(); await cm.request('client.fsMkdir', { path }); },
 	};
 }
 

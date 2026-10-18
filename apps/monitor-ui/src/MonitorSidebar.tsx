@@ -37,7 +37,7 @@
 //    document — selections ride the DevToolProps peer channel to the frame.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { SidebarMenu, createToolChannel, createToolOpServer, getClient, typedToolChannel, useDashboardData, useShellEvent } from 'shell';
+import { ConnectionManager, SidebarMenu, createToolChannel, createToolOpServer, typedToolChannel, useDashboardData, useShellEvent } from 'shell';
 import type { DevToolProps, MonitorPageId, ViewMenu } from 'shell';
 import type { IDashboardSnapshot, MonitorOps, MonitorStateMap } from './ops';
 
@@ -145,13 +145,13 @@ export const MonitorDevToolSidebar: React.FC<DevToolProps> = ({ peer, channel, d
 	refreshRef.current = refresh;
 	useEffect(() => {
 		const ops = createToolOpServer<MonitorOps>(peer);
-		const needClient = () => {
-			const live = getClient();
-			if (!live || !live.isConnected()) throw new Error('Not connected to a server.');
-			return live;
+		// Served over the SHELL BUS — no client object in this realm.
+		const cm = ConnectionManager.getInstance();
+		const need = (): void => {
+			if (!cm.isConnected()) throw new Error('Not connected to a server.');
 		};
-		ops.serve('monitor.listConnections', async (req) => needClient().listConnections(req));
-		ops.serve('monitor.listTasks', async (req) => needClient().listTasks(req));
+		ops.serve('monitor.listConnections', async (req) => { need(); return cm.request('client.listConnections', req) as never; });
+		ops.serve('monitor.listTasks', async (req) => { need(); return cm.request('client.listTasks', req) as never; });
 		ops.serve('monitor.refresh', async () => { refreshRef.current(); });
 		return () => ops.dispose();
 	}, [peer]);

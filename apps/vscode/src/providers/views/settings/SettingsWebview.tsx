@@ -127,23 +127,23 @@ export interface MessageData {
  */
 export type SettingsIncomingMessage =
 	| {
-			type: 'settingsLoaded';
+			type: 'settings:loaded';
 			settings: SettingsData;
 			isSubscribed?: boolean;
 	  }
 	| {
-			type: 'showMessage';
+			type: 'settings:showMessage';
 			level: 'success' | 'error' | 'info' | 'warning';
 			message: string;
 			/** 'development' routes to inline test banner; 'save' indicates successful settings save. */
 			context?: 'development' | 'save';
 	  }
 	| {
-			type: 'versionsLoaded';
+			type: 'versions:loaded';
 			versions: EngineVersionItem[];
 	  }
 	| {
-			type: 'subscriptionStatus';
+			type: 'settings:subscriptionStatus';
 			isSubscribed: boolean;
 	  }
 	// Declared, not cast: WelcomeWebview carries the identical variant, and
@@ -168,14 +168,14 @@ export type SettingsOutgoingMessage =
 			type: 'view:ready';
 	  }
 	| {
-			type: 'saveSettings';
+			type: 'settings:save';
 			settings: SettingsData;
 	  }
 	| {
-			type: 'clearCredentials';
+			type: 'settings:clearCredentials';
 	  }
 	| {
-			type: 'fetchVersions';
+			type: 'versions:fetch';
 	  }
 	| {
 			/** Ask the host for the current cloud auth state (a cloud:status reply). */
@@ -575,7 +575,7 @@ export const Settings: React.FC = () => {
 	const { sendMessage, isReady: _isReady } = useMessaging<SettingsOutgoingMessage, SettingsIncomingMessage>({
 		onMessage: (message) => {
 			switch (message.type) {
-				case 'settingsLoaded':
+				case 'settings:loaded':
 					setSettings(message.settings);
 					// Deep-clone for cancel/reset so future edits don't mutate the snapshot
 					savedSettingsRef.current = JSON.parse(JSON.stringify(message.settings));
@@ -586,12 +586,12 @@ export const Settings: React.FC = () => {
 					}
 					// Pre-fetch versions from GitHub (cached on backend, shared across all modes)
 					setEngineVersionsLoading(true);
-					sendMessage({ type: 'fetchVersions' });
+					sendMessage({ type: 'versions:fetch' });
 					// Hydrate cloud auth status so the Cloud panel renders correctly
 					sendMessage({ type: 'cloud:getStatus' });
 					break;
 
-				case 'versionsLoaded' as any:
+				case 'versions:loaded' as any:
 					setEngineVersions((message as any).versions ?? []);
 					setEngineVersionsLoading(false);
 					break;
@@ -611,7 +611,7 @@ export const Settings: React.FC = () => {
 					break;
 				}
 
-				case 'subscriptionStatus':
+				case 'settings:subscriptionStatus':
 					setSubscribed(message.isSubscribed);
 					break;
 
@@ -644,18 +644,18 @@ export const Settings: React.FC = () => {
 					break;
 				}
 
-				case 'setFocus' as any: {
+				case 'settings:setFocus' as any: {
 					const { focus } = message as unknown as { focus?: unknown };
 					if (!isSettingsTabId(focus)) break;
 					setActiveTab(focus);
 					break;
 				}
 
-				case 'authError' as any:
+				case 'settings:authError' as any:
 					setAuthError((message as any).message || 'Authentication failed');
 					break;
 
-				case 'serverInfo' as any: {
+				case 'service:serverInfo' as any: {
 					const caps: string[] = (message as any).capabilities || [];
 					const unreachable = Boolean((message as any).unreachable);
 					const url = (message as any).hostUrl as string | undefined;
@@ -666,7 +666,7 @@ export const Settings: React.FC = () => {
 					break;
 				}
 
-				case 'showMessage': {
+				case 'settings:showMessage': {
 					const msg = { level: message.level, message: message.message };
 					const clearAfter = message.level === 'success' ? 5000 : undefined;
 
@@ -689,24 +689,24 @@ export const Settings: React.FC = () => {
 				}
 
 				// Status polling — actual OS/Docker daemon state
-				case 'dockerStatus' as any:
+				case 'docker:status' as any:
 					setDockerStatus((message as any).status);
 					if (!dockerBusy) setDockerProgress(null);
 					break;
-				case 'serviceStatus' as any:
+				case 'service:status' as any:
 					setServiceStatus((message as any).status);
 					if (!serviceBusy) setServiceProgress(null);
 					break;
-				case 'dockerVersionsLoaded' as any:
+				case 'docker:versionsLoaded' as any:
 					setDockerTags((message as any).tags || []);
 					break;
-				case 'serviceNeedsSudo' as any:
+				case 'service:needsSudo' as any:
 					setSudoPromptVisible(true);
 					break;
 
 				// ioProgress: streamed progress updates during install/update/remove.
 				// Clears any previous error so the progress message replaces it.
-				case 'ioProgress' as any: {
+				case 'io:progress' as any: {
 					const mode = (message as any).mode;
 					const progressMsg = (message as any).message;
 					if (mode === 'service') {
@@ -721,7 +721,7 @@ export const Settings: React.FC = () => {
 
 				// ioResult: final outcome of an ioControl command.
 				// Resets busy/action/progress state and surfaces errors.
-				case 'ioResult' as any: {
+				case 'io:result' as any: {
 					const mode = (message as any).mode;
 					const command = (message as any).command;
 					const success = (message as any).success;
@@ -769,7 +769,7 @@ export const Settings: React.FC = () => {
 	const handleSaveSettings = (): void => {
 		const snapshot = JSON.parse(JSON.stringify(settings)) as SettingsData;
 		pendingSaveSnapshotRef.current = snapshot;
-		sendMessage({ type: 'saveSettings', settings: snapshot });
+		sendMessage({ type: 'settings:save', settings: snapshot });
 	};
 
 	/** Revert to last-saved settings and clear dirty state — including any
@@ -788,7 +788,7 @@ export const Settings: React.FC = () => {
 	 */
 	const handleTestConnection = (mode: string, params?: Record<string, unknown>): void => {
 		setTestMessage(null);
-		sendMessage({ type: 'ioControl', mode, command: 'test', params } as any);
+		sendMessage({ type: 'io:control', mode, command: 'test', params } as any);
 	};
 
 	/**
@@ -797,7 +797,7 @@ export const Settings: React.FC = () => {
 	 */
 	const handleProbeCloudServer = (group: 'development' | 'deployment', cloudUrl: string): void => {
 		probeUrlRef.current[group] = cloudUrl;
-		sendMessage({ type: 'probeServerInfo', hostUrl: cloudUrl } as any);
+		sendMessage({ type: 'service:probeServerInfo', hostUrl: cloudUrl } as any);
 	};
 
 	/**
@@ -809,7 +809,7 @@ export const Settings: React.FC = () => {
 			...prev,
 			development: { ...prev.development, apiKey: '', hasApiKey: false },
 		}));
-		sendMessage({ type: 'clearCredentials' });
+		sendMessage({ type: 'settings:clearCredentials' });
 	};
 
 	/**
@@ -857,7 +857,7 @@ export const Settings: React.FC = () => {
 			// The handler caches results, so repeated calls are cheap.
 			const needsVersions = ['local', 'service', 'docker'];
 			if ((devMode && needsVersions.includes(devMode)) || (depMode && needsVersions.includes(depMode))) {
-				sendMessage({ type: 'fetchVersions' });
+				sendMessage({ type: 'versions:fetch' });
 			}
 
 			return next;
@@ -898,7 +898,7 @@ export const Settings: React.FC = () => {
 		if (actionType === 'install' || actionType === 'update') {
 			params.version = selectedVersion;
 		}
-		sendMessage({ type: 'ioControl', mode, command: actionType, params } as any);
+		sendMessage({ type: 'io:control', mode, command: actionType, params } as any);
 	};
 
 	const makeDockerHandler = (actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => makeEngineHandler('docker', actionType);
@@ -908,7 +908,7 @@ export const Settings: React.FC = () => {
 		const password = sudoPasswordInput;
 		setSudoPasswordInput('');
 		setSudoPromptVisible(false);
-		sendMessage({ type: 'sudoPassword', password } as any);
+		sendMessage({ type: 'service:sudoPassword', password } as any);
 	};
 
 	// ========================================================================

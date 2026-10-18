@@ -15,6 +15,7 @@
  */
 
 import * as vscode from 'vscode';
+import { getLogger } from '../shared/util/output';
 import { readPrefsSnapshot, writePref } from './PrefsBag';
 import * as crypto from 'crypto';
 import { readFileSync } from 'fs';
@@ -38,6 +39,9 @@ interface AccountWebviewMessage {
 	type: string;
 	/** prefs:set — the generic prefs channel's write. */
 	key?: string;
+	/** Ledger queries (requestId rides the existing member below). */
+	req?: unknown;
+	field?: string;
 	value?: unknown;
 	scope?: 'workspace' | 'global';
 	fields?: Record<string, string>;
@@ -117,7 +121,7 @@ export class AccountProvider {
 		}
 
 		// Step 2: create a new webview panel.
-		const panel = vscode.window.createWebviewPanel('rocketride.pageAccount', 'Account', vscode.ViewColumn.One, {
+		const panel = vscode.window.createWebviewPanel('rocketride.page.account', 'Account', vscode.ViewColumn.One, {
 			enableScripts: true,
 			retainContextWhenHidden: true,
 			localResourceRoots: [this.context.extensionUri],
@@ -131,7 +135,7 @@ export class AccountProvider {
 			try {
 				await this.handleWebviewMessage(panel, message);
 			} catch (error) {
-				console.error(`[AccountProvider] Message handling error: ${error}`);
+				getLogger().error(`[AccountProvider] Message handling error: ${error}`);
 				this.postError(panel, String(error));
 			}
 		});
@@ -165,6 +169,25 @@ export class AccountProvider {
 			case 'prefs:set':
 				if (message.key) writePref(this.context, message.key, message.value, message.scope ?? 'workspace');
 				break;
+
+			// -- Transaction ledger (DIRECT grid queries) -------------------------
+			case 'account:fetchTransactions': {
+				const { client, orgId } = this.resolveClient();
+				const r = message.req as { page?: number; size?: number; sort?: unknown; filters?: unknown; search?: unknown } | undefined;
+				const result = client && orgId && r
+					? await client.billing.getTransactions(orgId, { page: r.page, pageSize: r.size, sort: r.sort, filters: r.filters, search: r.search } as never).catch(() => null)
+					: null;
+				void panel.webview.postMessage({ type: 'account:transactionsResult', requestId: message.requestId, result });
+				break;
+			}
+			case 'account:fetchTransactionDistinct': {
+				const { client, orgId } = this.resolveClient();
+				const values = client && orgId && message.field
+					? await client.billing.getTransactionDistinct(orgId, message.field).catch(() => [])
+					: [];
+				void panel.webview.postMessage({ type: 'account:transactionDistinctResult', requestId: message.requestId, values });
+				break;
+			}
 
 			// -- Profile ----------------------------------------------------------
 			case 'account:saveProfile':
@@ -874,7 +897,7 @@ export class AccountProvider {
 			// Re-sync webview when connection state changes
 			const connectionStateListener = manager.on('shell:statusChange', (status: ConnectionStatus) => {
 				this.handleConnectionStateChange(status).catch((error) => {
-					console.error(`[AccountProvider] Connection state change error: ${error}`);
+					getLogger().error(`[AccountProvider] Connection state change error: ${error}`);
 				});
 			});
 
@@ -884,11 +907,11 @@ export class AccountProvider {
 					const panel = AccountProvider.panel;
 					// Refresh profile (always needed — identity/permissions may have changed)
 					this.refreshProfile(panel).catch((error) => {
-						console.error(`[AccountProvider] Account update error: ${error}`);
+						getLogger().error(`[AccountProvider] Account update error: ${error}`);
 					});
 					// Re-fetch the currently visible section's data (teams, members, etc.)
 					this.handleSectionChange(panel, AccountProvider.currentSection).catch((error) => {
-						console.error(`[AccountProvider] Section reload error: ${error}`);
+						getLogger().error(`[AccountProvider] Section reload error: ${error}`);
 					});
 				}
 			});
@@ -998,7 +1021,7 @@ export class AccountProvider {
 				billingError: null,
 			});
 		} catch (error) {
-			console.error(`[AccountProvider] Failed to fetch billing data: ${error}`);
+			getLogger().error(`[AccountProvider] Failed to fetch billing data: ${error}`);
 			await panel.webview.postMessage({
 				type: 'account:billing',
 				subscriptions: [],
@@ -1027,7 +1050,7 @@ export class AccountProvider {
 			// Re-fetch so the UI reflects the change
 			await this.fetchBillingData(panel);
 		} catch (error) {
-			console.error(`[AccountProvider] Failed to cancel subscription: ${error}`);
+			getLogger().error(`[AccountProvider] Failed to cancel subscription: ${error}`);
 			this.postError(panel, `Failed to cancel subscription: ${error}`);
 		}
 	}
@@ -1151,7 +1174,7 @@ export class AccountProvider {
 			const { url } = await client.billing.createPortalSession(orgId, 'https://rocketride.ai');
 			await vscode.env.openExternal(vscode.Uri.parse(url));
 		} catch (error) {
-			console.error(`[AccountProvider] Failed to open billing portal: ${error}`);
+			getLogger().error(`[AccountProvider] Failed to open billing portal: ${error}`);
 		}
 	}
 
@@ -1246,7 +1269,7 @@ export class AccountProvider {
 	 */
 	private postError(panel: vscode.WebviewPanel, message: string): void {
 		panel.webview.postMessage({ type: 'account:error', error: message }).then(undefined, (err: unknown) => {
-			console.error(`[AccountProvider] Failed to post error: ${err}`);
+			getLogger().error(`[AccountProvider] Failed to post error: ${err}`);
 		});
 	}
 

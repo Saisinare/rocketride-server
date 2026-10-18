@@ -33,9 +33,10 @@ import { isDeployRunBody } from '../shared/util/runClassification';
 import { handleMissingEnvVars } from '../shared/util/envVarCheck';
 import { isCloudConnectionConfigured as hasCloudConnectionConfigured } from '../shared/util/connectionModeAuth';
 import { savePipelineDocument } from '../shared/util/pipelineSave';
-import { resolveDeployTeams, mapVersionCards, mapHistoryRows, mapTeamDeploymentRows, mapScheduleRows, teamNameOf, mapDeploymentInfo, wireTeamIdOf } from '../shared/util/deployMapping';
-import type { DeploymentWebviewToHost, DeploymentLoadPayload } from './types/deployTypes';
+import type { DeploymentWebviewToHost } from './types/deployTypes';
 import type { LogSessionWebviewToHost } from './types/logTypes';
+import { DeployLifecycle } from './project/deployLifecycle';
+import { openExternalLink } from './project/externalLink';
 import { getStripePublishableKey } from './shared/stripe-key';
 import type { StripeKeyUnavailableReason } from './types/checkoutTypes';
 
@@ -56,11 +57,6 @@ const UNTITLED_BACKUP_PREFIX = 'rocketride.untitledBackup:';
 // reload. Long enough to cover a slow consent flow, short enough that stale
 // tokens don't linger.
 const OAUTH_REDELIVERY_TTL_MS = 5 * 60 * 1000;
-
-// Runtime allowlist for logsession:call — the webview message crosses a
-// process boundary, so the typed 'method' union guarantees nothing; only
-// these proxy methods may be invoked on the session object.
-const LOG_SESSION_METHODS = ['seek', 'getStatus', 'getTrace'] as const;
 
 // =============================================================================
 // TYPES
@@ -86,6 +82,8 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	private editorStates: Map<vscode.WebviewPanel, EditorState> = new Map();
 	private connectionManager = ConnectionManager.getInstance();
 	private logger = getLogger();
+	/** Deployment drawer + run-log DVR transport (project/deployLifecycle.ts). */
+	private deployLifecycle = new DeployLifecycle(this.connectionManager);
 	private savesForRun: Set<string> = new Set();
 	private preferenceUpdateQueue: Promise<void> = Promise.resolve();
 	// OAuth tokens that arrived while no live webview existed for their
@@ -146,7 +144,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		});
 
 		const envKeysChangedListener = this.connectionManager.on('shell:envKeysChanged', () => {
-			this.broadcastEnvKeys();
+			void this.broadcastEnvKeys();
 		});
 
 		const connectionStateListener = this.connectionManager.on('shell:statusChange', async (connectionStatus) => {
@@ -433,35 +431,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		// Team task monitors are per-connection server-side — a reconnect
 		// starts clean, so drop the registration memory and re-register on
 		// the next drawer fetch.
-		this._deployTaskMonitors.clear();
-	}
-
-	/** Team task monitors registered this connection (key: teamId.projectId). */
-	private _deployTaskMonitors = new Set<string>();
-
-	/**
-	 * Register the team-scoped 'task' monitor a deployment drawer relies on.
-	 *
-	 * The catch-up snapshot + begin/end pushes are what let the drawer track
-	 * run state without polling. Registered once per (team, project) per
-	 * connection; the registration lives until disconnect — release is
-	 * implicit (per-connection server-side), matching the drawer's
-	 * open-again-later usage.
-	 *
-	 * @param teamId - The deployment's team.
-	 * @param projectId - The deployed project.
-	 */
-	private async ensureDeployTaskMonitor(teamId: string, projectId: string): Promise<void> {
-		const key = `${teamId}.${projectId}`;
-		if (this._deployTaskMonitors.has(key)) return;
-		try {
-			const client = this.connectionManager.getClient();
-			if (!client) return;
-			await client.addMonitor({ projectId, source: '*', teamId }, ['task']);
-			this._deployTaskMonitors.add(key);
-		} catch (error) {
-			this.logger.error(`Registering deploy task monitor for ${key}: ${error}`);
-		}
+		this.deployLifecycle.clearTaskMonitors();
 	}
 
 	// =========================================================================
@@ -601,7 +571,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			// drives one team deployment; identity = panel project + msg team.
 			if (typeof data.type === 'string' && data.type.startsWith('deployment:')) {
 				try {
-					await this.handleDeploymentMessage(webview, editorState, data as DeploymentWebviewToHost);
+					await this.deployLifecycle.handleDeploymentMessage(webview, editorState.projectId ?? '', data as DeploymentWebviewToHost);
 				} catch (error) {
 					this.logger.error(`[ProjectProvider] Deployment message error: ${error}`);
 				}
@@ -611,7 +581,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			// onto real client.log streams; play items push back as events.
 			if (typeof data.type === 'string' && data.type.startsWith('logsession:')) {
 				try {
-					await this.handleLogSessionMessage(webview, editorState, data as LogSessionWebviewToHost);
+					await this.deployLifecycle.handleLogSessionMessage(webview, editorState.projectId ?? '', data as LogSessionWebviewToHost);
 				} catch (error) {
 					this.logger.error(`[ProjectProvider] Log session message error: ${error}`);
 				}
@@ -854,7 +824,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				// Link opening
 				case 'project:openLink': {
 					if (data.url) {
-						this.openLink(data.url as string, data.displayName as string | undefined, data.browser as boolean | undefined);
+						openExternalLink(data.url as string, data.displayName as string | undefined, data.browser as boolean | undefined);
 					}
 					break;
 				}
@@ -995,7 +965,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 
 				// Deploy lifecycle — snapshot request from the DEPLOY page
 				case 'deploy:fetch': {
-					await this.sendDeployData(webview, editorState);
+					await this.deployLifecycle.sendDeployData(webview, editorState.projectId);
 					break;
 				}
 
@@ -1047,7 +1017,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 						await deployClient.deploy.add({ pipeline, ...(data.comment ? { comment: data.comment as string } : {}), ...(data.deployTo ? { deployTo: data.deployTo as string } : {}) });
 						webview.postMessage({ type: 'deploy:actionResult', requestId: data.requestId });
 						// Re-push the lifecycle so the strip/history show the new truth.
-						await this.sendDeployData(webview, editorState);
+						await this.deployLifecycle.sendDeployData(webview, editorState.projectId);
 					} catch (error) {
 						const msg = error instanceof Error ? error.message : String(error);
 						this.logger.error(`[ProjectProvider] Publish failed: ${msg}`);
@@ -1064,7 +1034,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 						await deployClient.deploy.deploy((data.projectId as string) || editorState.projectId || '', data.version as number, data.teamId as string);
 						webview.postMessage({ type: 'deploy:actionResult', requestId: data.requestId });
 						// Re-push the lifecycle so badges/where-live show the new truth.
-						await this.sendDeployData(webview, editorState);
+						await this.deployLifecycle.sendDeployData(webview, editorState.projectId);
 					} catch (error) {
 						const msg = error instanceof Error ? error.message : String(error);
 						this.logger.error(`[ProjectProvider] Deploy failed: ${msg}`);
@@ -1098,7 +1068,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		webviewPanel.onDidDispose(async () => {
 			await this.stopMonitoring(webviewPanel);
 			// Close any run-log sessions the DVR bridge left open.
-			this.disposeLogSessions(webview);
+			this.deployLifecycle.disposeLogSessions(webview);
 			editorState.cachedStatuses = {};
 			editorState.isDisposed = true;
 			this.editorStates.delete(webviewPanel);
@@ -1111,470 +1081,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			this.startMonitoring(webviewPanel).catch((error) => {
 				this.logger.error(`Starting initial monitoring: ${error}`);
 			});
-		}
-	}
-
-	// =========================================================================
-	// DEPLOY LIFECYCLE DATA
-	// =========================================================================
-
-	/** Open run-log sessions per webview, keyed by the bridge's session id.
-	    Closed on logsession:close and swept when the panel disposes. */
-	private logSessions = new Map<vscode.Webview, Map<string, ReturnType<RocketRideClient['log']['openEventStream']>>>();
-
-	/**
-	 * Dispatches one run-log session message (logsession:*): open/close
-	 * manage real `client.log.openEventStream` sessions; seek/getStatus/
-	 * getTrace proxy as promise calls; play streams items back as
-	 * logsession:event pushes; chapters is a session-independent fetch.
-	 * This is the transport that makes the VS Code DVR identical to cloud.
-	 *
-	 * @param webview - The project panel's webview.
-	 * @param editorState - The panel's editor state (project identity).
-	 * @param message - The incoming typed message.
-	 */
-	private async handleLogSessionMessage(webview: vscode.Webview, editorState: EditorState, message: LogSessionWebviewToHost): Promise<void> {
-		const projectId = editorState.projectId ?? '';
-		let sessions = this.logSessions.get(webview);
-		if (!sessions) {
-			sessions = new Map();
-			this.logSessions.set(webview, sessions);
-		}
-
-		switch (message.type) {
-			case 'logsession:open': {
-				const client = this.requireDeployClient();
-				// A reused session id must release its old stream first — the
-				// overwrite would otherwise leak the stream and its monitor.
-				sessions.get(message.sessionId)?.closeEventStream();
-				sessions.set(message.sessionId, client.log.openEventStream({ projectId, source: message.source, ...(message.teamId ? { teamId: message.teamId } : {}) }));
-				break;
-			}
-			case 'logsession:call': {
-				const session = sessions.get(message.sessionId);
-				try {
-					if (!session) throw new Error('Session is closed');
-					// The cast on the incoming message gives NO runtime guarantee
-					// at this process boundary — gate the dynamic dispatch on the
-					// explicit allowlist so only the proxy methods are reachable.
-					if (!(LOG_SESSION_METHODS as readonly string[]).includes(message.method)) {
-						throw new Error(`Unsupported session method: ${message.method}`);
-					}
-					const result = await (session[message.method] as (...a: unknown[]) => Promise<unknown>)(...message.args);
-					webview.postMessage({ type: 'logsession:result', requestId: message.requestId, result });
-				} catch (error) {
-					webview.postMessage({ type: 'logsession:result', requestId: message.requestId, error: error instanceof Error ? error.message : String(error) });
-				}
-				break;
-			}
-			case 'logsession:play': {
-				const session = sessions.get(message.sessionId);
-				try {
-					if (!session) throw new Error('Session is closed');
-					await session.play(message.pos === null ? undefined : message.pos, message.speed, (item) => {
-						webview.postMessage({ type: 'logsession:event', sessionId: message.sessionId, item });
-					});
-					webview.postMessage({ type: 'logsession:result', requestId: message.requestId });
-				} catch (error) {
-					webview.postMessage({ type: 'logsession:result', requestId: message.requestId, error: error instanceof Error ? error.message : String(error) });
-				}
-				break;
-			}
-			case 'logsession:pause': {
-				sessions.get(message.sessionId)?.pause();
-				break;
-			}
-			case 'logsession:ingest': {
-				sessions.get(message.sessionId)?.ingestLive(message.event as never);
-				break;
-			}
-			case 'logsession:close': {
-				sessions.get(message.sessionId)?.closeEventStream();
-				sessions.delete(message.sessionId);
-				break;
-			}
-			case 'logsession:chapters': {
-				try {
-					const client = this.requireDeployClient();
-					const result = await client.log.chapters({ projectId, source: message.source, ...(message.teamId ? { teamId: message.teamId } : {}) });
-					webview.postMessage({ type: 'logsession:result', requestId: message.requestId, result });
-				} catch (error) {
-					webview.postMessage({ type: 'logsession:result', requestId: message.requestId, error: error instanceof Error ? error.message : String(error) });
-				}
-				break;
-			}
-		}
-	}
-
-	/**
-	 * Closes every run-log session a disposing panel left open.
-	 *
-	 * @param webview - The disposing panel's webview.
-	 */
-	private disposeLogSessions(webview: vscode.Webview): void {
-		const sessions = this.logSessions.get(webview);
-		if (!sessions) return;
-		for (const session of sessions.values()) session.closeEventStream();
-		this.logSessions.delete(webview);
-	}
-
-	/**
-	 * Dispatches one deployment-drawer message (deployment:*). Mutations run
-	 * through the deploy API, ack with deployment:actionResult (the drawer's
-	 * pending promise), then re-push a fresh deployment:load so the drawer
-	 * reflects the server's truth. Ported from the retired DeploymentProvider;
-	 * the drawer replaces its WebviewPanel.
-	 *
-	 * @param webview - The project panel's webview (drawer host).
-	 * @param editorState - The panel's editor state (project identity).
-	 * @param message - The incoming typed message.
-	 */
-	private async handleDeploymentMessage(webview: vscode.Webview, editorState: EditorState, message: DeploymentWebviewToHost): Promise<void> {
-		const projectId = editorState.projectId ?? '';
-		// Personal rows arrive with their raw 'user~{uid}' owner key — the
-		// server only accepts '@me' for the caller's own space, so translate
-		// ONCE here and every fetch/action below addresses it correctly.
-		const ownUid = this.connectionManager.getClient()?.getAccountInfo?.()?.userId ?? '';
-		const teamId = wireTeamIdOf(message.teamId, ownUid);
-
-		switch (message.type) {
-			// -- Snapshot (drawer open, push-triggered and post-mutation refresh) --
-			case 'deployment:fetch': {
-				// The drawer's run state is push-driven from here on: the
-				// team-scoped task monitor's events trigger the webview's
-				// re-fetches instead of an interval.
-				await this.ensureDeployTaskMonitor(teamId, projectId);
-				// Echo message.teamId (the RAW row id the drawer opened with) on the
-				// pushes so its stale-record guard matches — teamId here is the
-				// translated wire id used only for the fetch.
-				await this.fetchAndPushDeployment(webview, teamId, projectId, message.sourceId, message.teamId);
-				break;
-			}
-
-			// -- Disable / enable (the whole-deployment kill switch) --------------
-			case 'deployment:setDisabled': {
-				await this.runDeploymentAction(webview, teamId, projectId, message.requestId, async (client) => {
-					if (message.disabled) await client.deploy.disable(projectId, teamId);
-					else await client.deploy.enable(projectId, teamId);
-				});
-				break;
-			}
-
-			// -- Pointer move (Deploy version… / Rollback alike) ------------------
-			case 'deployment:deployVersion': {
-				await this.runDeploymentAction(webview, teamId, projectId, message.requestId, async (client) => {
-					await client.deploy.deploy(projectId, message.version, teamId);
-				});
-				break;
-			}
-
-			// -- Soft remove (the drawer closes itself on the resolved ack) -------
-			case 'deployment:remove': {
-				await this.runDeploymentAction(webview, teamId, projectId, message.requestId, async (client) => {
-					await client.deploy.remove(projectId, teamId);
-				});
-				break;
-			}
-
-			// -- Manual source dispatch (the smoke-test path) ---------------------
-			case 'deployment:runSource': {
-				await this.runDeploymentAction(webview, teamId, projectId, message.requestId, async (client) => {
-					await client.deploy.run(projectId, message.sourceId, teamId);
-				});
-				break;
-			}
-
-			// -- Stop one source's live run ---------------------------------------
-			case 'deployment:stopSource': {
-				await this.runDeploymentAction(webview, teamId, projectId, message.requestId, async (client) => {
-					// Existing task machinery: resolve the live task, terminate it.
-					// teamId scopes the lookup to the TEAM's deploy run — without
-					// it the server would resolve the caller's own dev run.
-					const token = await client.getTaskToken({ projectId, source: message.sourceId, teamId });
-					if (token) await client.terminate(token);
-				});
-				break;
-			}
-
-			// -- Set / clear a source schedule ------------------------------------
-			case 'deployment:setSchedule': {
-				await this.runDeploymentAction(webview, teamId, projectId, message.requestId, async (client) => {
-					await client.deploy.setSchedule(projectId, message.sourceId, message.cron, teamId, { ...(message.ttl !== null && message.ttl !== undefined ? { ttl: message.ttl } : {}) });
-				});
-				break;
-			}
-
-			// -- Persist one source's execution settings --------------------------
-			case 'deployment:setSourceConfig': {
-				await this.runDeploymentAction(webview, teamId, projectId, message.requestId, async (client) => {
-					await client.deploy.setSourceConfig(projectId, message.sourceId, teamId, { ...(message.traceLevel ? { traceLevel: message.traceLevel } : {}), debugOut: message.debugOut });
-				});
-				break;
-			}
-
-			// -- Pause / resume one source's schedule -----------------------------
-			case 'deployment:setSchedulePaused': {
-				await this.runDeploymentAction(webview, teamId, projectId, message.requestId, async (client) => {
-					if (message.paused) await client.deploy.pauseSchedule(projectId, message.sourceId, teamId);
-					else await client.deploy.resumeSchedule(projectId, message.sourceId, teamId);
-				});
-				break;
-			}
-
-			// -- Cron preview (THE single evaluator; no re-fetch needed) ----------
-			case 'deployment:preview': {
-				try {
-					const client = this.requireDeployClient();
-					const result = await client.deploy.preview(message.cron, message.count);
-					webview.postMessage({ type: 'deployment:previewResult', requestId: message.requestId, result });
-				} catch (error) {
-					const msg = error instanceof Error ? error.message : String(error);
-					webview.postMessage({ type: 'deployment:previewResult', requestId: message.requestId, result: {}, error: msg });
-				}
-				break;
-			}
-
-			// -- Validation passthrough (readonly canvas still validates) ---------
-			case 'deployment:validate': {
-				let result: { errors: unknown[]; warnings: unknown[] } = { errors: [], warnings: [] };
-				try {
-					const client = this.requireDeployClient();
-					result = await client.validate({ pipeline: message.pipeline as Record<string, unknown> });
-				} catch {
-					// A validation transport failure renders as a clean canvas —
-					// same fallback the rocket-ui host uses.
-				}
-				webview.postMessage({ type: 'deployment:validateResult', requestId: message.requestId, result });
-				break;
-			}
-		}
-	}
-
-	/**
-	 * Runs one deployment mutation with shared ack handling. The WEBVIEW
-	 * drives any refresh afterwards (it owns the focused source and sends
-	 * deployment:fetch / deploy:fetch itself) — the host only acks.
-	 *
-	 * @param webview - The project panel's webview.
-	 * @param teamId - The deployment's team.
-	 * @param projectId - The deployed project.
-	 * @param requestId - Correlation id for the deployment:actionResult ack.
-	 * @param action - The deploy API call to run.
-	 */
-	private async runDeploymentAction(webview: vscode.Webview, teamId: string, projectId: string, requestId: number, action: (client: RocketRideClient) => Promise<void>): Promise<void> {
-		try {
-			// Step 1: run the mutation against the dev connection's client.
-			const client = this.requireDeployClient();
-			await action(client);
-
-			// Step 2: ack the drawer's pending promise.
-			webview.postMessage({ type: 'deployment:actionResult', requestId });
-		} catch (error) {
-			const msg = error instanceof Error ? error.message : String(error);
-			webview.postMessage({ type: 'deployment:actionResult', requestId, error: msg });
-		}
-	}
-
-	/**
-	 * The connected SDK client, or throws the standard not-connected error.
-	 *
-	 * @returns The dev connection's client.
-	 */
-	private requireDeployClient(): RocketRideClient {
-		const client = this.connectionManager.getClient();
-		if (!client || !this.connectionManager.isConnected()) throw new Error('Not connected to server');
-		return client;
-	}
-
-	/**
-	 * Fetches the full deployment state and pushes deployment:load (stamped
-	 * with the team so a switched drawer drops stale pushes), mirroring the
-	 * cloud DeploymentProvider fetchAll: get → artifact → history(teamId) →
-	 * versions → preview of the FOCUSED source's schedule → running scan.
-	 *
-	 * @param webview - The project panel's webview.
-	 * @param teamId - The WIRE team id the API calls address ('@me' for the
-	 *                 caller's own space).
-	 * @param projectId - The deployed project.
-	 * @param sourceId - The focused source (the record identity).
-	 * @param echoTeamId - The RAW id the webview opened the drawer with
-	 *                     (mapTeamDeploymentRows emits `dep.teamId`, e.g.
-	 *                     `user~{uid}`); stamped on the pushes so the drawer's
-	 *                     stale-record guard matches. Defaults to `teamId`.
-	 */
-	private async fetchAndPushDeployment(webview: vscode.Webview, teamId: string, projectId: string, sourceId?: string, echoTeamId?: string): Promise<void> {
-		// The API calls address the WIRE id, but every push must carry the exact
-		// value the webview opened with: a personal deployment opens keyed on the
-		// raw 'user~{uid}' row id while the wire id is '@me', so stamping the wire
-		// id would make the drawer reject its own load and spin forever.
-		const recordTeamId = echoTeamId ?? teamId;
-		try {
-			const client = this.requireDeployClient();
-
-			// Step 1: the deployment record (version pointer, state, schedules).
-			const dep = await client.deploy.get(projectId, teamId);
-
-			// Step 2: the immutable artifact this team runs (readonly DESIGN).
-			const pipeline = typeof dep.version === 'number' ? ((await client.deploy.artifact(projectId, dep.version)) as unknown as Record<string, unknown>) : {};
-
-			// Step 3: this team's audit trail + the registry version picker.
-			const [history, versions] = await Promise.all([client.deploy.history(projectId, { teamId }), client.deploy.versions(projectId)]);
-
-			// Step 4: next occurrence through THE single evaluator (never parse
-			// cron client-side): the FOCUSED source's schedule, or — for the
-			// TEAM record — the first armed schedule across every source.
-			let nextRun: DeploymentLoadPayload['nextRun'];
-			const allScheds = (dep.schedules ?? {}) as Record<string, { cron?: string; paused?: boolean }>;
-			const sched = sourceId ? allScheds[sourceId] : undefined;
-			const armed = sourceId ? (sched?.cron && !sched.paused ? ([sourceId, sched] as const) : undefined) : Object.entries(allScheds).find(([, entry]) => entry.cron && !entry.paused);
-			if (armed?.[1].cron && dep.state === 'enabled') {
-				const preview = await client.deploy.preview(armed[1].cron, 1);
-				const firstAt = preview.valid ? preview.next?.[0] : undefined;
-				if (typeof firstAt === 'number') nextRun = { at: firstAt, sourceId: armed[0], cron: armed[1].cron };
-			}
-
-			// TEAM record: every armed schedule's next occurrence (the status
-			// grid's Next-run column) through the same single evaluator. The
-			// previews fan out concurrently — serialized round-trips would
-			// stall the drawer by one RTT per scheduled source.
-			const nextRuns: Record<string, number> = {};
-			if (!sourceId && dep.state === 'enabled') {
-				const armedSources = Object.entries(allScheds).filter(([, entry]) => entry.cron && !entry.paused);
-				const previews = await Promise.all(
-					armedSources.map(async ([sid, entry]) => {
-						try {
-							const preview = await client.deploy.preview(entry.cron as string, 1);
-							return [sid, preview.valid ? preview.next?.[0] : undefined] as const;
-						} catch {
-							// An unpreviewable cron just leaves the cell empty.
-							return [sid, undefined] as const;
-						}
-					})
-				);
-				for (const [sid, firstAt] of previews) {
-					if (typeof firstAt === 'number') nextRuns[sid] = firstAt;
-				}
-			}
-
-			// Step 5: which sources have a LIVE run right now — server task
-			// registry. A TEAM deployment matches on the descriptor's teamId;
-			// a PERSONAL (@me) deployment cannot — its row carries the billing
-			// team, never the wire '@me' — so it matches on the trusted owner
-			// scope instead (ownerKind/ownerId from rrext_get_tasks), with the
-			// uid taken from the record's own 'user~{uid}' key.
-			const tasks = (await client.call('rrext_get_tasks')) as {
-				tasks?: Array<{
-					source?: string;
-					teamId?: string;
-					runKind?: string;
-					ownerKind?: string;
-					ownerId?: string;
-					pipeline?: { project_id?: string };
-				}>;
-			};
-			const personalUid = recordTeamId.startsWith('user~') ? recordTeamId.slice('user~'.length) : undefined;
-			const runningSources: Record<string, boolean> = {};
-			for (const t of tasks.tasks ?? []) {
-				if (t.pipeline?.project_id !== projectId || !t.source) continue;
-				// runKind on BOTH branches: without it a team's ordinary
-				// pipeline run on the same project/source would mark the
-				// source as deploy-running, exactly as the personal branch
-				// already guards against.
-				const matches = personalUid
-					? t.ownerKind === 'user' && t.ownerId === personalUid && t.runKind === 'deploy'
-					: t.teamId === teamId && t.runKind === 'deploy';
-				if (matches) runningSources[t.source] = true;
-			}
-
-			// Step 6: resolve teams (names + control) and map into view models.
-			const teams = resolveDeployTeams(client, [dep]);
-			// Focused-source display name from the artifact (id fallback).
-			const components = Array.isArray(pipeline.components) ? (pipeline.components as Array<{ id?: string; name?: string }>) : [];
-			const sourceName = sourceId ? components.find((c) => c.id === sourceId)?.name || sourceId : undefined;
-			const payload: DeploymentLoadPayload = {
-				teamName: teamNameOf(teams, teamId),
-				deployment: mapDeploymentInfo(dep, projectId),
-				pipeline,
-				servicesJson: (this.connectionManager.getCachedServices()?.services ?? {}) as Record<string, unknown>,
-				...(sourceId ? { sourceId } : {}),
-				...(sourceName ? { sourceName } : {}),
-				...(sched ? { sourcePaused: sched.paused === true } : {}),
-				...(sourceId
-					? {
-							sourceConfig: {
-								traceLevel: ((sched as { traceLevel?: string } | undefined)?.traceLevel ?? null) as 'none' | 'metadata' | 'summary' | 'full' | null,
-								debugOut: (sched as { debugOut?: boolean } | undefined)?.debugOut === true,
-							},
-						}
-					: {}),
-				schedules: mapScheduleRows(pipeline, dep),
-				...(Object.keys(nextRuns).length > 0 ? { nextRuns } : {}),
-				versions: mapVersionCards(versions.rows ?? []),
-				history: mapHistoryRows(history.rows ?? [], teams, client.getAccountInfo?.()?.userId ?? ''),
-				...(nextRun ? { nextRun } : {}),
-				runningSources,
-				canControl: teams.find((t) => t.id === teamId)?.canControl ?? false,
-				isConnected: this.connectionManager.isConnected(),
-			};
-			webview.postMessage({ type: 'deployment:load', teamId: recordTeamId, ...payload });
-		} catch (error) {
-			const msg = error instanceof Error ? error.message : String(error);
-			// Stamp the addressed record (team + optional source) so the
-			// webview can drop errors from a stale fetch after switching.
-			webview.postMessage({ type: 'deployment:error', teamId: recordTeamId, ...(sourceId ? { sourceId } : {}), error: msg });
-		}
-	}
-
-	/**
-	 * Fetches this project's deploy lifecycle (registry versions, team
-	 * deployments, merged history, team roster) through the deploy API, maps
-	 * everything into serialisable view models HOST-side (mirroring
-	 * rocket-ui's ProjectProvider deploy closures + useDeployments), and pushes one
-	 * deploy:data snapshot to the webview.
-	 *
-	 * A project that was never published has no registry — the snapshot
-	 * degrades to empty arrays rather than an error state, so the DEPLOY
-	 * page renders its empty strip.
-	 *
-	 * @param webview - The editor webview to push the snapshot to.
-	 * @param editorState - The editor whose projectId scopes the fetch.
-	 */
-	private async sendDeployData(webview: vscode.Webview, editorState: EditorState): Promise<void> {
-		const projectId = editorState.projectId;
-		const client = this.connectionManager.getClient();
-
-		// No identity or connection yet — the empty snapshot ends the webview's
-		// loading state instead of leaving a spinner forever.
-		if (!projectId || !client || !this.connectionManager.isConnected()) {
-			webview.postMessage({ type: 'deploy:data', versions: [], deployments: [], teams: [] });
-			return;
-		}
-
-		try {
-			// Step 1: fetch the registry + deployments in parallel — versions are
-			// project-scoped, list() carries every visible deployment (also the
-			// team-roster fallback for rosterless identities).
-			const [versions, list] = await Promise.all([client.deploy.versions(projectId), client.deploy.list()]);
-			const deploymentRows = list.rows ?? [];
-
-			// Step 2: resolve the caller's teams (names + control rights).
-			const teams = resolveDeployTeams(client, deploymentRows);
-
-			// Step 3: map everything into view models and push the snapshot.
-			// Where-live rows are RAW facts — the shared ProjectView resolves
-			// source names against the pipeline the webview already holds.
-			webview.postMessage({
-				type: 'deploy:data',
-				versions: mapVersionCards(versions.rows ?? []),
-				deployments: mapTeamDeploymentRows(deploymentRows, projectId, teams, client.getAccountInfo?.()?.userId ?? ''),
-				teams,
-			});
-		} catch (error) {
-			// A project that was never published has no registry — empty strip,
-			// but keep the identity-derived team roster so Publish still offers
-			// its one-step deploy targets.
-			this.logger.error(`[ProjectProvider] Deploy lifecycle fetch failed: ${error}`);
-			webview.postMessage({ type: 'deploy:data', versions: [], deployments: [], teams: resolveDeployTeams(client, []) });
 		}
 	}
 
@@ -1733,167 +1239,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			const message = error instanceof Error ? error.message : String(error);
 			vscode.window.showErrorMessage(`Failed to stop pipeline: ${message}`);
 		}
-	}
-
-	// =========================================================================
-	// OPEN LINK
-	// =========================================================================
-
-	/**
-	 * Opens a URL. With `browser`, opens it in the system browser via the VS Code
-	 * shell (used by sandboxed CTAs like the Free/Enterprise plan links). Otherwise
-	 * opens it in an embedded WebviewPanel with an iframe, bridging theme colors,
-	 * env vars, clipboard, and drag-and-drop to the iframe.
-	 */
-	private openLink(url: string, displayName?: string, browser = false): void {
-		if (browser) {
-			// URL comes from a webview message; allowlist schemes before opening.
-			const uri = vscode.Uri.parse(url);
-			const scheme = uri.scheme.toLowerCase();
-			if (!['https', 'http', 'mailto'].includes(scheme)) {
-				this.logger.error(`[ProjectProvider] Blocked external URL scheme: ${scheme}`);
-				return;
-			}
-			void vscode.env.openExternal(uri);
-			return;
-		}
-		const panel = vscode.window.createWebviewPanel('externalContent', displayName || 'Pipeline', vscode.ViewColumn.One, {
-			enableScripts: true,
-			retainContextWhenHidden: true,
-		});
-
-		panel.webview.html = `<!DOCTYPE html>
-<html><head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>body{margin:0;padding:0}iframe{width:100%;height:100vh;border:none}</style>
-</head><body>
-<iframe id="app-iframe" src="${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}" allow="clipboard-read; clipboard-write"></iframe>
-<script>
-(function() {
-	const vscode = acquireVsCodeApi();
-	const iframe = document.getElementById('app-iframe');
-	const envVars = { devMode: true };
-	let iframeOrigin = '*';
-	try { iframeOrigin = new URL(iframe.src).origin; } catch(e) {}
-
-	['dragenter', 'dragover'].forEach(eventName => {
-		document.addEventListener(eventName, (e) => {
-			e.preventDefault();
-			e.stopPropagation();
-			try { iframe.contentWindow.postMessage({ type: 'dragHover', x: e.clientX, y: e.clientY }, iframeOrigin); } catch(err) {}
-		});
-	});
-	document.addEventListener('dragleave', (e) => {
-		if (e.relatedTarget === null) {
-			try { iframe.contentWindow.postMessage({ type: 'dragLeave' }, iframeOrigin); } catch(err) {}
-		}
-	});
-	document.addEventListener('drop', async (e) => {
-		e.preventDefault();
-		e.stopPropagation();
-		const files = e.dataTransfer && e.dataTransfer.files;
-		if (!files || files.length === 0) return;
-		const fileDataArray = [];
-		for (let i = 0; i < files.length; i++) {
-			const file = files[i];
-			const buffer = await file.arrayBuffer();
-			fileDataArray.push({ name: file.name, type: file.type || 'application/octet-stream', size: file.size, lastModified: file.lastModified, buffer: buffer });
-		}
-		try {
-			iframe.contentWindow.postMessage({ type: 'bridgedFileDrop', files: fileDataArray }, iframeOrigin, fileDataArray.map(f => f.buffer));
-			iframe.contentWindow.postMessage({ type: 'dragLeave' }, iframeOrigin);
-		} catch (err) { console.error('[Parent] Error bridging file drop to iframe:', err); }
-	});
-
-	function getVSCodeThemeColors() {
-		const style = getComputedStyle(document.body);
-		const getColor = (varName, fallback = '') => { const value = style.getPropertyValue(varName).trim(); return value || fallback; };
-		return {
-			'--bg-primary': getColor('--vscode-editor-background'),
-			'--bg-secondary': getColor('--vscode-sideBar-background'),
-			'--bg-tertiary': getColor('--vscode-editorWidget-background'),
-			'--bg-hover': getColor('--vscode-list-hoverBackground'),
-			'--text-primary': getColor('--vscode-editor-foreground'),
-			'--text-secondary': getColor('--vscode-descriptionForeground'),
-			'--text-muted': getColor('--vscode-disabledForeground'),
-			'--border-color': getColor('--vscode-panel-border'),
-			'--border-hover': getColor('--vscode-focusBorder'),
-			'--accent-primary': getColor('--vscode-focusBorder'),
-			'--accent-secondary': getColor('--vscode-button-background'),
-			'--accent-hover': getColor('--vscode-button-hoverBackground'),
-			'--success-color': getColor('--vscode-terminal-ansiGreen'),
-			'--error-color': getColor('--vscode-errorForeground'),
-			'--warning-color': getColor('--vscode-editorWarning-foreground'),
-			'--info-color': getColor('--vscode-editorInfo-foreground'),
-			'--code-bg': getColor('--vscode-textCodeBlock-background'),
-			'--input-bg': getColor('--vscode-input-background'),
-			'--input-border': getColor('--vscode-input-border'),
-			'--shadow-sm': getColor('--vscode-widget-shadow'),
-			'--shadow-md': getColor('--vscode-widget-shadow'),
-			'--shadow-lg': getColor('--vscode-widget-shadow')
-		};
-	}
-
-	function sendDataToIframe() {
-		const colors = getVSCodeThemeColors();
-		try { iframe.contentWindow.postMessage({ type: 'vscodeData', env: envVars, theme: colors }, iframeOrigin); }
-		catch (error) { console.error('[Parent] Error sending data to iframe:', error); }
-	}
-
-	window.addEventListener('message', (event) => {
-		if (event.source === iframe.contentWindow) {
-			if (event.data.type === 'view:ready') sendDataToIframe();
-			if (event.data.type === 'requestPaste') vscode.postMessage({ type: 'requestPaste' });
-			if (event.data.type === 'copyText' && event.data.text) vscode.postMessage({ type: 'copyText', text: event.data.text });
-			if (event.data.type === 'requestFileDialog') vscode.postMessage({ type: 'requestFileDialog' });
-		}
-		const msg = event.data;
-		if (msg.type === 'themeChanged') setTimeout(() => sendDataToIframe(), 50);
-		if (msg.type === 'pasteContent' && msg.text && iframe.contentWindow) iframe.contentWindow.postMessage({ type: 'paste', text: msg.text }, iframeOrigin);
-		if (msg.type === 'nativeFilesSelected' && iframe.contentWindow) iframe.contentWindow.postMessage({ type: 'nativeFilesSelected', files: msg.files }, iframeOrigin);
-	});
-})();
-</script>
-</body></html>`;
-
-		// Bridge clipboard requests from the embedded iframe.  The chat-ui
-		// (and any future embedded web app) cannot read the OS clipboard from
-		// inside a VSCode webview iframe — VSCode intercepts native paste at
-		// the Electron layer.  The iframe posts {type:'requestPaste'} up to
-		// the bridge script, which forwards it here via vscode.postMessage;
-		// we read the clipboard via the extension-host API and post the text
-		// back to the webview, where the bridge relays it into the iframe.
-		panel.webview.onDidReceiveMessage(async (msg) => {
-			if (msg?.type === 'requestPaste') {
-				const text = await vscode.env.clipboard.readText();
-				panel.webview.postMessage({ type: 'pasteContent', text });
-			} else if (msg?.type === 'copyText' && typeof msg.text === 'string') {
-				await vscode.env.clipboard.writeText(msg.text);
-			} else if (msg?.type === 'requestFileDialog') {
-				// The embedded app's "Browse" button can't open an OS file picker from
-				// inside the sandboxed iframe, so it posts {type:'requestFileDialog'} up to
-				// the bridge, which forwards it here. Open the native dialog on the host,
-				// read the chosen files, and post them back as {type:'nativeFilesSelected'};
-				// the bridge relays that into the iframe. Buffers go as number[] so they
-				// survive webview message serialization.
-				try {
-					const uris = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: 'Select' });
-					if (!uris || uris.length === 0) return;
-					const files = await Promise.all(
-						uris.map(async (uri) => ({
-							name: uri.path.split('/').pop() || 'file',
-							type: '',
-							lastModified: Date.now(),
-							buffer: Array.from(await vscode.workspace.fs.readFile(uri)),
-						}))
-					);
-					panel.webview.postMessage({ type: 'nativeFilesSelected', files });
-				} catch (error) {
-					this.logger.error(`[ProjectProvider] Native file dialog failed: ${error}`);
-				}
-			}
-		});
 	}
 
 	// =========================================================================
