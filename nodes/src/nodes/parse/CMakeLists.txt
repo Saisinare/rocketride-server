@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.20 FATAL_ERROR)
 
+project(parse LANGUAGES CXX C)
+
 # Everything a C++ node needs to build - see rocketride_add_node for what the
 # target gets wired up with
 include(${ROCKETRIDE_PACKAGES_DIR}/server/cmake/rocketride-node.cmake)
@@ -13,7 +15,7 @@ rocketride_add_node(parse
 # Linux: Tika's RAR support loads 7-Zip-JBinding. The prebuilt in the jar carries
 # a static GCC 7 libstdc++ whose GNU-unique locale ids collide with the system
 # libstdc++ (torch) and crash the task; the sevenzipjbinding vcpkg port builds it
-# against the engine's own runtime. It lands beside libparse.so, and nodes:sync
+# against the engine's own runtime. It lands beside libparse.so, and parse:stage
 # ships it from there (services.json "libs"). TikaApi loads this copy first.
 if(ROCKETRIDE_PLAT_LIN)
     set(sevenZipLib "${VCPKG_INSTALLED_TRIPLET_DIR}/lib/sevenzipjbinding/lib7-Zip-JBinding.so")
@@ -30,7 +32,7 @@ if(ROCKETRIDE_PLAT_LIN)
     add_custom_target(parse_sevenzipjbinding ALL DEPENDS "${sevenZipCopy}")
     add_dependencies(parse parse_sevenzipjbinding)
     # CMake-kit (IDE) builds stage node libraries into dist themselves (rocketride-node.cmake
-    # does it for libparse.so); nodes:sync is not part of that flow, so stage this one too.
+    # does it for libparse.so); parse:stage is not part of that flow, so stage this one too.
     if(ROCKETRIDE_CMAKE_KITS)
         set(sevenZipDist "${ROCKETRIDE_DIST_DIR}/nodes/parse/lib7-Zip-JBinding.so")
         add_custom_command(OUTPUT "${sevenZipDist}"
