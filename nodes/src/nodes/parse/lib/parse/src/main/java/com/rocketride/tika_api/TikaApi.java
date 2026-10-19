@@ -43,6 +43,7 @@ import org.apache.tika.parser.pdf.PDFParserConfig;
 import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 
 import net.sf.sevenzipjbinding.SevenZip;
+import net.sf.sevenzipjbinding.SevenZipNativeInitializationException;
 
 import com.rocketride.tika_api.parsers.email.CustomRFC822Parser;
 import com.rocketride.tika_api.EmbeddedContentExtractor.EmbeddedContentProcessor;
@@ -375,7 +376,8 @@ public final class TikaApi {
 	 * inside the jar is never loaded there: it carries a statically linked GCC 7 libstdc++
 	 * whose GNU-unique locale ids collide with the system libstdc++ that torch uses, and
 	 * the task dies at start. A missing file therefore disables RAR5 instead of falling
-	 * back. macOS and Windows have no such collision and keep the jar's prebuilt.
+	 * back. macOS and Windows have no such collision and load the jar's prebuilt, 23.01-2.2
+	 * since the pom moved to it.
 	 */
 	private static void init7ZipNative() throws Exception {
 		if (!isLinux()) {
@@ -383,11 +385,39 @@ public final class TikaApi {
 			logger.log(Level.INFO, "7-Zip-JBinding initialized: " + SevenZip.getSevenZipVersion().version);
 			return;
 		}
-		// java.home is <engine>/java/jdk; the node directory is <engine>/nodes/parse.
-		Path javaHome = Paths.get(System.getProperty("java.home")).toAbsolutePath().normalize();
-		Path engineRoot = javaHome.getParent() == null ? null : javaHome.getParent().getParent();
-		Path bundled = engineRoot == null ? null
-				: engineRoot.resolve("nodes").resolve("parse").resolve("lib7-Zip-JBinding.so");
+		loadBundledBinding(bundledBindingPath(Paths.get(System.getProperty("java.home"))));
+	}
+
+	/**
+	 * Where the engine build puts the binding, relative to the JVM it embeds.
+	 *
+	 * java.home is <engine>/java/jre in a dist tree (init.hpp jreDirectory()) and
+	 * <engine>/java/jdk in a dev tree; the node directory is <engine>/nodes/parse either way,
+	 * two levels up from the JVM.
+	 *
+	 * @param javaHome the running JVM's java.home
+	 * @return the expected location of lib7-Zip-JBinding.so, or null when java.home has no
+	 *         grandparent
+	 */
+	static Path bundledBindingPath(Path javaHome) {
+		Path home = javaHome.toAbsolutePath().normalize();
+		Path engineRoot = home.getParent() == null ? null : home.getParent().getParent();
+		return engineRoot == null ? null : engineRoot.resolve("nodes").resolve("parse").resolve("lib7-Zip-JBinding.so");
+	}
+
+	/**
+	 * Load the engine-built binding from {@code bundled}, or fail.
+	 *
+	 * Never the jar's prebuilt: on Linux that would bring the crash back, so a missing file
+	 * ends in FileNotFoundException and init() leaves RAR5 off (TestSevenZipBundledBinding
+	 * holds this).
+	 *
+	 * @param bundled path of the engine-built lib7-Zip-JBinding.so
+	 * @throws FileNotFoundException                when there is no regular file at that path
+	 * @throws SevenZipNativeInitializationException when the library loaded but 7-Zip-JBinding
+	 *                                               rejected it
+	 */
+	static void loadBundledBinding(Path bundled) throws IOException, SevenZipNativeInitializationException {
 		if (bundled == null || !Files.isRegularFile(bundled)) {
 			throw new FileNotFoundException("7-Zip-JBinding native library not found at " + bundled
 					+ "; the prebuilt inside the jar is not used on Linux (its bundled libstdc++ crashes the task)");
