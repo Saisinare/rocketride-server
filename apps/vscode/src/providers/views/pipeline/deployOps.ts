@@ -21,7 +21,7 @@
 
 import { ConnectionManager } from 'shell';
 import type { Deployment, DeployArtifact, DeployHistoryEntry } from 'rocketride';
-import { resolveDeployTeams, mapVersionCards, mapHistoryRows, mapTeamDeploymentRows, mapScheduleRows, teamNameOf, mapDeploymentInfo, wireTeamIdOf } from '../../../shared/util/deployMapping';
+import { resolveDeployTeams, mapVersionCards, mapHistoryRows, mapTeamDeploymentRows, mapScheduleRows, teamNameOf, mapDeploymentInfo, wireTeamIdOf } from './deployMapping';
 import type { DeployTeamRefDTO, DeployVersionCardDTO, TeamDeploymentRowDTO, DeploymentLoadPayload } from '../../types/deployTypes';
 
 const cm = (): ConnectionManager => ConnectionManager.getInstance();

@@ -167,6 +167,10 @@ export interface EngineStatusPayload {
 export interface EngineControlResult {
 	success: boolean;
 	error?: string;
+	/** The verb needs a sudo password (macOS/Linux service lifecycle): the
+	 *  panel shows its password field and re-sends the same command with
+	 *  `params.sudoPassword`. */
+	needsSudo?: boolean;
 	data?: Record<string, unknown>;
 }
 

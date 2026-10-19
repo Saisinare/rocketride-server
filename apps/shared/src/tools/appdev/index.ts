@@ -33,6 +33,8 @@ export { startWorkspaceAppDiscovery } from './controller';
 export { renderTemplate, TEMPLATE_NAMES } from './templates';
 export type { FrameOptions, TemplateFile, TemplateName, TemplateVars } from './templates';
 export { toHistoryEntries, toRungPins, toVersionInfos, walkDeploymentHistory } from './wire';
+export { createBusAppBuilderHost } from './busHost';
+export type { IAppBuilderBus, IBusAppBuilderHostOptions } from './busHost';
 export type { WireHistoryRow, WirePin, WireRailEntry } from './wire';
 export { runListingPreflight } from './preflight';
 export type { PreflightIO } from './preflight';

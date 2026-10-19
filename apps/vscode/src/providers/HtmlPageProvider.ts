@@ -13,9 +13,8 @@
  * tool's docs, …).
  *
  * Commands:
- *   rocketride.page.html.open (key, title, html) — the generic call.
- *   rocketride.page.intro.open (mode)            — compatibility alias:
- *     resolves the builtin tools' intro catalog and opens it generically.
+ *   rocketride.page.intro.open (mode) — resolves the builtin tools' intro
+ *     catalog and opens the page generically.
  *
  * Interactive pages (account, settings, tool readmes) are NOT this —
  * scripts stay disabled here by design.
@@ -32,16 +31,12 @@ export class HtmlPageProvider {
 	private disposables: vscode.Disposable[] = [];
 
 	constructor(private context: vscode.ExtensionContext) {
-		const open = vscode.commands.registerCommand('rocketride.page.html.open', (key?: string, title?: string, html?: string) => {
-			if (typeof key === 'string' && typeof title === 'string' && typeof html === 'string') this.show(key, title, html);
-		});
-		// Compatibility alias: the builtin intro pages ride the same surface.
 		const intro = vscode.commands.registerCommand('rocketride.page.intro.open', (mode?: IntroMode) => {
 			const page = mode ? INTRO_PAGES[mode] : undefined;
 			if (mode && page) this.show(`intro:${mode}`, page.title, page.html);
 		});
-		this.disposables.push(open, intro);
-		this.context.subscriptions.push(open, intro);
+		this.disposables.push(intro);
+		this.context.subscriptions.push(intro);
 	}
 
 	/**
@@ -51,7 +46,7 @@ export class HtmlPageProvider {
 	 * @param title - Tab title.
 	 * @param html - The complete standalone HTML document.
 	 */
-	public show(key: string, title: string, html: string): void {
+	private show(key: string, title: string, html: string): void {
 		const existing = this.panels.get(key);
 		if (existing) {
 			existing.reveal(vscode.ViewColumn.One);

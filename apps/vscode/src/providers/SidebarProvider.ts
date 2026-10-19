@@ -6,48 +6,51 @@
 /**
  * SidebarProvider — Extension host provider for the tool-registry sidebar.
  *
- * The host side of the sidebar webview: resolves the view, routes its
- * messages, persists the strip state (mode, tab order, disabled builtins)
- * in the prefs bag, pushes connection/auth updates from both managers
- * (ConnectionManager dev, DeployManager deploy), and serves the generic
- * tool-host capabilities (workspace FS, the devtool peer relay).
+ * The sidebar webview is a BUS REALM; this provider's host side is bus-
+ * native: it serves the workspace-FS capability (host.fs.*) and the
+ * file-keyed pipeline verbs (host.pipeline.openFile/runFile/...), publishes
+ * the strip's tool rows (retained devtools:rows), the fronted tool document
+ * (retained devtools:activeDoc), host-driven tab selection (signal
+ * sidebar:modeSelect), and per-source diagnostics (signal
+ * pipeline:sourceDiagnostics). Connection/auth/deploy state rides the
+ * BusHost mirrors (shell:status / shell:deployStatus / shell:cloudAuth);
+ * strip prefs are plain pref keys over host.prefs.*.
+ *
+ * The ONLY remaining postMessage traffic: sidebar:command (unrestricted
+ * executeCommand — a deliberate host decision) and view:ready (the page-
+ * lifecycle marker the watcher reset keys off — HTML rewrites reboot the
+ * page without re-resolving the webview).
  *
  * The meatier concerns live in sibling modules:
  *   - sidebar/toolRows.ts      — pinned tool rows + catalog (icons inlined)
  *   - sidebar/pipelineFiles.ts — .pipe stamping invariant, restart-on-save,
  *                                and the open/run/stop actions
- *
- * The webview (views/sidebar/SidebarWebview.tsx) renders SidebarChrome over
- * the builtin-tool registry; its controllers discover pipelines and apps
- * themselves over the workspace-FS service.
  */
 
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import { ConfigManager } from '../config';
-import { ConnectionManager, isCloudConnected } from '../connection/connection';
-import { DeployManager } from '../connection/deploy-manager';
-import { CloudAuthProvider } from '../auth/CloudAuthProvider';
-import { GenericEvent, PIPE_BUILDER_APP_ID } from '../shared/types';
-import { isSubscribed } from '../shared/util/subscriptionGate';
-import { isDeployRunBody } from '../shared/util/runClassification';
+import { ConnectionManager } from '../connection/connection';
+import { GenericEvent } from '../shared/types';
+import { isDeployRunBody } from 'shared/tools/pipelines/project/runKind';
 import { getLogger } from '../shared/util/output';
 import { getPipelineProvider } from '../extension';
 import { DevToolStore } from './DevToolStore';
 import type { BusHost } from './toolhost/busHost';
-import { readPref, readPrefsSnapshot, writePref } from './PrefsBag';
+import { readPref, writePref } from './PrefsBag';
+// Deep imports on purpose — ext-host-safe .ts leaves (see busHost.ts).
+import { registerOpHandlers } from 'shell/src/ops/busOps';
+import type { PipelineHostOpMap } from 'shared/ops/pipelineOps';
+import type { HostFsOpMap } from 'shared/ops/fsOps';
 import { WorkspaceFsService } from './toolhost/workspaceFsService';
 import { ToolRows } from './sidebar/toolRows';
 import type { ToolRowDTO } from './sidebar/toolRows';
 import { PipelineFiles } from './sidebar/pipelineFiles';
 
-/** workspaceState key for the persisted sidebar mode. */
+/** Prefs-bag key for the persisted sidebar mode. The webview reads and
+ *  writes it over host.prefs.* (as it does 'sidebarTabOrder' and
+ *  'disabledBuiltins'); the host only touches it in setModeExternal. */
 const SIDEBAR_MODE_KEY = 'sidebarMode';
-
-/** workspaceState key for the persisted strip tab order. */
-const TAB_ORDER_KEY = 'sidebarTabOrder';
-/** workspaceState key: builtin tools the user has DISABLED (default: none). */
-const DISABLED_BUILTINS_KEY = 'disabledBuiltins';
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
 	public static readonly viewType = 'rocketride.sidebar.main';
@@ -56,19 +59,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 	private disposables: vscode.Disposable[] = [];
 	private configManager = ConfigManager.getInstance();
 	private connectionManager = ConnectionManager.getInstance();
-	private deployManager = DeployManager.getDeployInstance();
 
 	// ── Sidebar mode (persisted per workspace) ───────────────────────────────
 	// NO App Builder state here: MY APPS discovery runs in the WEBVIEW's
 	// AppDev controller (shared tools/appdev) over the generic workspace-FS
 	// service — the extension host no longer knows what an .rrapp binding is.
 	private sidebarMode: string = 'apps';
-
-	/** Persisted strip tab order (mode ids + `tool:<appId>` ids). */
-	private tabOrder: string[] = [];
-
-	/** Persisted set of DISABLED builtin tools (enable/disable, no uninstall). */
-	private disabledBuiltins: string[] = [];
 
 	private logger = getLogger();
 
@@ -103,10 +99,51 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		// DELIBERATE per-host default: 'apps' in VS Code, 'agent' on web. A
 		// persisted mode whose tool is disabled falls back in SidebarChrome.
 		this.sidebarMode = (this.context ? readPref<string>(this.context, SIDEBAR_MODE_KEY) : undefined) ?? 'apps';
-		this.tabOrder = (this.context ? readPref<string[]>(this.context, TAB_ORDER_KEY) : undefined) ?? [];
-		this.disabledBuiltins = (this.context ? readPref<string[]>(this.context, DISABLED_BUILTINS_KEY) : undefined) ?? [];
 		this.toolRows = new ToolRows(this.connectionManager, this.devTools, this.context);
 		this.pipelineFiles = new PipelineFiles(this.connectionManager, this.configManager);
+		// The workspace-FS capability (declared in shared/ops/fsOps) is served
+		// HERE too: this provider owns the service and the watch lifecycle.
+		// Events ride the realm-registered sidebar.fs.event op — broadcast;
+		// only realms that registered the handler hear it, and they filter by
+		// their own sub keys.
+		if (this.busHost) {
+			const busHost = this.busHost;
+			registerOpHandlers<HostFsOpMap>(busHost.rootBus, {
+				'host.fs.findFiles': (p) => this.workspaceFs.findFiles(p.include, p.exclude),
+				'host.fs.workspaceRoots': () => this.workspaceFs.workspaceRoots(),
+				'host.fs.readText': (p) => this.workspaceFs.readText(p.path),
+				'host.fs.readBase64': (p) => this.workspaceFs.readBase64(p.path, p.maxBytes),
+				'host.fs.watch': (p) => {
+					this.workspaceFs.watch(p.sub, p.globs, (path) => busHost.broadcastEmitOp('sidebar.fs.event', { sub: p.sub, path }));
+				},
+				'host.fs.unwatch': (p) => {
+					this.workspaceFs.unwatch(p.sub);
+				},
+			});
+		}
+		// The file-keyed pipeline verbs (declared in shared/ops/pipelineOps)
+		// are served HERE: this provider owns the stamping/run/stop policy
+		// module (pipelineFiles) they act through.
+		if (this.busHost) {
+			registerOpHandlers<PipelineHostOpMap>(this.busHost.rootBus, {
+				'host.pipeline.openFile': (p) => {
+					void this.pipelineFiles.openPipelineFile(p.fsPath);
+				},
+				'host.pipeline.runFile': (p) => {
+					void this.pipelineFiles.runPipeline(p.fsPath, p.sourceId);
+				},
+				'host.pipeline.stopSource': (p) => {
+					void this.pipelineFiles.stopPipeline(p.projectId, p.sourceId);
+				},
+				'host.pipeline.openStatus': async (p) => {
+					await vscode.commands.executeCommand('rocketride.page.status.open', p.projectId, p.sourceId, p.displayName);
+				},
+			});
+		}
+		// Seed the retained rows topic with the last-known cache so a webview's
+		// first paint (replay) already has its final tab set — the slow fresh
+		// compose (icon fetches) replaces it in place, never reshuffles.
+		this.publishToolRows(this.toolRows.cachedRows());
 		this.disposables.push(...this.pipelineFiles.setupFileWatching());
 		this.setupEventListeners();
 		this.disposables.push({ dispose: () => this.workspaceFs.dispose() });
@@ -143,94 +180,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		// Handle messages from the webview
 		webviewView.webview.onDidReceiveMessage(async (message) => {
 			try {
-				// Generic tool-host capability services (workspace FS for the
-				// tool controllers running in this webview) — routed before
-				// the UI messages; the host stays ignorant of what the
-				// controllers are scanning for.
-				if (this.workspaceFs.handle(message, (m) => void this._view?.webview.postMessage(m))) return;
-
 				switch (message.type) {
 					case 'view:ready':
 						// A fresh page restarts its service-subscription ids —
-						// drop the previous page's watchers before anything else.
+						// drop the previous page's watchers. Everything the page
+						// DISPLAYS replays off the retained topics.
 						this.workspaceFs.resetSubscriptions();
-						// Seed the mode strip FIRST (synchronous, from persisted
-						// state alone) so its first paint already has the final
-						// tab set and order — the full update below is slow
-						// (icon fetches, dashboard) and must not be what shapes
-						// the strip.
-						this.sendStripSeed();
-						this.sendFullUpdate();
-						// Replay the fronted tool document — a fresh webview
-						// must not boot with every tool sidebar unselected
-						// while a tool tab is in front.
-						void this._view?.webview.postMessage({ type: 'devtool:activeDoc', ...this.activeToolDoc });
 						break;
 					case 'sidebar:command':
 						vscode.commands.executeCommand(message.command, ...(message.args ?? []));
-						break;
-					case 'sidebar:openFile':
-						void this.pipelineFiles.openPipelineFile(message.fsPath);
-						break;
-					case 'sidebar:runPipeline':
-						void this.pipelineFiles.runPipeline(message.fsPath, message.sourceId);
-						break;
-					case 'sidebar:stopPipeline':
-						void this.pipelineFiles.stopPipeline(message.projectId, message.sourceId);
-						break;
-					case 'sidebar:openUnknownTask':
-						vscode.commands.executeCommand('rocketride.page.status.open', message.projectId, message.sourceId, message.displayName);
-						break;
-					case 'sidebar:openApp':
-						vscode.commands.executeCommand('rocketride.app.open', message.appId);
-						break;
-					case 'sidebar:setSidebarMode':
-						// Persisted per workspace and included in every full update
-						// so a reloaded webview restores the user's last mode.
-						this.sidebarMode = message.mode;
-						if (this.context) void writePref(this.context, SIDEBAR_MODE_KEY, message.mode, 'workspace');
-						break;
-					case 'sidebar:openTool':
-						vscode.commands.executeCommand('rocketride.devtool.open', message.toolId);
-						break;
-					case 'sidebar:focusTool':
-						// Strip tab selection: bring an open window of the tool
-						// forward; never create one for a mere tab switch.
-						vscode.commands.executeCommand('rocketride.devtool.reveal', message.toolId);
-						break;
-					case 'sidebar:refreshTools':
-						// The Dev Tools panel's RESET — see refreshDevTools.
-						void this.refreshDevTools();
-						break;
-					case 'sidebar:removeTool':
-						this.devTools?.remove(message.toolId);
-						break;
-					case 'sidebar:setDisabledBuiltins':
-						// Builtins are enabled/disabled, never uninstalled —
-						// persisted per workspace like the tab order.
-						this.disabledBuiltins = message.ids;
-						if (this.context) void writePref(this.context, DISABLED_BUILTINS_KEY, message.ids, 'workspace');
-						break;
-					case 'sidebar:reorderTabs':
-						// Full strip order (modes + tools) — persisted per
-						// workspace; the webview already reordered optimistically.
-						this.tabOrder = message.order;
-						if (this.context) void writePref(this.context, TAB_ORDER_KEY, message.order, 'workspace');
-						break;
-					case 'sidebar:showToolReadme':
-						vscode.commands.executeCommand('rocketride.devtool.readme', message.toolId);
-						break;
-					case 'prefs:set':
-						// Persists one prefs-store write (fire-and-forget).
-						if (this.context) writePref(this.context, message.key, message.value, message.scope);
-						break;
-					case 'sidebar:openToolDocument':
-						// A tool's sidebar mount opens one of ITS documents (the
-						// DevToolProps.documents API) — e.g. a connection's tab.
-						vscode.commands.executeCommand('rocketride.devtool.open', message.appId, message.docKey, message.title);
-						break;
-					case 'sidebar:closeToolDocument':
-						vscode.commands.executeCommand('rocketride.devtool.close', message.appId, message.docKey);
 						break;
 				}
 			} catch (error) {
@@ -249,27 +207,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 	// STRIP STATE
 	// =========================================================================
 
-	/**
-	 * Posts the synchronous strip bootstrap: pinned tool rows from the
-	 * last-known cache, the persisted tab order, and the persisted mode. Sent
-	 * on `view:ready` BEFORE the full update, so the strip's first paint
-	 * already has its final tab set and order — late-resolving fresh rows
-	 * replace the cached ones in place instead of reshuffling the strip.
-	 */
-	private sendStripSeed(): void {
-		void this._view?.webview.postMessage({ type: 'sidebar:stripSeed', tools: this.toolRows.cachedRows(), tabOrder: this.tabOrder, sidebarMode: this.sidebarMode, disabledBuiltins: this.disabledBuiltins });
-		this.sendPrefsInit();
-	}
-
-	/**
-	 * Seeds the webview's prefs store from the shared PrefsBag. Sent once
-	 * per view:ready, BEFORE any tool mounts, so synchronous reads never
-	 * observe a pre-hydration snapshot.
-	 */
-	private sendPrefsInit(): void {
-		if (!this.context) return;
-		void this._view?.webview.postMessage({ type: 'prefs:init', values: readPrefsSnapshot(this.context) });
-	}
 
 	/**
 	 * Sets the sidebar mode FROM THE HOST (a tool panel gained focus) —
@@ -283,31 +220,30 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		if (this.context) void writePref(this.context, SIDEBAR_MODE_KEY, mode, 'workspace');
 		// Reveal the RocketRide sidebar (keeping keyboard focus where it is)
 		// so the tool's sidebar body is actually on screen, then switch its
-		// strip to the tool's tab.
+		// strip to the tool's tab. A SIGNAL, not retained — a focus event,
+		// not state (the persisted value is the pref).
 		this._view?.show?.(true);
-		void this._view?.webview.postMessage({ type: 'sidebar:modeUpdate', mode });
+		this.busHost?.retained.signal('sidebar:modeSelect', { mode });
 	}
 
-	/** The fronted tool document (replayed to a freshly booted webview). */
-	private activeToolDoc: { appId: string | null; docKey: string | null } = { appId: null, docKey: null };
-
 	/**
-	 * Relays the editor's fronted tool document to the sidebar webview — the
-	 * tool sidebar mounts follow it (highlight the fronted document, clear on
-	 * null).
+	 * Publishes the editor's fronted tool document — the tool sidebar mounts
+	 * follow it (highlight the fronted document, clear on null). RETAINED:
+	 * replay covers a freshly booted webview. Both-null is a VALUE, not a
+	 * retraction — "a non-tool tab is fronted" clears selections, which is
+	 * different from "no signal yet" (mounts fall back to their own state).
 	 *
 	 * @param appId - The fronted tool's app id, or null for a non-tool tab.
 	 * @param docKey - The fronted tool document's key, or null.
 	 */
 	public notifyToolActiveDoc(appId: string | null, docKey: string | null): void {
-		this.activeToolDoc = { appId, docKey };
-		void this._view?.webview.postMessage({ type: 'devtool:activeDoc', appId, docKey });
+		this.busHost?.retained.publish('devtools:activeDoc', { appId, docKey });
 	}
 
-	/** Pushes the fresh tool rows + catalog to the webview (pin/unpin, account change). */
+	/** Publishes fresh tool rows + catalog (pin/unpin, account change). */
 	private pushToolsUpdate(): void {
-		void Promise.all([this.toolRows.buildToolRows(), this.toolRows.buildAvailableTools()]).then(([tools, available]) => {
-			this._view?.webview.postMessage({ type: 'sidebar:toolsUpdate', tools, available });
+		void Promise.all([this.toolRows.buildToolRows().catch((): ToolRowDTO[] => this.toolRows.cachedRows()), this.toolRows.buildAvailableTools().catch((): ToolRowDTO[] | undefined => undefined)]).then(([tools, available]) => {
+			this.publishToolRows(tools, available);
 		});
 	}
 
@@ -315,76 +251,49 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 	// EVENT LISTENERS
 	// =========================================================================
 
-	/** Subscribes to connection, deploy, config, and cloud-auth events. */
+	/**
+	 * Host-side listeners. Everything the webview DISPLAYS rides the retained
+	 * mirrors now (shell:status / shell:deployStatus / shell:cloudAuth /
+	 * shell:account — BusHost.startMirrors); what remains here is genuinely
+	 * host work: the CSP reboot, the task monitor, fresh tool rows on
+	 * identity changes, and the diagnostics fold.
+	 */
 	private setupEventListeners(): void {
-		// connectionManager.on()/deployManager.on() return the SHARED manager
-		// (a Node EventEmitter), and ITS dispose() tears down the whole
-		// extension's connection — disposal must wrap off() with the named
-		// handler instead of disposing the return value.
+		// connectionManager.on() returns the SHARED manager (a Node
+		// EventEmitter), and ITS dispose() tears down the whole extension's
+		// connection — disposal must wrap off() with the named handler.
+		//
+		// LOAD-BEARING: an engine-origin change invalidates the webview's CSP
+		// (the dev-tool sidebar mounts load remote chunks from the engine) —
+		// re-render the HTML; the rebooted realm replays its topics.
 		const connStateHandler = () => {
-			this.sendFullUpdate();
+			if (this._view && this.htmlEngineOrigin !== this.engineOrigin()) {
+				this._view.webview.html = this.getHtmlForWebview(this._view.webview);
+			}
 		};
 		this.connectionManager.on('shell:statusChange', connStateHandler);
 		const connectedHandler = async () => {
-			// Subscribe to task lifecycle events
+			// Subscribe to task lifecycle events.
+			// 'task' only: the wildcard 'output' subscription existed to feed
+			// the removed Rocket Ride: Console mirror — per-editor monitors
+			// subscribe to output themselves for the Log pane.
 			const client = this.connectionManager.getClient();
 			if (client) {
-				// 'task' only: the wildcard 'output' subscription existed to feed
-				// the removed Rocket Ride: Console mirror — per-editor monitors
-				// subscribe to output themselves for the Log pane.
 				client.addMonitor({ token: '*' }, ['task']).catch((err) => {
 					this.logger.error(`Sidebar task-event subscription failed: ${err instanceof Error ? err.message : String(err)}`);
 				});
 			}
-			// Teams come from ConnectResult — no fetch needed, just update the webview
-			this.sendFullUpdate();
+			// A fresh identity carries a fresh catalog (names, icons, store).
+			this.pushToolsUpdate();
 		};
 		this.connectionManager.on('shell:connected', connectedHandler);
-		const disconnectedHandler = () => {
-			this.sendFullUpdate();
-		};
-		this.connectionManager.on('shell:disconnected', disconnectedHandler);
-		const errorHandler = () => {
-			this.sendFullUpdate();
-		};
-		this.connectionManager.on('shell:error', errorHandler);
-		const configChange = vscode.workspace.onDidChangeConfiguration((e) => {
-			if (e.affectsConfiguration('rocketride')) {
-				this.sendFullUpdate();
-			}
-		});
-
-		// Re-fetch teams when cloud auth state changes (sign-in/sign-out)
-		const cloudAuth = CloudAuthProvider.getInstance();
-		const cloudAuthHandler = async () => {
-			this.sendFullUpdate();
-		};
-		cloudAuth.onDidChange.on('changed', cloudAuthHandler);
-
-		// ── Deploy manager events ────────────────────────────────────────────
-		const deployConnStateHandler = () => {
-			this.sendFullUpdate();
-		};
-		this.deployManager.on('shell:statusChange', deployConnStateHandler);
-		const deployConnectedHandler = async () => {
-			this.sendFullUpdate();
-		};
-		this.deployManager.on('shell:connected', deployConnectedHandler);
-		const deployDisconnectedHandler = () => {
-			this.sendFullUpdate();
-		};
-		this.deployManager.on('shell:disconnected', deployDisconnectedHandler);
+		const accountHandler = () => this.pushToolsUpdate();
+		this.connectionManager.on('shell:accountUpdate', accountHandler);
 
 		this.disposables.push(
 			{ dispose: () => this.connectionManager.off('shell:statusChange', connStateHandler) },
 			{ dispose: () => this.connectionManager.off('shell:connected', connectedHandler) },
-			{ dispose: () => this.connectionManager.off('shell:disconnected', disconnectedHandler) },
-			{ dispose: () => this.connectionManager.off('shell:error', errorHandler) },
-			configChange,
-			{ dispose: () => this.deployManager.off('shell:statusChange', deployConnStateHandler) },
-			{ dispose: () => this.deployManager.off('shell:connected', deployConnectedHandler) },
-			{ dispose: () => this.deployManager.off('shell:disconnected', deployDisconnectedHandler) },
-			{ dispose: () => cloudAuth.onDidChange.removeListener('changed', cloudAuthHandler) }
+			{ dispose: () => this.connectionManager.off('shell:accountUpdate', accountHandler) }
 		);
 
 		// Forward server events to webview
@@ -405,8 +314,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 				if (projectId && sourceId) {
 					const statusProvider = getPipelineProvider();
 					const ts = statusProvider?.getTaskStatus(projectId, sourceId);
-					this._view?.webview.postMessage({
-						type: 'sidebar:statusUpdate',
+					// A SIGNAL (fire-and-forget like the push it replaces): the
+					// realm's diagnostics module keeps its own fold; per-source
+					// retention would be a dynamically-keyed leak.
+					this.busHost?.retained.signal('pipeline:sourceDiagnostics', {
 						projectId,
 						sourceId,
 						errors: ts?.errors ?? [],
@@ -429,7 +340,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 	 * a loaded MF remote cannot be repointed in a live realm. The reboot is
 	 * cheap by design: retained bridge state replays into the fresh realm.
 	 */
-	private async refreshDevTools(): Promise<void> {
+	public async refreshDevTools(): Promise<void> {
 		try {
 			await this.connectionManager.disconnect();
 			await this.connectionManager.connect();
@@ -447,104 +358,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 	}
 
 	/**
-	 * Sends connection state + strip state to the webview — the SYNCHRONOUS
-	 * local state only, posted with no awaits in front of it. After a CSP
-	 * reboot this message is the wiped page's one shot at its rows, so
-	 * nothing network-derived may sit between the call and the post. The
-	 * slow fields (user identity, tool rows, catalog, devToolHost) follow
-	 * out-of-band via {@link sendUpdateExtras}.
+	 * Publishes the strip's tool rows (RETAINED `devtools:rows` — replay
+	 * seeds any webview, including one rebooted by a CSP change, with no
+	 * handshake). `available` is OMITTED while the catalog is unknown
+	 * (disconnected, cached-only seed, failed compose): the webview keeps its
+	 * last catalog instead of wiping the Modules list.
 	 */
-	private sendFullUpdate(): void {
-		if (!this._view) return;
-
-		// An engine-origin change invalidates the webview's CSP (the dev-tool
-		// sidebar mounts load remote chunks from the engine): re-render the
-		// HTML — the webview reboots and re-handshakes via view:ready.
-		if (this.htmlEngineOrigin !== this.engineOrigin()) {
-			this._view.webview.html = this.getHtmlForWebview(this._view.webview);
-			return;
-		}
-
-		const status = this.connectionManager.getConnectionStatus();
-		const config = this.configManager.getConfig();
-		const deployStatus = this.deployManager.getConnectionStatus();
-
-		this._view.webview.postMessage({
-			type: 'sidebar:update',
-			data: {
-				// Dev connection
-				connectionState: status.state,
-				connectionMode: config.development.connectionMode,
-				devProgressMessage: status.progressMessage,
-				devProgressLogLine: status.progressLogLine,
-				// Deploy connection
-				deployConnectionState: deployStatus.state,
-				deployConnectionMode: config.deployment.connectionMode,
-				deployProgressMessage: deployStatus.progressMessage,
-				deployProgressLogLine: deployStatus.progressLogLine,
-				// Shared
-				cloudConnected: isCloudConnected(),
-				// Subscription
-				isSubscribed: isSubscribed(this.connectionManager.getClient(), PIPE_BUILDER_APP_ID),
-				// NO entries/tasks: the webview's PIPELINES CONTROLLER discovers
-				// files itself and folds task events from its own client.
-				sidebarMode: this.sidebarMode,
-				tabOrder: this.tabOrder,
-			},
-		});
-
-		// The network-derived half rides behind, individually guarded — a
-		// hung icon fetch or a failed identity lookup must not cost the rows
-		// just posted.
-		void this.sendUpdateExtras();
-	}
-
-	/** Monotonic extras counter — a newer compose supersedes an in-flight one. */
-	private extrasSeq = 0;
-
-	/**
-	 * Composes and posts the network-derived half of a full update: user
-	 * identity, pinned tool rows, the dev-tool catalog, and the devToolHost
-	 * connection facts. Every await is individually guarded so one bad
-	 * endpoint degrades its own field — the sync update this follows is on
-	 * screen either way.
-	 */
-	private async sendUpdateExtras(): Promise<void> {
-		const mine = ++this.extrasSeq;
-		const config = this.configManager.getConfig();
-
-		// Resolve user identity from whichever connection is cloud-connected.
-		// Dev takes priority; local/docker/service connections don't have real
-		// user identity. The cloud-auth name is a fallback and optional.
-		const devAccount = this.connectionManager.getClient()?.getAccountInfo();
-		const deployAccount = this.deployManager.getClient()?.getAccountInfo();
-		const account = (config.development.connectionMode === 'cloud' ? devAccount : null) ?? (config.deployment.connectionMode === 'cloud' ? deployAccount : null);
-		let cloudName: string | undefined;
-		if (!account?.displayName && isCloudConnected()) {
-			try {
-				cloudName = await CloudAuthProvider.getInstance().getUserName();
-			} catch {
-				/* identity is cosmetic — never block the update on it */
-			}
-		}
-		const userName = account?.displayName || cloudName || undefined;
-		const userEmail = account?.email || undefined;
-
-		// Pinned tool rows: fall back to the last-known cache (the strip-seed
-		// source) rather than wiping the tabs — an empty list would also drop
-		// a selected tool mode back to Pipelines.
-		const tools = await this.toolRows.buildToolRows().catch((): ToolRowDTO[] => this.toolRows.cachedRows());
-		const availableTools = await this.toolRows.buildAvailableTools().catch((): ToolRowDTO[] => []);
-		// Connection facts for the sidebar's devToolSidebar mounts — the MF
-		// remote entry URL ONLY. No token crosses into the webview: engine
-		// access is brokered over the shell bus.
-		const devToolHost = this.connectionManager.isConnected()
-			? { engineHttpUrl: (this.connectionManager.getHttpUrl() || 'http://localhost:5565').replace(/\/$/, '') }
-			: null;
-
-		// Superseded by a newer full update, or the view died: drop silently.
-		if (mine !== this.extrasSeq || !this._view) return;
-		this._view.webview.postMessage({ type: 'sidebar:extrasUpdate', userName, userEmail, tools, availableTools, devToolHost });
+	private publishToolRows(tools: ToolRowDTO[], available?: ToolRowDTO[]): void {
+		this.busHost?.retained.publish('devtools:rows', { tools, ...(available ? { available } : {}) });
 	}
 
 	// =========================================================================

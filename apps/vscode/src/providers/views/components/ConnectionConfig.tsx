@@ -114,6 +114,8 @@ export interface ConnectionConfigProps {
 	onServiceRemove: () => void;
 	onServiceStart: () => void;
 	onServiceStop: () => void;
+	/** Sudo entry (Linux/macOS service lifecycle) — shown when
+	 *  host.engine.control answers needsSudo. */
 	sudoPromptVisible: boolean;
 	sudoPasswordInput: string;
 	onSudoPasswordChange: (pw: string) => void;

@@ -565,29 +565,6 @@ export class ConfigManager {
 	}
 
 	/**
-	 * Opens the RocketRide configuration settings page
-	 */
-	public async openSettings(): Promise<void> {
-		await vscode.commands.executeCommand('rocketride.page.settings.open');
-	}
-
-	/**
-	 * Updates the host URL for a group (ASYNC).
-	 */
-	public async updateHostUrl(group: ConnectionGroup, hostUrl: string): Promise<void> {
-		const config = vscode.workspace.getConfiguration(this.configSection);
-		await config.update(`${group}.hostUrl`, hostUrl, vscode.ConfigurationTarget.Global);
-	}
-
-	/**
-	 * Updates the connection mode for a group (ASYNC).
-	 */
-	public async updateConnectionMode(group: ConnectionGroup, connectionMode: ConnectionMode | null): Promise<void> {
-		const config = vscode.workspace.getConfiguration(this.configSection);
-		await config.update(`${group}.connectionMode`, connectionMode, vscode.ConfigurationTarget.Global);
-	}
-
-	/**
 	 * Sets up a configuration change listener
 	 * @param callback Function to call when configuration changes
 	 * @returns Disposable for cleanup

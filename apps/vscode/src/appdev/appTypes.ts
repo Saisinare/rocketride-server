@@ -615,7 +615,7 @@ async function readBoundedBody(res: Response, limit: number): Promise<Buffer | n
  * @param fallbackTgz - Extension-packaged shell.tgz for offline use.
  * @returns The vendor result — path on success, the reason on failure.
  */
-export async function vendorShellPackage(workspaceRoot: string, fallbackTgz?: string, clientFallbackTgz?: string): Promise<ShellVendorResult> {
+async function vendorShellPackage(workspaceRoot: string, fallbackTgz?: string, clientFallbackTgz?: string): Promise<ShellVendorResult> {
 	const logger = getLogger();
 	const baseUrl = ConnectionManager.getInstance().getHttpUrl?.() || '';
 

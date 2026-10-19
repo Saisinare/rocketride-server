@@ -15,6 +15,7 @@
 // =============================================================================
 
 import * as vscode from 'vscode';
+import { randomBytes } from 'crypto';
 import { getLogger } from '../../shared/util/output';
 import { assertExternalUrl } from 'shared/ops/hostOps';
 
@@ -38,19 +39,35 @@ export function openExternalLink(url: string, displayName?: string, browser = fa
 		}
 		return;
 	}
+	// The embedded path takes the SAME scheme gate as the browser path (the
+	// URL comes off a webview message), and its origin feeds the CSP below.
+	let frameOrigin: string;
+	try {
+		frameOrigin = new URL(assertExternalUrl(url)).origin;
+	} catch (error) {
+		logger.error(`[PipelineProvider] ${error}`);
+		return;
+	}
+
 	const panel = vscode.window.createWebviewPanel('rocketride.page.external', displayName || 'Pipeline', vscode.ViewColumn.One, {
 		enableScripts: true,
 		retainContextWhenHidden: true,
 	});
 
+	const nonce = randomBytes(24).toString('base64url');
+	// The URL lands inside an HTML attribute — escape it so it cannot break
+	// out of the attribute into markup of this (privileged) webview.
+	const frameSrc = `${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}`.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
 	panel.webview.html = `<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${frameOrigin}; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}';">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>body{margin:0;padding:0}iframe{width:100%;height:100vh;border:none}</style>
+<style nonce="${nonce}">body{margin:0;padding:0}iframe{width:100%;height:100vh;border:none}</style>
 </head><body>
-<iframe id="app-iframe" src="${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}" allow="clipboard-read; clipboard-write"></iframe>
-<script>
+<iframe id="app-iframe" src="${frameSrc}" allow="clipboard-read; clipboard-write"></iframe>
+<script nonce="${nonce}">
 (function() {
 	const vscode = acquireVsCodeApi();
 	const iframe = document.getElementById('app-iframe');

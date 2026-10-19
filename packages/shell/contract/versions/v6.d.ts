@@ -23,8 +23,8 @@
 // =============================================================================
 // FROZEN shell-api contract — ShellApiV6 — never edit by hand
 // =============================================================================
-// Generated:     2026-10-18T21:21:05.709Z
-// Source commit: e23bfe5e2a733a9cf122280ef0a9438d56fe75bd
+// Generated:     2026-10-19T01:20:56.518Z
+// Source commit: b2ed2678a12df1c578620a863d330d89103ed274
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder shell:freeze
 // =============================================================================
@@ -9862,6 +9862,152 @@ export interface ClientOpMap extends ShellOpMap {
         service: string;
     }, unknown>;
     "client.getEnvironmentKeys": ShellOpSpec<Record<string, never>, unknown>;
+    "client.deploy.list": ShellOpSpec<Record<string, never>, unknown>;
+    "client.deploy.versions": ShellOpSpec<{
+        projectId: string;
+    }, unknown>;
+    "client.deploy.get": ShellOpSpec<{
+        projectId: string;
+        teamId: string;
+    }, unknown>;
+    "client.deploy.artifact": ShellOpSpec<{
+        projectId: string;
+        version: number;
+    }, unknown>;
+    "client.deploy.history": ShellOpSpec<{
+        projectId: string;
+        teamId?: string;
+        page?: number;
+        pageSize?: number;
+    }, unknown>;
+    "client.deploy.deploy": ShellOpSpec<{
+        projectId: string;
+        version: number;
+        teamId: string;
+    }, unknown>;
+    "client.deploy.disable": ShellOpSpec<{
+        projectId: string;
+        teamId: string;
+    }, unknown>;
+    "client.deploy.enable": ShellOpSpec<{
+        projectId: string;
+        teamId: string;
+    }, unknown>;
+    "client.deploy.remove": ShellOpSpec<{
+        projectId: string;
+        teamId: string;
+    }, unknown>;
+    "client.deploy.run": ShellOpSpec<{
+        projectId: string;
+        sourceId: string;
+        teamId: string;
+    }, unknown>;
+    /** cron=null clears the schedule; ttl rides options. */
+    "client.deploy.setSchedule": ShellOpSpec<{
+        projectId: string;
+        sourceId: string;
+        cron: string | null;
+        teamId: string;
+        ttl?: number;
+    }, unknown>;
+    "client.deploy.pauseSchedule": ShellOpSpec<{
+        projectId: string;
+        sourceId: string;
+        teamId: string;
+    }, unknown>;
+    "client.deploy.resumeSchedule": ShellOpSpec<{
+        projectId: string;
+        sourceId: string;
+        teamId: string;
+    }, unknown>;
+    "client.deploy.setSourceConfig": ShellOpSpec<{
+        projectId: string;
+        sourceId: string;
+        teamId: string;
+        traceLevel?: string;
+        debugOut?: boolean;
+    }, unknown>;
+    "client.deploy.preview": ShellOpSpec<{
+        cron: string;
+        count: number;
+    }, unknown>;
+    /** The server task registry's raw rows (ownerKind/ownerId/runKind/teamId
+     *  carried) — the deploy drawers' live-run scan. A NAMED allowlist entry
+     *  over the one extension command (never a generic call passthrough). */
+    "client.listRunningTasks": ShellOpSpec<Record<string, never>, unknown>;
+    "client.app.listDeployments": ShellOpSpec<{
+        appId: string;
+    }, unknown>;
+    "client.app.where": ShellOpSpec<{
+        appId: string;
+    }, unknown>;
+    "client.app.submit": ShellOpSpec<{
+        appId: string;
+        version: number;
+    }, unknown>;
+    "client.app.publish": ShellOpSpec<{
+        appId: string;
+        version: number;
+        target: string;
+    }, unknown>;
+    "client.app.withdraw": ShellOpSpec<{
+        appId: string;
+        version: number;
+    }, unknown>;
+    "client.app.removePublish": ShellOpSpec<{
+        appId: string;
+        target: string;
+    }, unknown>;
+    "client.app.buildLog": ShellOpSpec<{
+        appId: string;
+        version: number;
+    }, unknown>;
+    "client.app.reply": ShellOpSpec<{
+        appId: string;
+        message: string;
+        version?: number;
+    }, unknown>;
+    /** Wraps the one extension command (named allowlist entries, never a
+     *  generic passthrough). */
+    "client.app.developerStatus": ShellOpSpec<Record<string, never>, unknown>;
+    "client.app.developerRegister": ShellOpSpec<{
+        developerId: string;
+    }, unknown>;
+    "client.log.chapters": ShellOpSpec<{
+        projectId: string;
+        source: string;
+        teamId?: string;
+    }, unknown>;
+    "client.log.openStream": ShellOpSpec<{
+        sessionId: string;
+        projectId: string;
+        source: string;
+        teamId?: string;
+    }, void>;
+    /** seek/getStatus/getTrace — gated on the runtime allowlist (the typed
+     *  map gives NO runtime guarantee at a process boundary). */
+    "client.log.streamCall": ShellOpSpec<{
+        sessionId: string;
+        method: "seek" | "getStatus" | "getTrace";
+        args: unknown[];
+    }, unknown>;
+    /** LONG-LIVED: resolves at STREAM COMPLETION, not at start — callers pass
+     *  an explicit generous timeoutMs. pos=null means resume-from-position. */
+    "client.log.streamPlay": ShellOpSpec<{
+        sessionId: string;
+        pos: number | "live" | null;
+        speed: number;
+    }, void>;
+    "client.log.streamPause": ShellOpSpec<{
+        sessionId: string;
+    }, void>;
+    "client.log.streamIngest": ShellOpSpec<{
+        sessionId: string;
+        event: unknown;
+    }, void>;
+    "client.log.streamClose": ShellOpSpec<{
+        sessionId: string;
+    }, void>;
     "client.account.getProfile": ShellOpSpec<Record<string, never>, unknown>;
     "client.account.updateProfile": ShellOpSpec<{
         fields: Record<string, unknown>;

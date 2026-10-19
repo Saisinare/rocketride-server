@@ -51,7 +51,6 @@ export interface GenericEvent {
 	body?: GenericBody | undefined;
 
 	token?: string;
-	apikey?: string;
 
 	/** 
 	 * Sequence number for this event message.

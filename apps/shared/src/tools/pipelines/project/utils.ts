@@ -93,6 +93,10 @@ export function parseServerEvent(event: unknown, projectId: string, scope: 'dev'
 // DEV LIVE-FEED MEMBERSHIP
 // =============================================================================
 
+// The bare runKind test lives in the PURE leaf (runKind.ts) so the VS Code
+// extension host can import it without this module's shell dependencies.
+export { isDeployRunBody } from './runKind';
+
 /**
  * Membership test for a host's DEV live-event feed.
  *

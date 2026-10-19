@@ -49,13 +49,6 @@ export function connectionModeUsesOAuth(connectionMode: RocketRideConnectionMode
 }
 
 /**
- * Whether the mode has a fixed URL that the user cannot change.
- */
-export function connectionModeHasFixedUrl(connectionMode: RocketRideConnectionMode | string): boolean {
-	return connectionMode === 'cloud' || connectionMode === 'docker' || connectionMode === 'service' || connectionMode === 'local';
-}
-
-/**
  * Whether either connection slot is configured to use Cloud.
  * Team selection is server-profile scoped in the current VS Code architecture.
  */

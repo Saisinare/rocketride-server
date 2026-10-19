@@ -82,10 +82,6 @@ export class BarStatus {
 	 */
 	private registerCommands(): void {
 		const commands = [
-			vscode.commands.registerCommand('rocketride.statusBar.refresh', () => {
-				this.updateStatus();
-			}),
-
 			vscode.commands.registerCommand('rocketride.statusBar.showDetails', () => {
 				this.showStatusDetails();
 			}),
@@ -217,17 +213,6 @@ export class BarStatus {
 	}
 
 	/**
-	 * Updates the status bar display
-	 */
-	private updateStatus(): void {
-		const connectionManager = this.getConnectionManager();
-		if (connectionManager) {
-			// Re-render from the authoritative status snapshot.
-			this.handleConnectionStatusChange(connectionManager.getConnectionStatus());
-		}
-	}
-
-	/**
 	 * Shows detailed status information
 	 */
 	private showStatusDetails(): void {
@@ -261,27 +246,6 @@ export class BarStatus {
 			getLogger().info(`[BarStatus] Could not access connection manager: ${String(error)}`);
 			return undefined;
 		}
-	}
-
-	/**
-	 * Shows the status bar item
-	 */
-	public show(): void {
-		this.statusBarItem.show();
-	}
-
-	/**
-	 * Hides the status bar item
-	 */
-	public hide(): void {
-		this.statusBarItem.hide();
-	}
-
-	/**
-	 * Gets the status bar item for direct access if needed
-	 */
-	public getStatusBarItem(): vscode.StatusBarItem {
-		return this.statusBarItem;
 	}
 
 	/**

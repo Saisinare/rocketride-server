@@ -85,4 +85,16 @@ export interface PipelineHostOpMap extends ShellOpMap {
 	/** Opens a URL: system browser (`browser`, scheme-allowlisted) or the
 	 *  bridged iframe panel (clipboard/file-dialog/drag bridging). */
 	'host.pipeline.openLink': ShellOpSpec<{ url: string; displayName?: string; browser?: boolean }, void>;
+
+	// ── File-keyed verbs (the sidebar's pipeline rows — no document open) ────
+	/** Opens a .pipe file in the pipeline editor (emitOp). */
+	'host.pipeline.openFile': ShellOpSpec<{ fsPath: string }, void>;
+	/** Runs a .pipe FILE (stamping invariant + restart-on-save policy applied
+	 *  host-side), optionally one source (emitOp). */
+	'host.pipeline.runFile': ShellOpSpec<{ fsPath: string; sourceId?: string }, void>;
+	/** Stops a running source by project identity (emitOp). */
+	'host.pipeline.stopSource': ShellOpSpec<{ projectId: string; sourceId: string }, void>;
+	/** Opens the readonly live-task viewer for a running task this workspace
+	 *  has no file for (emitOp). */
+	'host.pipeline.openStatus': ShellOpSpec<{ projectId: string; sourceId: string; displayName?: string }, void>;
 }

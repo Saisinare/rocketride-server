@@ -70,11 +70,24 @@ export interface IFrameworkProviderOptions {
 	 *  shutting down — pages that treat closing as a decision (Welcome's
 	 *  dismissal, Settings' staged-credential discard) need the difference. */
 	onClose?: (userClosed: boolean) => void;
+	/** MULTI-INSTANCE pages (one panel per identity — e.g. the dev-tool
+	 *  details pages, one per app id): derives the panel key from the open
+	 *  command's arguments. '' IGNORES the open (invalid identity). Absent =
+	 *  the page is a singleton. */
+	instanceKey?: (args: unknown[]) => string;
+	/** Per-instance tab title (multi-instance pages); falls back to `title`. */
+	instanceTitle?: (args: unknown[]) => string | undefined;
+	/** Per-instance stamped args (`data-rr-args`) — the page's identity,
+	 *  readable before any script runs. */
+	instanceArgs?: (args: unknown[]) => unknown;
 }
 
 /**
- * Hosts one framework page: command → singleton panel → bus realm. All
- * pages serve the SAME page-frame bundle; only the stamped name differs.
+ * Hosts one framework page: command → panel(s) → bus realm. All pages serve
+ * the SAME page-frame bundle; only the stamped name (and, for multi-instance
+ * pages, the stamped args) differ. A page is a SINGLETON unless its options
+ * derive an `instanceKey` from the open arguments — then one panel exists
+ * per key (e.g. the dev-tool details pages, one per app id).
  */
 export class FrameworkProvider {
 	/** page name → surface — the `host.openPage`/`host.closePage` directory
@@ -89,7 +102,7 @@ export class FrameworkProvider {
 		return true;
 	}
 
-	/** Closes a page's panel if open. @returns False for an unknown page. */
+	/** Closes a page's panel(s) if open. @returns False for an unknown page. */
 	public static closePage(page: string): boolean {
 		const entry = FrameworkProvider.directory.get(page);
 		if (!entry) return false;
@@ -97,11 +110,11 @@ export class FrameworkProvider {
 		return true;
 	}
 
-	private panel: vscode.WebviewPanel | null = null;
-	private detachRealm: (() => void) | null = null;
+	/** Open panels by instance key ('' = the singleton). */
+	private readonly panels = new Map<string, vscode.WebviewPanel>();
 	private disposables: vscode.Disposable[] = [];
 	/** True while THIS provider is being disposed (host shutdown) — the
-	 *  panel's dispose then is not a user exit. */
+	 *  panels' dispose then is not a user exit. */
 	private shuttingDown = false;
 
 	constructor(
@@ -111,45 +124,56 @@ export class FrameworkProvider {
 	) {
 		const open = (args: unknown[]): void => {
 			options.onOpen?.(args);
-			this.show();
+			this.show(args);
 		};
 		const cmd = vscode.commands.registerCommand(options.command, (...args: unknown[]) => open(args));
-		FrameworkProvider.directory.set(options.page, { open, close: () => this.panel?.dispose() });
+		FrameworkProvider.directory.set(options.page, {
+			open,
+			close: () => {
+				for (const panel of [...this.panels.values()]) panel.dispose();
+			},
+		});
 		this.disposables.push(cmd, { dispose: () => FrameworkProvider.directory.delete(options.page) });
 		context.subscriptions.push(cmd);
 	}
 
-	/** Opens (or reveals) the page's webview panel. */
-	public show(): void {
-		if (this.panel) {
-			this.panel.reveal(vscode.ViewColumn.One);
+	/** Opens (or reveals) the page's webview panel for the given open args. */
+	public show(args: unknown[] = []): void {
+		// '' is the singleton key; for multi-instance pages an empty derived
+		// key means the open carried no identity — ignore it.
+		const key = this.options.instanceKey ? this.options.instanceKey(args) : '';
+		if (this.options.instanceKey && !key) return;
+
+		const existing = this.panels.get(key);
+		if (existing) {
+			existing.reveal(vscode.ViewColumn.One);
 			return;
 		}
 
-		const panel = vscode.window.createWebviewPanel(this.options.viewType, this.options.title, vscode.ViewColumn.One, {
+		const title = (key ? this.options.instanceTitle?.(args) : undefined) ?? this.options.title;
+		const panel = vscode.window.createWebviewPanel(this.options.viewType, title, vscode.ViewColumn.One, {
 			enableScripts: true,
 			retainContextWhenHidden: true,
 			localResourceRoots: [this.context.extensionUri],
 		});
-		this.panel = panel;
-		panel.webview.html = this.getHtmlForWebview(panel.webview);
+		this.panels.set(key, panel);
+		panel.webview.html = this.getHtmlForWebview(panel.webview, this.options.instanceArgs?.(args));
 
 		// The page is a bus realm — ALL its traffic rides the `__rrbus`
 		// envelope; there is no page-specific postMessage protocol.
-		this.detachRealm = this.busHost.attachWebview(panel.webview, `page:${this.options.page}`);
+		const detachRealm = this.busHost.attachWebview(panel.webview, key ? `page:${this.options.page}/${key}` : `page:${this.options.page}`);
 
 		panel.onDidDispose(() => {
-			this.detachRealm?.();
-			this.detachRealm = null;
-			this.panel = null;
+			detachRealm();
+			if (this.panels.get(key) === panel) this.panels.delete(key);
 			this.options.onClose?.(!this.shuttingDown);
 		});
 	}
 
 	/** Serves the shared frame, falling back to a readable error page. */
-	private getHtmlForWebview(webview: vscode.Webview): string {
+	private getHtmlForWebview(webview: vscode.Webview, args?: unknown): string {
 		try {
-			return renderPageFrameHtml(this.context, webview, this.options.page);
+			return renderPageFrameHtml(this.context, webview, this.options.page, args);
 		} catch (error) {
 			return `<!DOCTYPE html>
             <html><body style="padding:20px;color:#f44336;">
@@ -160,12 +184,12 @@ export class FrameworkProvider {
 		}
 	}
 
-	/** Disposes the command registration and closes the panel if open. */
+	/** Disposes the command registration and closes every open panel. */
 	public dispose(): void {
 		this.shuttingDown = true;
 		this.disposables.forEach((d) => d.dispose());
 		this.disposables = [];
-		this.panel?.dispose();
-		this.panel = null;
+		for (const panel of [...this.panels.values()]) panel.dispose();
+		this.panels.clear();
 	}
 }

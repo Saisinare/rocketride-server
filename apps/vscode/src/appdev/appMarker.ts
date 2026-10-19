@@ -36,7 +36,7 @@ import type { ListingDraft } from 'shared/tools/appdev/types';
  * @param folder - The app's bound folder (absolute path).
  * @param appId - The appManifest id.
  */
-export function markerUriOf(folder: string, appId: string): vscode.Uri {
+function markerUriOf(folder: string, appId: string): vscode.Uri {
 	return vscode.Uri.joinPath(vscode.Uri.file(folder), `${appId.split('.').pop()}.rrapp`);
 }
 

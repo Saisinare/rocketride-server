@@ -37,12 +37,6 @@ export interface DockerStatus {
 	imageTag: string | null;
 }
 
-/** A single GitHub release entry used to populate version dropdowns. */
-export interface VersionItem {
-	tag_name: string;
-	prerelease: boolean;
-}
-
 /** Normalized value/label pair for version dropdown options. */
 export interface VersionOption {
 	value: string;

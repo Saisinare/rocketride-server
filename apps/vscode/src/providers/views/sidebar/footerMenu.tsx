@@ -26,7 +26,7 @@ function modeLabel(mode: string | null): string {
 }
 
 /** A connection status string from state, mode, and optional progress. */
-export function connectionStatusText(state: string, mode: string | null, progressMessage?: string): string {
+function connectionStatusText(state: string, mode: string | null, progressMessage?: string): string {
 	// Progress message takes priority (e.g. "Downloading 1.2.0: 45%")
 	if (progressMessage) return progressMessage;
 	const modeStr = modeLabel(mode);

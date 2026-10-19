@@ -373,21 +373,24 @@ export const Welcome: React.FC = () => {
 	 * and requests host.engine.control. Progress streams in on the push; the
 	 * request's own result clears busy state.
 	 */
-	const makeEngineHandler = (mode: 'docker' | 'service', actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => () => {
+	// Sudo entry (Linux/macOS service lifecycle) — host.engine.control answers
+	// { needsSudo } when sudo would prompt; the ServicePanel shows its
+	// in-panel password field and the parked command is re-sent with
+	// params.sudoPassword on submit.
+	const [sudoPromptVisible, setSudoPromptVisible] = useState(false);
+	const [sudoPasswordInput, setSudoPasswordInput] = useState('');
+	const pendingSudoRef = useRef<{ mode: 'docker' | 'service'; command: 'install' | 'update' | 'remove' | 'start' | 'stop'; params: Record<string, unknown> } | null>(null);
+
+	const runEngineControl = (mode: 'docker' | 'service', actionType: 'install' | 'update' | 'remove' | 'start' | 'stop', params: Record<string, unknown>): void => {
 		const setBusy = mode === 'docker' ? setDockerBusy : setServiceBusy;
 		const setAction = mode === 'docker' ? setDockerAction : setServiceAction;
 		const setError = mode === 'docker' ? setDockerError : setServiceError;
 		const setProgress = mode === 'docker' ? setDockerProgress : setServiceProgress;
-		const selectedVersion = mode === 'docker' ? dockerSelectedVersion : serviceSelectedVersion;
 
 		setBusy(true);
 		setAction(actionType);
 		setError(null);
 
-		const params: Record<string, unknown> = {};
-		if (actionType === 'install' || actionType === 'update') {
-			params.version = selectedVersion;
-		}
 		const finish = (error?: string): void => {
 			setBusy(false);
 			setAction(null);
@@ -395,16 +398,41 @@ export const Welcome: React.FC = () => {
 			if (error) setError(error);
 		};
 		req<EngineControlResult>('host.engine.control', { mode, command: actionType, params }).then(
-			(result) => finish(result.success ? undefined : result.error || 'Operation failed'),
+			(result) => {
+				if (result.needsSudo) {
+					pendingSudoRef.current = { mode, command: actionType, params };
+					setSudoPromptVisible(true);
+					finish();
+					return;
+				}
+				finish(result.success ? undefined : result.error || 'Operation failed');
+			},
 			(error: unknown) => finish(error instanceof Error ? error.message : String(error))
 		);
 	};
 
+	const makeEngineHandler = (mode: 'docker' | 'service', actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => () => {
+		const selectedVersion = mode === 'docker' ? dockerSelectedVersion : serviceSelectedVersion;
+		const params: Record<string, unknown> = {};
+		if (actionType === 'install' || actionType === 'update') {
+			params.version = selectedVersion;
+		}
+		runEngineControl(mode, actionType, params);
+	};
+
+	/** The sudo entry's Continue — re-sends the parked command with the password. */
+	const handleSudoSubmit = (): void => {
+		const pending = pendingSudoRef.current;
+		const password = sudoPasswordInput;
+		pendingSudoRef.current = null;
+		setSudoPasswordInput('');
+		setSudoPromptVisible(false);
+		if (!pending) return;
+		runEngineControl(pending.mode, pending.command, { ...pending.params, sudoPassword: password });
+	};
+
 	const makeDockerHandler = (actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => makeEngineHandler('docker', actionType);
 	const makeServiceHandler = (actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => makeEngineHandler('service', actionType);
-
-	// Sudo flow retired with the postMessage protocol (the host never asked).
-	const noSudo = { sudoPromptVisible: false, sudoPasswordInput: '', onSudoPasswordChange: () => {}, onSudoSubmit: () => {} };
 
 	const dockerVersionOptions: VersionOption[] = [{ value: 'latest', label: '<Latest>' }, { value: 'prerelease', label: '<Prerelease>' }, ...dockerTags.filter((t) => t !== 'latest' && t !== 'prerelease').map((t) => ({ value: t, label: t }))];
 
@@ -530,7 +558,10 @@ export const Welcome: React.FC = () => {
 						onServiceRemove={makeServiceHandler('remove')}
 						onServiceStart={makeServiceHandler('start')}
 						onServiceStop={makeServiceHandler('stop')}
-						{...noSudo}
+						sudoPromptVisible={sudoPromptVisible}
+						sudoPasswordInput={sudoPasswordInput}
+						onSudoPasswordChange={setSudoPasswordInput}
+						onSudoSubmit={handleSudoSubmit}
 					/>
 
 					{/* Agent integration */}

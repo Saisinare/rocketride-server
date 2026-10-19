@@ -8,62 +8,40 @@
  *
  * THIN by design (decision D7): the entire App Builder surface — the
  * DEVELOP | DEPLOY | STORE views, their panes, forms, and state — lives in
- * shared's `modules/appdev`. This webview contributes exactly two things:
- *
- *  1. The BRIDGE adapter: an IAppBuilderHost whose data accessors and
- *     actions ride useMessaging to the extension host
- *     (appdev-message-handler.ts).
- *  2. The preview surface: the shell iframe (`?appid=<id>&rrdev=1`),
- *     hidden until the shell's dev hooks signal readiness so the theme
- *     never flashes.
+ * shared's `modules/appdev`. This webview is a BUS REALM: its identity is
+ * stamped into the served HTML (`data-rr-app`), boot state rides
+ * `host.appbuilder.load`, the SDK half of its IAppBuilderHost rides the
+ * brokered `client.app.*` ops (the shared adapter), host verbs ride
+ * `host.appbuilder.*`, and the dev-session feeds arrive on the app's
+ * `appbuilder:app:<id>:*` topics. The only remaining window.postMessage is
+ * the rrdev:* mini-protocol INTO the preview iframe (cross-origin shell).
  *
  * Capability flags select the VSCode variant: no Code pane (files are
- * native — bind, don't sync), native-files strip, F5 debugging.
+ * native — bind, don't sync), native-files strip.
  */
 
 import 'shell/themes/rocketride-default.css';
 import '../../../themes/rocketride-vscode.css';
 import '../../styles/root.css';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ConnectionManager } from 'shell';
 import { AppBuilderScreen } from 'shared/tools/appdev/views';
-import { toRungPins, toVersionInfos } from 'shared/tools/appdev';
-import type { AppBuilderCapabilities, AppBuilderStage, AppErrorRow, AppEventRow, AppHistoryEntry, AppSummary, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus, WirePin, WireRailEntry } from 'shared/tools/appdev';
-import { useMessaging } from '../hooks/useMessaging';
+import { createBusAppBuilderHost } from 'shared/tools/appdev';
+import type { AppErrorRow, AppEventRow, AppSummary, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus } from 'shared/tools/appdev';
+import type { AppBuilderStage } from 'shared/tools/appdev';
+import type { AppBuilderLoadPayload } from 'shared/ops/appBuilderOps';
 
 // =============================================================================
-// TYPES — messages between extension host and webview
+// IDENTITY + WIRING
 // =============================================================================
 
-type OutgoingMessage = { type: 'view:ready' } | { type: 'appdev:login' } | { type: 'appdev:restart' } | { type: 'appdev:reveal' } | { type: 'appdev:stage'; stage: AppBuilderStage } | { type: 'appdev:pref'; key: string; value: unknown } | { type: 'appdev:call'; id: number; method: string; args?: unknown[] };
+/** The panel's app id — stamped into the served HTML by the host, present
+ *  before any script ran. */
+const STAMPED_APP_ID = document.body.dataset.rrApp ?? '';
 
-type IncomingMessage =
-	| {
-			type: 'appdev:init';
-			app: AppSummary;
-			previewUrl: string;
-			capabilities: AppBuilderCapabilities;
-			stage?: AppBuilderStage;
-			prefs?: Record<string, unknown>;
-	  }
-	| { type: 'appdev:event'; row: AppEventRow }
-	| { type: 'appdev:console'; row: ConsoleRow }
-	| { type: 'appdev:error'; row: AppErrorRow }
-	| { type: 'appdev:watch'; status: WatchStatus }
-	| { type: 'appdev:buildStatus'; appId: string; version?: number; status: string }
-	| { type: 'appdev:deployChanged'; appId: string }
-	| { type: 'appdev:devServer'; entry: string; manifest?: Record<string, unknown> }
-	| { type: 'appdev:auth'; token: string }
-	| { type: 'appdev:reload' }
-	| { type: 'appdev:accountChanged' }
-	| { type: 'appdev:result'; id: number; ok: boolean; value?: unknown; error?: string };
-
-// Wire shapes + projections (WireRailEntry/WirePin/WireHistoryRow,
-// toVersionInfos/toRungPins/toHistoryEntries) live in shared appdev/wire —
-// one mapping for this bridge host and the web host's direct SDK calls.
-
-// Bridge RPC bound — generous because publish builds are the slowest
-// legitimate call; a host that never answers must not pend forever.
-const RPC_TIMEOUT_MS = 5 * 60 * 1000;
+// The staged sign-in resolves when the browser flow lands a session — give
+// it the host's own five-minute window plus slack.
+const LOGIN_TIMEOUT_MS = 6 * 60 * 1000;
 
 // Per-feed backlog cap. Feed rows can arrive before the consuming pane
 // subscribes (see the buffers below), so each feed retains its most recent
@@ -575,113 +553,169 @@ const AppWebview: React.FC = () => {
 	// ── Deployment-change relay (apaevt_deploy for this app) ────────────
 	const deployChangedListeners = useRef<Set<() => void>>(new Set());
 
-	// ── RPC lane (appdev:call/appdev:result correlation) ────────────────
-	const pendingCalls = useRef<Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>>(new Map());
-	const nextCallId = useRef(1);
-
-	// Account identity generation — bumped when the host reports that the
-	// connection's account/org changed. Salts the host memo below, so every
-	// [host]-keyed data effect (developer namespace, publish rail, teams)
-	// re-fetches under the new identity without remounting the screen.
+	// Account identity generation — bumped when the connection's account/org
+	// changes. Salts the host memo below, so every [host]-keyed data effect
+	// (developer namespace, publish rail, teams) re-fetches under the new
+	// identity without remounting the screen.
 	const [accountSeq, setAccountSeq] = useState(0);
 
-	// ── Messaging ───────────────────────────────────────────────────────
-	const onMessage = useCallback(
-		(msg: IncomingMessage) => {
-			switch (msg.type) {
-				case 'appdev:init':
-					// Prefs must land BEFORE the App Builder screen mounts (app
-					// gates the render below), so host.getPref is synchronous by
-					// the time the views initialize their state from it.
-					prefsRef.current = msg.prefs ?? {};
-					setApp(msg.app);
-					setPreviewUrl(msg.previewUrl);
-					setCapabilities(msg.capabilities);
-					if (msg.stage) setInitialStage(msg.stage);
-					break;
-				case 'appdev:event':
-					emitEvent(msg.row);
-					break;
-				case 'appdev:console':
-					emitConsole(msg.row);
-					break;
-				case 'appdev:error':
-					emitError(msg.row);
-					break;
-				case 'appdev:watch':
-					setWatchStatus(msg.status);
-					for (const fn of watchListeners.current) fn(msg.status);
-					break;
-				case 'appdev:buildStatus':
-					emitBuildStatus({ version: msg.version, status: msg.status });
-					break;
-				case 'appdev:deployChanged':
-					// A deployment change of this app (apaevt_deploy) — a pure
-					// re-fetch signal. Unlike accountChanged the identity is the
-					// same, so the retained build words stay valid.
-					for (const fn of deployChangedListeners.current) fn();
-					break;
-				case 'appdev:devServer': {
-					// Same server, new build (?t only): HMR owns it — no action.
-					// DIFFERENT origin (watch restarted on a new port): the
-					// injected container and its HMR socket are DEAD — remount
-					// the iframe so a fresh boot injects the live entry.
-					const base = msg.entry.split('?')[0];
-					if (prevDevEntryBaseRef.current && prevDevEntryBaseRef.current !== base) {
-						setReloadSeq((n) => n + 1);
-					}
-					prevDevEntryBaseRef.current = base;
-					setDevEntry(msg.entry);
-					setDevManifest(msg.manifest);
-					break;
-				}
-				case 'appdev:auth':
-					setAuthToken(msg.token);
-					// Credential arriving for an EXPLICIT sign-in click gets
-					// delivered to the preview regardless of the Inherit Auth
-					// checkbox — the user just asked for it.
-					if (pendingExplicitLoginRef.current) {
-						pendingExplicitLoginRef.current = false;
-						setExplicitAuthSeq((n) => n + 1);
-					}
-					break;
-				case 'appdev:reload':
-					// Watch rebuild landed — deliberately a no-op. The container's
-					// HMR client owns updates: it hot-applies in place (state
-					// preserved), and on failure it reloads the page itself, which
-					// re-injects the freshest entry via devReady. A second update
-					// path here bred zombie container instances whose stale hashes
-					// 404'd every hot-update. Non-HMR containers (hmr disabled in
-					// the app config, prod-flavor shell) refresh via the Reload
-					// button's full restart.
-					break;
-				case 'appdev:accountChanged':
-					// The connection's identity changed (org switch reconnect or a
-					// server account push) — re-mint the host so org-scoped data
-					// re-fetches.
-					// Retained build words belong to the OLD rail and are keyed by
-					// registry version alone, so the same number means something
-					// else under the new identity: drop them rather than let a
-					// late-mounted DEPLOY view replay a foreign account's word.
-					buildTicks.current.clear();
-					setAccountSeq((n) => n + 1);
-					break;
-				case 'appdev:result': {
-					// Settle the matching RPC promise
-					const pending = pendingCalls.current.get(msg.id);
-					if (pending) {
-						pendingCalls.current.delete(msg.id);
-						if (msg.ok) pending.resolve(msg.value);
-						else pending.reject(new Error(msg.error ?? 'appdev call failed'));
-					}
-					break;
-				}
-			}
-		},
-		[emitEvent, emitConsole, emitError, emitBuildStatus]
-	);
+	// ── The bus: boot state + topics + realm-local event derivations ─────
+	const cm = ConnectionManager.getInstance();
+	useEffect(() => {
+		const appId = STAMPED_APP_ID;
 
-	const { sendMessage } = useMessaging<OutgoingMessage, IncomingMessage>({ onMessage });
+		// Boot state — pulled, with one retry when the first attempt raced
+		// the realm attachment.
+		const applyLoad = (payload: AppBuilderLoadPayload): void => {
+			// Prefs must land BEFORE the App Builder screen mounts (app gates
+			// the render below), so host.getPref is synchronous by the time
+			// the views initialize their state from it.
+			prefsRef.current = payload.prefs ?? {};
+			setApp(payload.app);
+			setPreviewUrl(payload.previewUrl);
+			setCapabilities(payload.capabilities);
+			if (payload.stage) setInitialStage(payload.stage);
+		};
+		void cm.request('host.appbuilder.load', { app: appId } as never).then(
+			(payload) => applyLoad(payload as AppBuilderLoadPayload),
+			() => {
+				const offRetry = cm.on('shell:connected', () => {
+					offRetry();
+					void cm.request('host.appbuilder.load', { app: appId } as never).then((payload) => applyLoad(payload as AppBuilderLoadPayload), () => {});
+				});
+			}
+		);
+
+		// The build ticker + compile feed are org-scoped DEPLOY-type pushes:
+		// without this monitor the server filters every apaevt_build* event
+		// out for this connection. Broker-refcounted; the SDK replays a
+		// successful monitor across reconnects on its own.
+		const monitorArmed = { current: false };
+		const armMonitor = (): void => {
+			if (monitorArmed.current) return;
+			monitorArmed.current = true;
+			cm.request('client.addMonitor', { key: { token: '*' }, types: ['deploy'] } as never).catch(() => {
+				// Not connected yet — re-arm on the next connect.
+				monitorArmed.current = false;
+			});
+		};
+		armMonitor();
+
+		const feedTime = (): string => new Date().toLocaleTimeString(undefined, { hour12: false });
+
+		const offs = [
+			// Watch/build status (RETAINED — replay covers a reloaded webview;
+			// an undefined delivery is the close-time retraction).
+			cm.subscribe(`appbuilder:app:${appId}:watch`, (snap) => {
+				const status = snap as WatchStatus | undefined;
+				if (!status) return;
+				setWatchStatus(status);
+				for (const fn of watchListeners.current) fn(status);
+			}),
+			// The dev server's entry (RETAINED). Same server, new build (?t
+			// only): HMR owns it — no action. DIFFERENT origin (watch
+			// restarted on a new port): the injected container and its HMR
+			// socket are DEAD — remount the iframe so a fresh boot injects
+			// the live entry.
+			cm.subscribe(`appbuilder:app:${appId}:dev`, (snap) => {
+				const dev = snap as { entry?: string; manifest?: Record<string, unknown> } | undefined;
+				if (!dev?.entry) return;
+				const base = dev.entry.split('?')[0];
+				if (prevDevEntryBaseRef.current && prevDevEntryBaseRef.current !== base) {
+					setReloadSeq((n) => n + 1);
+				}
+				prevDevEntryBaseRef.current = base;
+				setDevEntry(dev.entry);
+				setDevManifest(dev.manifest);
+			}),
+			// Console/error rows — SIGNALS; this realm keeps the bounded
+			// backlog (see the buffers above).
+			cm.subscribe(`appbuilder:app:${appId}:console`, (payload) => {
+				const row = payload as ConsoleRow | undefined;
+				if (row) emitConsole(row);
+			}),
+			cm.subscribe(`appbuilder:app:${appId}:errors`, (payload) => {
+				const row = payload as AppErrorRow | undefined;
+				if (row) emitError(row);
+			}),
+			// The host's session handoff — a one-shot credential, RETAINED
+			// until applied; this page retracts after taking it.
+			cm.subscribe(`appbuilder:app:${appId}:session`, (snap) => {
+				const session = snap as { token?: string } | undefined;
+				if (!session?.token) return;
+				setAuthToken(session.token);
+				cm.publish(`appbuilder:app:${appId}:session`, undefined);
+				// A credential arriving for an EXPLICIT sign-in click gets
+				// delivered to the preview regardless of the Inherit Auth
+				// checkbox — the user just asked for it.
+				if (pendingExplicitLoginRef.current) {
+					pendingExplicitLoginRef.current = false;
+					setExplicitAuthSeq((n) => n + 1);
+				}
+			}),
+			// Platform events, derived realm-locally from the mirror's
+			// shell:event re-emission: the Events pane rows, the server build
+			// feed + status ticker, the deploy-changed signal, and the
+			// review-state account re-mint.
+			cm.on('shell:event', (payload: { event?: { event?: string; body?: unknown } }) => {
+				const event = payload?.event;
+				if (!event?.event) return;
+				// Server BUILD feed (apaevt_build): the build worker's live
+				// pnpm/tsc/rsbuild output — one Console row PER LINE.
+				if (event.event === 'apaevt_build' && event.body) {
+					const b = event.body as { appId?: string; phase?: string; lines?: string[] };
+					if (b.appId === appId && Array.isArray(b.lines)) {
+						const prefix = `[build:${b.phase || '?'}]`;
+						for (const line of b.lines) emitConsole({ time: feedTime(), level: 'log', text: `${prefix} ${line}` });
+					}
+				}
+				// Server BUILD status ticker (apaevt_build_status): one short
+				// display word per lifecycle transition ('' clears).
+				if (event.event === 'apaevt_build_status' && event.body) {
+					const b = event.body as { appId?: string; version?: number; status?: string };
+					if (b.appId === appId && typeof b.status === 'string') {
+						emitBuildStatus({ version: b.version, status: b.status });
+					}
+				}
+				// Review-state push (app:statusChanged): re-fetch org-scoped
+				// data through the account re-mint (the retained build words
+				// are keyed by version alone — drop them with the identity).
+				if (event.event === 'app:statusChanged' && event.body) {
+					const b = event.body as { appId?: string };
+					if (b.appId === appId) {
+						buildTicks.current.clear();
+						setAccountSeq((n) => n + 1);
+					}
+				}
+				// Deployment change (apaevt_deploy — an app's deploy events
+				// carry the app id as projectId): a pure re-fetch signal; the
+				// identity is unchanged, so the retained build words stay.
+				if (event.event === 'apaevt_deploy' && event.body) {
+					const b = event.body as { projectId?: string };
+					if (b.projectId === appId) {
+						for (const fn of deployChangedListeners.current) fn();
+					}
+				}
+				// Every event is Events-pane context.
+				emitEvent({ time: feedTime(), name: String(event.event), payload: event.body ? JSON.stringify(event.body).slice(0, 200) : undefined });
+			}),
+			// Connection status changes are feed-worthy context too; a
+			// reconnect may carry a NEW identity (org switch) — re-mint.
+			cm.on('shell:statusChange', () => {
+				emitEvent({ time: feedTime(), name: 'shell:statusChange', payload: cm.isConnected() ? 'connected' : 'disconnected' });
+				if (cm.isConnected()) armMonitor();
+			}),
+			// The server pushed a refreshed account (developer registration,
+			// org change, subscription move, reconnect identity) — the same
+			// org-scoped data is stale; re-mint the host.
+			cm.on('shell:accountUpdate', () => {
+				buildTicks.current.clear();
+				setAccountSeq((n) => n + 1);
+			}),
+		];
+		return () => offs.forEach((off) => off());
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- one realm wiring per mount
+	}, []);
 
 	// ── Preview iframe console/errors (shell dev hooks postMessage) ─────
 	// The preview shell is cross-origin to this webview, so its dev hooks
@@ -706,10 +740,14 @@ const AppWebview: React.FC = () => {
 				// webviews block window.open, so the shell's popup fallback is
 				// dead here — ACK immediately to cancel it). An explicit Sign
 				// In click authenticates the preview even with Inherit Auth
-				// off: the checkbox governs AUTOMATIC inheritance only.
+				// off: the checkbox governs AUTOMATIC inheritance only. The op
+				// resolves when the browser flow lands a session; the credential
+				// itself arrives on the app's retained :session topic.
 				(e.source as Window | null)?.postMessage({ type: 'rrdev:loginPending' }, e.origin);
 				pendingExplicitLoginRef.current = true;
-				sendMessage({ type: 'appdev:login' });
+				void cm.request('host.appbuilder.login', { app: STAMPED_APP_ID } as never, { timeoutMs: LOGIN_TIMEOUT_MS }).catch(() => {
+					/* sign-in abandoned — the preview keeps its prompt */
+				});
 			} else if (data?.type === 'shell:devConsole' && data.text !== undefined) {
 				const row: ConsoleRow = { time: stamp(), level: data.level ?? 'log', text: `[preview] ${data.text}` };
 				emitConsole(row);
@@ -720,34 +758,11 @@ const AppWebview: React.FC = () => {
 		};
 		window.addEventListener('message', onWindowMessage);
 		return () => window.removeEventListener('message', onWindowMessage);
-	}, [sendMessage, previewUrl, proxyPreviewUrl, emitConsole, emitError]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- cm is a singleton
+	}, [previewUrl, proxyPreviewUrl, emitConsole, emitError]);
 
-	/** One RPC round trip to the extension host over the bridge. */
-	const rpc = useCallback(
-		<T,>(method: string, args?: unknown[]): Promise<T> => {
-			return new Promise<T>((resolve, reject) => {
-				const id = nextCallId.current++;
-				const timer = setTimeout(() => {
-					pendingCalls.current.delete(id);
-					reject(new Error(`appdev call "${method}" timed out`));
-				}, RPC_TIMEOUT_MS);
-				// Both settle paths clear the timer so a late answer cannot
-				// double-settle after a timeout (the entry is gone by then).
-				pendingCalls.current.set(id, {
-					resolve: (v: unknown) => {
-						clearTimeout(timer);
-						(resolve as (v: unknown) => void)(v);
-					},
-					reject: (e: Error) => {
-						clearTimeout(timer);
-						reject(e);
-					},
-				});
-				sendMessage({ type: 'appdev:call', id, method, args });
-			});
-		},
-		[sendMessage]
-	);
+	/** One typed host-op round trip (the bus correlates — no requestId). */
+	const req = useCallback(<T,>(op: string, params: unknown): Promise<T> => cm.request(op, params as never) as Promise<T>, [cm]);
 
 	// Feed subscriptions — STABLE identities, deliberately hoisted out of the
 	// host memo: the accountSeq re-mint must re-run org-scoped data effects,
@@ -790,15 +805,24 @@ const AppWebview: React.FC = () => {
 		};
 	}, []);
 
-	// ── The BRIDGE adapter (IAppBuilderHost over useMessaging) ──────────
+	// ── The host adapter (IAppBuilderHost over the bus) ──────────────────
 	const host: IAppBuilderHost = useMemo(() => {
 		// accountSeq participates only as an identity salt: bumping it re-mints
 		// the host object so [host]-keyed effects re-fetch org-scoped data.
 		void accountSeq;
+		const appId = STAMPED_APP_ID;
 		return {
+			// The SDK half — the brokered client.app.* ops, shared with the
+			// cloud host (shared/tools/appdev/busHost.ts).
+			...createBusAppBuilderHost({ bus: cm, appId, hasReviewLadder: capabilities.hasReviewLadder }),
+
 			capabilities,
 			// Feeds: the stable subscriptions hoisted above — see their comment
-			// for why they must not re-mint with the host.
+			// for why they must not re-mint with the host. These OVERRIDE the
+			// adapter's buildStatus/deployChanged derivations on purpose: this
+			// page retains the latest tick per version for late-mounted DEPLOY
+			// views (and clears it on identity change) — the adapter's plain
+			// stream has no replay.
 			subscribeEvents,
 			subscribeConsole,
 			subscribeErrors,
@@ -806,91 +830,52 @@ const AppWebview: React.FC = () => {
 			subscribeBuildStatus,
 			subscribeDeployChanged,
 			// Preview chrome
-			// External opens (browser tab, F5) get the PROXY URL — the tab
+			// External opens (browser tab) get the PROXY URL — the tab
 			// self-registers from it by URL convention (?appid + rrdev on the
 			// dev origin), no message channel needed.
 			getPreviewUrl: () => proxyPreviewUrl || previewUrl,
 			// Reload = full inner-loop reset in the extension host (kill dev
 			// server → pnpm install → fresh rsbuild). The iframe is NOT bumped
 			// here: remounting now would load against a dead dev server — the
-			// restart's first successful build sends appdev:reload, which does.
-			reloadPreview: () => sendMessage({ type: 'appdev:restart' }),
+			// restart's rebuild repoints the retained :dev topic, and the
+			// origin-change comparison remounts then.
+			reloadPreview: () => cm.emitOp('host.appbuilder.restart', { app: appId } as never),
 			// Inherit Auth toggle — PreviewFrame reacts to the prop change (pushes
 			// the session down, or tells the shell to drop it).
 			setInheritAuth: (inherit: boolean) => setInheritAuthState(inherit),
-			// Per-workspace UI preferences: reads from the init-delivered bag,
+			// Per-workspace UI preferences: reads from the load-delivered bag,
 			// writes echo to the extension host (workspaceState).
 			getPref: (key: string) => prefsRef.current[key],
 			setPref: (key: string, value: unknown) => {
 				prefsRef.current[key] = value;
-				sendMessage({ type: 'appdev:pref', key, value });
+				cm.emitOp('host.appbuilder.pref', { app: appId, key, value } as never);
 			},
-			// Host actions — ride the bridge to the extension host. No `debug`:
-			// the external-browser debug flow was removed (2026-10-16); the
-			// capability stays declared (shared contract) and stays false.
-			revealFiles: capabilities.hasNativeFiles ? () => sendMessage({ type: 'appdev:reveal' }) : undefined,
+			// Host actions. No `debug`: the external-browser debug flow was
+			// removed (2026-10-16); the capability stays declared and false.
+			revealFiles: capabilities.hasNativeFiles ? () => cm.emitOp('host.appbuilder.reveal', { app: appId } as never) : undefined,
 
-			// ── Deploy (the publish ladder) — all data over the RPC lane ────
-			listVersions: async () => toVersionInfos(await rpc<WireRailEntry[]>('listVersions')),
+			// ── The host-specific SDK member: DEPLOY packs the NATIVE folder ─
 			deploy: async (message) => {
-				await rpc('deploy', [message]);
+				await req('host.appbuilder.deploy', { app: appId, message });
 			},
-			publish: async (version, target) => {
-				await rpc('publish', [version, target]);
-			},
-			removePublish: async (target) => {
-				await rpc('unpublish', [target]);
-			},
-			listTeams: async () => await rpc<Array<{ id: string; name: string }>>('teams'),
-			// One version's server build log ('' = none) — the Deploy card's
-			// "failed" badge opens it in the log modal.
-			loadBuildLog: async (version) => await rpc<string>('buildLog', [version]),
-			// Review verbs exist only where the server runs the ladder (SaaS);
-			// omitting them tells the appdev views to open @public directly.
-			submitForReview: capabilities.hasReviewLadder
-				? async (version) => {
-						await rpc('submit', [version]);
-					}
-				: undefined,
-			withdrawReview: capabilities.hasReviewLadder
-				? async (version) => {
-						await rpc('withdraw', [version]);
-					}
-				: undefined,
-			getWhereLive: async () => toRungPins(await rpc<WirePin[]>('where'), capabilities.hasReviewLadder),
-			getDeveloperId: async () => {
-				const res = await rpc<{ developerId?: string | null }>('developerStatus');
-				return res?.developerId ?? '';
-			},
-			registerDeveloper: async (developerId) => {
-				const res = await rpc<{ developerId?: string }>('registerDeveloper', [developerId]);
-				return res?.developerId ?? developerId;
-			},
+
 			// Store: the listing lives in the app's package.json appManifest —
 			// load/save round-trip through the extension host (files are truth;
 			// every deploy packs the manifest as the listing record).
-			loadListing: async () => await rpc<ListingDraft | null>('loadListing'),
+			loadListing: async () => await req<ListingDraft | null>('host.appbuilder.loadListing', { app: appId }),
 			saveListing: async (draft) => {
-				await rpc<null>('saveListing', [draft]);
+				await req('host.appbuilder.saveListing', { app: appId, draft });
 			},
-			runPreflight: async () => await rpc<PreflightCheck[]>('preflight'),
+			runPreflight: async () => await req<PreflightCheck[]>('host.appbuilder.preflight', { app: appId }),
 			// Package assets: native pick (app-folder-relative result) + text
 			// read for the icon/README previews.
-			pickAppFile: async (kind) => await rpc<string | null>('pickFile', [kind]),
-			pickIncludePath: async () => await rpc<string | null>('pickIncludePath'),
-			readAppTextFile: async (relPath) => await rpc<string>('readFile', [relPath]),
-			readAppImageDataUri: async (relPath) => await rpc<string | null>('readImage', [relPath]),
-
-			// ── Dashboard + review thread ───────────────────────────────────
-			// The extension host walks + projects the stream with the SHARED
-			// helper — the rows arrive as ready AppHistoryEntry rows, oldest
-			// first; no second mapping here.
-			loadHistory: async () => await rpc<AppHistoryEntry[]>('history'),
-			sendReply: async (message, version) => {
-				await rpc('reply', version === undefined ? [message] : [message, version]);
-			},
+			pickAppFile: async (kind) => await req<string | null>('host.appbuilder.pickAppFile', { app: appId, kind }),
+			pickIncludePath: async () => await req<string | null>('host.appbuilder.pickIncludePath', { app: appId }),
+			readAppTextFile: async (relPath) => await req<string>('host.appbuilder.readTextFile', { app: appId, relPath }),
+			readAppImageDataUri: async (relPath) => await req<string | null>('host.appbuilder.readImage', { app: appId, relPath }),
 		};
-	}, [capabilities, previewUrl, proxyPreviewUrl, sendMessage, rpc, accountSeq, subscribeEvents, subscribeConsole, subscribeErrors, subscribeWatch, subscribeBuildStatus, subscribeDeployChanged]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- cm is a singleton
+	}, [capabilities, previewUrl, proxyPreviewUrl, req, accountSeq, subscribeEvents, subscribeConsole, subscribeErrors, subscribeWatch, subscribeBuildStatus, subscribeDeployChanged]);
 
 	// ── Render ──────────────────────────────────────────────────────────
 	if (!app) {
@@ -899,7 +884,7 @@ const AppWebview: React.FC = () => {
 
 	return (
 		<div style={styles.root}>
-			<AppBuilderScreen host={host} app={app} previewPane={proxyPreviewUrl && previewLive ? <PreviewFrame url={proxyPreviewUrl} reloadSeq={reloadSeq} app={app} devEntry={devEntry} devManifest={devManifest} authToken={authToken} inheritAuth={inheritAuth} explicitAuthSeq={explicitAuthSeq} /> : <PreviewInitializing status={watchStatus} subscribeConsole={subscribeConsole} />} initialStage={initialStage} onStageChange={(stage) => sendMessage({ type: 'appdev:stage', stage })} />
+			<AppBuilderScreen host={host} app={app} previewPane={proxyPreviewUrl && previewLive ? <PreviewFrame url={proxyPreviewUrl} reloadSeq={reloadSeq} app={app} devEntry={devEntry} devManifest={devManifest} authToken={authToken} inheritAuth={inheritAuth} explicitAuthSeq={explicitAuthSeq} /> : <PreviewInitializing status={watchStatus} subscribeConsole={subscribeConsole} />} initialStage={initialStage} onStageChange={(stage: AppBuilderStage) => cm.emitOp('host.appbuilder.stage', { app: STAMPED_APP_ID, stage } as never)} />
 		</div>
 	);
 };

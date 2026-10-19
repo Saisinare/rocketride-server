@@ -671,29 +671,30 @@ export const Settings: React.FC = () => {
 	// DOCKER / SERVICE ACTION HANDLERS
 	// ========================================================================
 
+	// ── Sudo entry (Linux/macOS service lifecycle) ──────────────────────────
+	// host.engine.control answers { needsSudo } when sudo would prompt; the
+	// ServicePanel shows its in-panel password field and the parked command
+	// is re-sent with params.sudoPassword on submit.
+	const [sudoPromptVisible, setSudoPromptVisible] = useState(false);
+	const [sudoPasswordInput, setSudoPasswordInput] = useState('');
+	const pendingSudoRef = useRef<{ mode: 'docker' | 'service'; command: 'install' | 'update' | 'remove' | 'start' | 'stop'; params: Record<string, unknown> } | null>(null);
+
 	/**
-	 * Factory for docker/service action handlers.
-	 *
-	 * Returns a zero-arg callback that sets the mode's busy/action state,
-	 * attaches the selected version (for install/update), and requests
-	 * `host.engine.control`. Progress streams in on `host.engine.progress`;
-	 * the request's own result clears the busy state.
+	 * Runs one docker/service control: sets the mode's busy/action state and
+	 * requests `host.engine.control`. Progress streams in on
+	 * `host.engine.progress`; the request's own result clears the busy state.
+	 * A `needsSudo` answer parks the command and opens the sudo entry instead.
 	 */
-	const makeEngineHandler = (mode: 'docker' | 'service', actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => () => {
+	const runEngineControl = (mode: 'docker' | 'service', actionType: 'install' | 'update' | 'remove' | 'start' | 'stop', params: Record<string, unknown>): void => {
 		const setBusy = mode === 'docker' ? setDockerBusy : setServiceBusy;
 		const setAction = mode === 'docker' ? setDockerAction : setServiceAction;
 		const setError = mode === 'docker' ? setDockerError : setServiceError;
 		const setProgress = mode === 'docker' ? setDockerProgress : setServiceProgress;
-		const selectedVersion = mode === 'docker' ? dockerSelectedVersion : serviceSelectedVersion;
 
 		setBusy(true);
 		setAction(actionType);
 		setError(null);
 
-		const params: Record<string, unknown> = {};
-		if (actionType === 'install' || actionType === 'update') {
-			params.version = selectedVersion;
-		}
 		const finish = (error?: string): void => {
 			setBusy(false);
 			setAction(null);
@@ -701,9 +702,39 @@ export const Settings: React.FC = () => {
 			if (error) setError(error);
 		};
 		req<EngineControlResult>('host.engine.control', { mode, command: actionType, params }).then(
-			(result) => finish(result.success ? undefined : result.error || 'Operation failed'),
+			(result) => {
+				if (result.needsSudo) {
+					pendingSudoRef.current = { mode, command: actionType, params };
+					setSudoPromptVisible(true);
+					finish();
+					return;
+				}
+				finish(result.success ? undefined : result.error || 'Operation failed');
+			},
 			(error: unknown) => finish(error instanceof Error ? error.message : String(error))
 		);
+	};
+
+	/** Factory for the panels' zero-arg action callbacks — attaches the
+	 *  selected version (for install/update) and runs the control. */
+	const makeEngineHandler = (mode: 'docker' | 'service', actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => () => {
+		const selectedVersion = mode === 'docker' ? dockerSelectedVersion : serviceSelectedVersion;
+		const params: Record<string, unknown> = {};
+		if (actionType === 'install' || actionType === 'update') {
+			params.version = selectedVersion;
+		}
+		runEngineControl(mode, actionType, params);
+	};
+
+	/** The sudo entry's Continue — re-sends the parked command with the password. */
+	const handleSudoSubmit = (): void => {
+		const pending = pendingSudoRef.current;
+		const password = sudoPasswordInput;
+		pendingSudoRef.current = null;
+		setSudoPasswordInput('');
+		setSudoPromptVisible(false);
+		if (!pending) return;
+		runEngineControl(pending.mode, pending.command, { ...pending.params, sudoPassword: password });
 	};
 
 	const makeDockerHandler = (actionType: 'install' | 'update' | 'remove' | 'start' | 'stop') => makeEngineHandler('docker', actionType);
@@ -762,9 +793,6 @@ export const Settings: React.FC = () => {
 	const handleCloudSignOut = (): void => cm.emitOp('host.cloud.signOutStaged', {});
 	const handleCloudUndoPending = (): void => cm.emitOp('host.cloud.clearPending', {});
 
-	// Sudo flow retired with the postMessage protocol (the host never asked).
-	const noSudo = { sudoPromptVisible: false, sudoPasswordInput: '', onSudoPasswordChange: () => {}, onSudoSubmit: () => {} };
-
 	// ========================================================================
 	// RENDER
 	// ========================================================================
@@ -821,7 +849,10 @@ export const Settings: React.FC = () => {
 							onServiceRemove={makeServiceHandler('remove')}
 							onServiceStart={makeServiceHandler('start')}
 							onServiceStop={makeServiceHandler('stop')}
-							{...noSudo}
+							sudoPromptVisible={sudoPromptVisible}
+							sudoPasswordInput={sudoPasswordInput}
+							onSudoPasswordChange={setSudoPasswordInput}
+							onSudoSubmit={handleSudoSubmit}
 							isSubscribed={subscribed}
 							onFetchPlans={handleFetchPlans}
 							onCreateCheckout={handleCreateCheckout}
@@ -881,7 +912,10 @@ export const Settings: React.FC = () => {
 							onServiceRemove={makeServiceHandler('remove')}
 							onServiceStart={makeServiceHandler('start')}
 							onServiceStop={makeServiceHandler('stop')}
-							{...noSudo}
+							sudoPromptVisible={sudoPromptVisible}
+							sudoPasswordInput={sudoPasswordInput}
+							onSudoPasswordChange={setSudoPasswordInput}
+							onSudoSubmit={handleSudoSubmit}
 							isSubscribed={subscribed}
 							onFetchPlans={handleFetchPlans}
 							onCreateCheckout={handleCreateCheckout}
@@ -909,7 +943,7 @@ export const Settings: React.FC = () => {
 			},
 		}),
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[settings, message, testMessage, engineVersions, engineVersionsLoading, devProbe, deployProbe, cloudSignedIn, cloudUserName, cloudSignedInUrl, cloudWaitlisted, cloudWaitlistedName, cloudPending, subscribed, dockerStatus, dockerProgress, dockerError, dockerBusy, dockerAction, dockerSelectedVersion, serviceStatus, serviceProgress, serviceError, serviceBusy, serviceAction, serviceSelectedVersion, dockerTags]
+		[settings, message, testMessage, engineVersions, engineVersionsLoading, devProbe, deployProbe, cloudSignedIn, cloudUserName, cloudSignedInUrl, cloudWaitlisted, cloudWaitlistedName, cloudPending, subscribed, dockerStatus, dockerProgress, dockerError, dockerBusy, dockerAction, dockerSelectedVersion, serviceStatus, serviceProgress, serviceError, serviceBusy, serviceAction, serviceSelectedVersion, dockerTags, sudoPromptVisible, sudoPasswordInput]
 	);
 
 	return (

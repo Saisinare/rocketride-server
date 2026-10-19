@@ -102,7 +102,7 @@ interface ConnectionSettingsProps {
 	onServiceRemove: () => void;
 	onServiceStart: () => void;
 	onServiceStop: () => void;
-	/** Whether the sudo password prompt overlay is visible (Linux/macOS service installs). */
+	/** Sudo entry (Linux/macOS service lifecycle). */
 	sudoPromptVisible: boolean;
 	sudoPasswordInput: string;
 	onSudoPasswordChange: (pw: string) => void;

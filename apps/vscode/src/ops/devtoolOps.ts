@@ -14,7 +14,7 @@
 // strip) agree without asking.
 // =============================================================================
 
-import type * as vscode from 'vscode';
+import * as vscode from 'vscode';
 // Deep imports on purpose — ext-host-safe .ts leaves (see busHost.ts).
 import { registerOpHandlers } from 'shell/src/ops/busOps';
 import type { IOpBus, OpImplTable } from 'shell/src/ops/busOps';
@@ -22,12 +22,15 @@ import type { HostOpMap } from 'shared/ops/hostOps';
 import type { DevToolStore } from '../providers/DevToolStore';
 
 /** What the registrations need from the host. */
-export interface IDevToolOpsDeps {
+interface IDevToolOpsDeps {
 	context: vscode.ExtensionContext;
 	/** The pinned-tools store Install/Remove acts on. */
 	devTools: DevToolStore;
 	/** Closes a tool's open frame panel (the Remove flow retires it). */
 	closeToolPanel: (appId: string) => void;
+	/** The Dev Tools RESET (re-fetch registry, reload stale panels + the
+	 *  sidebar's own page) — owned by the sidebar provider. */
+	refreshTools: () => Promise<void>;
 	/** Fire-and-forget op to every attached realm (BusHost.broadcastEmitOp). */
 	broadcast: (op: string, params: unknown) => void;
 }
@@ -37,7 +40,7 @@ export interface IDevToolOpsDeps {
  * context.subscriptions).
  */
 export function registerVscodeDevToolOps(bus: IOpBus, deps: IDevToolOpsDeps): void {
-	const { context, devTools, closeToolPanel, broadcast } = deps;
+	const { context, devTools, closeToolPanel, refreshTools, broadcast } = deps;
 
 	const impls: OpImplTable<HostOpMap> = {
 		'host.devtools.installed': () => ({ ids: devTools.getAll() }),
@@ -51,6 +54,24 @@ export function registerVscodeDevToolOps(bus: IOpBus, deps: IDevToolOpsDeps): vo
 		'host.devtools.remove': (p) => {
 			devTools.remove(p.appId);
 			closeToolPanel(p.appId);
+		},
+		// Strip-tab selection brings an OPEN window forward; never creates one.
+		'host.devtools.reveal': async (p) => {
+			await vscode.commands.executeCommand('rocketride.devtool.reveal', p.appId);
+		},
+		'host.devtools.readme': async (p) => {
+			await vscode.commands.executeCommand('rocketride.devtool.readme', p.appId);
+		},
+		// The RESET reboots the CALLER's own page too — always an emitOp.
+		'host.devtools.refresh': async () => {
+			await refreshTools();
+		},
+		// The DevToolProps.documents API: a tool's own editor-area documents.
+		'host.devtools.openDoc': async (p) => {
+			await vscode.commands.executeCommand('rocketride.devtool.open', p.appId, p.docKey, p.title);
+		},
+		'host.devtools.closeDoc': async (p) => {
+			await vscode.commands.executeCommand('rocketride.devtool.close', p.appId, p.docKey);
 		},
 	};
 	registerOpHandlers<HostOpMap>(bus, impls);

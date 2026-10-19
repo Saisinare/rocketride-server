@@ -97,6 +97,18 @@ interface IBusEmitOpMessage {
 	params?: unknown;
 }
 
+/**
+ * Ops the root BROADCASTS to every realm rather than routing to one owner
+ * (the engine-event stream, `mirror.event`). Every realm handles its own
+ * copy, so these are never announced for ownership.
+ *
+ * @param op - The op name.
+ * @returns True when the op is fanned out to all realms.
+ */
+function isBroadcastOp(op: string): boolean {
+	return op.startsWith('mirror.');
+}
+
 /** Registration announcements (realm → root only). */
 interface IBusRegisterMessage {
 	[ENVELOPE]: 'register' | 'unregister';
@@ -197,9 +209,17 @@ export function attachRealmToRoot(bus: IOpBus, endpoint: IBusEndpoint): IRealmAt
 			endpoint.post({ [ENVELOPE]: 'emitOp', op, params } satisfies IBusEmitOpMessage);
 		},
 		register(op) {
+			// BROADCAST ops are not OWNED. The root fans them out to every
+			// realm (broadcastEmitOp ignores the owner table) and each realm
+			// handles its own copy locally, so announcing one would make the
+			// first realm to attach the "owner" and every later realm a
+			// spurious ownership conflict — the single-owner table is for
+			// DIRECTED routing only.
+			if (isBroadcastOp(op)) return;
 			endpoint.post({ [ENVELOPE]: 'register', ops: [op] } satisfies IBusRegisterMessage);
 		},
 		unregister(op) {
+			if (isBroadcastOp(op)) return;
 			endpoint.post({ [ENVELOPE]: 'unregister', ops: [op] } satisfies IBusRegisterMessage);
 		},
 	};

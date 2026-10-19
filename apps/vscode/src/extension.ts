@@ -52,7 +52,6 @@ import { registerVscodeOps } from './ops';
 import { registerVscodeDevToolOps } from './ops/devtoolOps';
 import { writePref } from './providers/PrefsBag';
 import { DevToolPanelProvider } from './providers/DevToolPanelProvider';
-import { DevToolReadmeProvider } from './providers/DevToolReadmeProvider';
 // BillingProvider removed — billing is now a tab in AccountProvider
 // AuthProvider removed — auth failures now open the Settings page directly
 import { AgentManager } from './agents/agent-manager';
@@ -389,7 +388,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				// identity, dedupe, and restore-on-reload; double-clicking the
 				// file in the Explorer opens the App Builder), plus the
 				// watch-session manager driving the inner loop.
-				appScreen = new AppScreenProvider(context);
+				appScreen = new AppScreenProvider(context, busHost);
 				// The guard wrapper ships beside the bundle (staged by
 				// vscode:stage-files); every dev server spawns through it so
 				// it dies with this extension host.
@@ -462,13 +461,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				// Tool sidebars follow the editor's fronted tab: the fronted
 				// tool document's key, or null when a non-tool tab is active.
 				devToolPanels.onActiveDocChange = (appId, docKey) => sidebar?.notifyToolActiveDoc(appId, docKey);
-				const devToolReadme = new DevToolReadmeProvider(context, busHost);
+				// The details page is a MULTI-INSTANCE framework page: one panel
+				// per tool, identity stamped as data-rr-args, title from the
+				// current catalog (best effort — the page itself stays correct
+				// off the mirror either way).
+				const devToolReadme = new FrameworkProvider(context, busHost, {
+					page: 'devtool-readme',
+					command: 'rocketride.devtool.readme',
+					viewType: 'rocketride.page.devToolReadme',
+					title: 'Dev Tool',
+					instanceKey: (args) => (typeof args[0] === 'string' ? args[0] : ''),
+					instanceTitle: (args) => {
+						const apps = (connectionManager?.getClient()?.getAccountInfo()?.apps ?? []) as Array<{ id: string; name?: string }>;
+						const name = apps.find((a) => a?.id === args[0])?.name ?? String(args[0]);
+						return `Dev Tool: ${name}`;
+					},
+					instanceArgs: (args) => ({ appId: String(args[0]) }),
+				});
 				// Install/Remove for the details pages — the pinned set is host
 				// state; changes push to every open surface.
 				registerVscodeDevToolOps(busHost.rootBus, {
 					context,
 					devTools,
 					closeToolPanel: (appId) => devToolPanels.close(appId),
+					// The RESET is owned by the sidebar provider (it reboots the
+					// sidebar's own page last) — resolved lazily: the sidebar is
+					// constructed after this registration.
+					refreshTools: async () => sidebar?.refreshDevTools(),
 					broadcast: (op, params) => busHost.broadcastEmitOp(op, params),
 				});
 				context.subscriptions.push(welcomePage, settingsPage, account, environment, newApp, devTools, devToolPanels, devToolReadme);
@@ -501,13 +520,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 				// Add all providers to context subscriptions for proper cleanup
 				context.subscriptions.push(pipelineEditorRegistration, pipeline);
-
-				//-------------------------------------
-				// Update tree providers with initial data
-				//-------------------------------------
-				logger.output(`${icons.info} Refreshing providers...`);
-				progress.report({ increment: 100, message: 'Refreshing providers...' });
-				await refreshAllProviders();
 
 				//-------------------------------------
 				// Initialize connection / welcome flow
@@ -668,8 +680,7 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 			// Fire-and-forget: a rejection has no other surface here — say it.
 			appScreen?.show(appId).catch((err) => vscode.window.showErrorMessage(`Failed to open app: ${err instanceof Error ? err.message : String(err)}`));
 		}),
-		vscode.commands.registerCommand('rocketride.refresh', async () => {
-			await refreshAllProviders();
+		vscode.commands.registerCommand('rocketride.refresh', () => {
 			vscode.window.showInformationMessage('RocketRide views refreshed');
 		}),
 		vscode.commands.registerCommand('rocketride.agents.install', async () => {
@@ -773,13 +784,6 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 			}
 		}),
 
-		// Stub commands — run/stop/open are handled via webview messages now,
-		// but package.json still declares them so they must be registered.
-		vscode.commands.registerCommand('rocketride.sidebar.files.openFile', () => {}),
-		vscode.commands.registerCommand('rocketride.sidebar.files.openStatus', () => {}),
-		vscode.commands.registerCommand('rocketride.sidebar.files.runPipeline', () => {}),
-		vscode.commands.registerCommand('rocketride.sidebar.files.stopPipeline', () => {}),
-		vscode.commands.registerCommand('rocketride.sidebar.files.revealErrorsSection', () => {}),
 	];
 
 	commands.forEach((command) => context.subscriptions.push(command));
@@ -837,13 +841,6 @@ function setupConnectionEventHandlers(): void {
 			logger.output(`${icons.warning} Failed to sync service catalog: ${err}`);
 		});
 	});
-}
-
-/**
- * Refreshes all data providers
- */
-async function refreshAllProviders(): Promise<void> {
-	// SidebarProvider handles its own refresh via event listeners
 }
 
 /**
@@ -909,11 +906,11 @@ export async function deactivate(): Promise<void> {
 // triggered the fetch.
 // =========================================================================
 
-/** Cached GitHub releases (engine binaries). Populated by ConnectionMessageHandler.fetchAndBroadcastVersions(). */
-export let cachedEngineVersions: Array<{ tag_name: string; prerelease: boolean }> = [];
-/** Replaces the cached engine version list. Called by ConnectionMessageHandler after a successful GitHub API fetch. */
-export const setCachedEngineVersions = (v: typeof cachedEngineVersions) => {
-	cachedEngineVersions = v;
+/** Cached GitHub releases (engine binaries). Written via setCachedEngineVersions; currently no reader (kept so the ops-side setter contract stays stable). */
+let _cachedEngineVersions: Array<{ tag_name: string; prerelease: boolean }> = [];
+/** Replaces the cached engine version list. Called by settingsOps after a successful GitHub API fetch. */
+export const setCachedEngineVersions = (v: Array<{ tag_name: string; prerelease: boolean }>) => {
+	_cachedEngineVersions = v;
 };
 
 /** Cached GHCR container tags (Docker images). Populated by ConnectionMessageHandler.fetchAndBroadcastDockerTags(). */
@@ -928,7 +925,4 @@ export const getExtensionContext = () => extensionContext;
 export const getConnectionManager = () => connectionManager;
 export const getEngineRegistry = () => engineRegistry;
 export const getConfigManager = () => configManager;
-export const getPipelineFilesTreeProvider = () => undefined;
-export const getConnectionTreeProvider = () => undefined;
 export const getPipelineProvider = () => pipeline;
-export const getBarStatus = () => barStatus;

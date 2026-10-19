@@ -4,80 +4,54 @@
 // =============================================================================
 
 // =============================================================================
-// SVC:FS CLIENT — the webview end of the host's workspace-FS service
+// WORKSPACE-FS CLIENT — ToolWorkspaceFs over the host.fs.* ops
 // =============================================================================
 //
-// The ToolWorkspaceFs the shared tool code runs against in this host:
-// requests ride the sidebar message channel to the extension host's generic
-// service (request/response correlated by id); watch events fan out to the
-// registered callbacks. The component wires onResult/onEvent into its
-// message switch.
+// The ToolWorkspaceFs the shared tool code runs against in this host
+// (frozen shell contract — signatures unchanged, only the transport moved):
+// reads ride the brokered `host.fs.*` ops (the bus owns correlation — no
+// requestId), watch events arrive on the realm-registered `sidebar.fs.event`
+// op (registration-is-routing) keyed by this realm's own `sub` strings.
 // =============================================================================
 
+import { ConnectionManager } from 'shell';
 import type { ToolWorkspaceFs } from 'shell';
-import type { SidebarWebviewToHost } from './messages';
-
-/** The svc:fs subset of the outgoing vocabulary. */
-type SvcFsRequest = Extract<SidebarWebviewToHost, { type: 'svc:fs' | 'svc:fs:watch' | 'svc:fs:unwatch' }>;
-
-/** What the client exposes to the component. */
-export interface SvcFsClient {
-	/** The capability handed to the tools (ToolHostServices.workspaceFs). */
-	workspaceFs: ToolWorkspaceFs;
-	/** Routes one svc:fs:result message to its pending request. */
-	onResult(msg: { id: number; ok: boolean; result?: unknown; error?: string }): void;
-	/** Routes one svc:fs:event message to its watch callback. */
-	onEvent(msg: { id: number; path: string }): void;
-}
 
 /**
- * Creates the webview-side workspace-FS client.
+ * Creates the realm-side workspace-FS capability.
  *
- * @param send - Sends one svc:fs request to the extension host.
- * @returns The client.
+ * @returns The ToolWorkspaceFs handed to the tools (ToolHostServices.workspaceFs).
  */
-export function createSvcFsClient(send: (message: SvcFsRequest) => void): SvcFsClient {
+export function createBusWorkspaceFs(): ToolWorkspaceFs {
+	const cm = ConnectionManager.getInstance();
+	// Realm-unique watch keys: a ROUTING key, not a correlation id. The
+	// random prefix keeps a rebooted page's keys from colliding with its
+	// predecessor's (whose host-side watchers are dropped on view:ready).
+	const prefix = `fs-${Math.random().toString(36).slice(2, 10)}`;
 	let seq = 0;
-	const pendingRequests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
-	const watchers = new Map<number, (path: string) => void>();
+	const watchers = new Map<string, (path: string) => void>();
 
-	const request = (message: SvcFsRequest & { id: number }): Promise<unknown> =>
-		new Promise((resolve, reject) => {
-			pendingRequests.set(message.id, { resolve, reject });
-			send(message);
-		});
+	// One registration for the realm's lifetime — events for subs this realm
+	// does not own (another realm's watches riding the same broadcast) are
+	// simply not in the map.
+	cm.handle('sidebar.fs.event', (params) => {
+		const p = params as { sub?: string; path?: string };
+		if (typeof p?.sub === 'string' && typeof p?.path === 'string') watchers.get(p.sub)?.(p.path);
+	});
 
 	return {
-		workspaceFs: {
-			findFiles: (include, exclude) =>
-				request({ type: 'svc:fs', id: ++seq, method: 'findFiles', include, ...(exclude !== undefined ? { exclude } : {}) }) as Promise<string[]>,
-			workspaceRoots: () =>
-				request({ type: 'svc:fs', id: ++seq, method: 'workspaceRoots' }) as Promise<string[]>,
-			readTextFile: (path) =>
-				request({ type: 'svc:fs', id: ++seq, method: 'readText', path }) as Promise<string>,
-			readFileBase64: (path, maxBytes) =>
-				request({ type: 'svc:fs', id: ++seq, method: 'readBase64', path, maxBytes }) as Promise<string | null>,
-			watch: (globs, onEvent) => {
-				const id = ++seq;
-				watchers.set(id, onEvent);
-				send({ type: 'svc:fs:watch', id, globs });
-				return () => {
-					watchers.delete(id);
-					send({ type: 'svc:fs:unwatch', id });
-				};
-			},
-		},
-
-		onResult(msg) {
-			const pending = pendingRequests.get(msg.id);
-			if (!pending) return;
-			pendingRequests.delete(msg.id);
-			if (msg.ok) pending.resolve(msg.result);
-			else pending.reject(new Error(msg.error ?? 'workspace-fs service error'));
-		},
-
-		onEvent(msg) {
-			watchers.get(msg.id)?.(msg.path);
+		findFiles: (include, exclude) => cm.request('host.fs.findFiles', { include, ...(exclude !== undefined ? { exclude } : {}) } as never) as Promise<string[]>,
+		workspaceRoots: () => cm.request('host.fs.workspaceRoots', {} as never) as Promise<string[]>,
+		readTextFile: (path) => cm.request('host.fs.readText', { path } as never) as Promise<string>,
+		readFileBase64: (path, maxBytes) => cm.request('host.fs.readBase64', { path, maxBytes } as never) as Promise<string | null>,
+		watch: (globs, onEvent) => {
+			const sub = `${prefix}-${++seq}`;
+			watchers.set(sub, onEvent);
+			cm.emitOp('host.fs.watch', { sub, globs } as never);
+			return () => {
+				watchers.delete(sub);
+				cm.emitOp('host.fs.unwatch', { sub } as never);
+			};
 		},
 	};
 }

@@ -19,3 +19,5 @@ export type { IDeploymentRecordPanelProps, IDeploymentRecordData } from './Deplo
 export { SchedulePanel, describeCron, describeTtl } from './SchedulePanel';
 export type { ISchedulePanelProps } from './SchedulePanel';
 export type { DeployTeamRef, DeployVersionCard, TeamDeployment, TeamDeploymentSchedule, TeamDeploymentRow, TeamDeploymentSource, DeployHistoryRow, DeployScheduleRow } from './types';
+export { resolveDeployTeams, teamNameOf, wireTeamIdOf } from './teams';
+export type { DeployIdentityLike } from './teams';

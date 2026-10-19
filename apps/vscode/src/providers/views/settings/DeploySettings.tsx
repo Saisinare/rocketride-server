@@ -89,6 +89,7 @@ interface DeploySettingsProps {
 	onServiceRemove: () => void;
 	onServiceStart: () => void;
 	onServiceStop: () => void;
+	/** Sudo entry (Linux/macOS service lifecycle). */
 	sudoPromptVisible: boolean;
 	sudoPasswordInput: string;
 	onSudoPasswordChange: (pw: string) => void;

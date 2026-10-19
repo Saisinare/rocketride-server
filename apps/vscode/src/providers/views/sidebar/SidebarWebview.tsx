@@ -4,24 +4,21 @@
 // =============================================================================
 
 /**
- * SidebarWebview — VS Code webview bridge for the tool-registry sidebar.
+ * SidebarWebview — the tool-registry sidebar as a shell bus realm.
  *
- * Receives data from the extension host via useMessaging, manages local
- * state (connection state for dev and deploy, strip/tool rows, prefs
- * seed), and renders <SidebarChrome> over the builtin-tool registry plus
- * the pinned store tools, with a <SidebarFooter> footerSlot. Each builtin
- * sidebar mounts under its own ToolHostProvider carrying ITS scoped prefs
+ * Everything this page displays rides the bus: connection/deploy/cloud-auth
+ * facts off the retained mirrors (shell:status / shell:deployStatus /
+ * shell:cloudAuth / shell:account), the strip's tool rows off retained
+ * devtools:rows, the fronted tool document off retained devtools:activeDoc,
+ * host-driven selection off the sidebar:modeSelect signal, diagnostics off
+ * the pipeline:sourceDiagnostics signal, prefs over host.prefs.*, actions
+ * over host.* emitOps, and workspace FS over host.fs.*. The only remaining
+ * postMessage is sidebar:command (+ the view:ready boot marker).
+ *
+ * Renders <SidebarChrome> over the builtin-tool registry plus the pinned
+ * store tools, with a <SidebarFooter> footerSlot. Each builtin sidebar
+ * mounts under its own ToolHostProvider carrying ITS scoped prefs
  * partition; store-tool panels mount remotely via DevToolSidebarMount.
- *
- * The seams live in sibling modules:
- *   - messages.ts     — both typed ends of the wire vocabulary
- *   - shell busPeer — stable tool peers over the bus's retained/signal lanes
- *   - svcFsClient.ts  — the ToolWorkspaceFs capability (svc:fs RPC)
- *   - footerMenu.tsx  — the footer popup items from connection facts
- *
- * Architecture:
- *   SidebarProvider (Node.js) ↔ postMessage ↔ SidebarWebview (browser)
- *     → SidebarChrome (shared) + SidebarFooter (shared)
  */
 
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
@@ -42,8 +39,10 @@ import { useMessaging } from '../hooks/useMessaging';
 import { DevToolSidebarMount } from './DevToolSidebarMount';
 import type { DevToolHostInfo } from './DevToolSidebarMount';
 import type { SidebarHostToWebview, SidebarWebviewToHost } from './messages';
-import { createSvcFsClient } from './svcFsClient';
+import { createBusWorkspaceFs } from './svcFsClient';
 import { buildFooterMenuItems } from './footerMenu';
+import { isAppSubscribed } from 'shared/util/subscriptionGate';
+import { PIPE_BUILDER_APP_ID } from '../../../shared/types';
 import { attachBusRealm } from '../hooks/busRealm';
 
 // A TOOL IS AN APP: the builtin tools register once per realm; this host's
@@ -112,115 +111,10 @@ const SidebarViewWebview: React.FC = () => {
 
 	// ── Messaging ───────────────────────────────────────────────────────────
 
-	const { sendMessage } = useMessaging<SidebarWebviewToHost, SidebarHostToWebview>({
-		onMessage: (msg) => {
-			switch (msg.type) {
-				case 'sidebar:update':
-					setConnection({
-						state: msg.data.connectionState as ConnectionInfo['state'],
-						mode: msg.data.connectionMode,
-					});
-					// No entries here: the PIPELINES CONTROLLER in this webview
-					// discovers them (shared tools/pipelines over svc:fs).
-					// Shared auth
-					if (msg.data.cloudConnected !== undefined) setCloudSignedIn(msg.data.cloudConnected);
-
-					// Dev connection state
-					if (msg.data.connectionMode) setDevelopmentMode(msg.data.connectionMode);
-					setDevProgressMessage(msg.data.devProgressMessage);
-
-					// Accumulate dev engine log lines; clear on connect
-					if (msg.data.connectionState === 'connected') {
-						setDevProgressLog([]);
-					} else if (msg.data.devProgressLogLine) {
-						setDevProgressLog((prev) => (prev[prev.length - 1] === msg.data.devProgressLogLine ? prev : [...prev.slice(-(MAX_PROGRESS_LINES - 1)), msg.data.devProgressLogLine!]));
-					}
-
-					// Deploy connection state
-					if (msg.data.deployConnectionState) setDeployConnectionState(msg.data.deployConnectionState);
-					if (msg.data.deployConnectionMode !== undefined) setDeployTargetMode(msg.data.deployConnectionMode ?? null);
-					setDeployProgressMessage(msg.data.deployProgressMessage);
-
-					// Accumulate deploy engine log lines; clear on connect
-					if (msg.data.deployConnectionState === 'connected') {
-						setDeployProgressLog([]);
-					} else if (msg.data.deployProgressLogLine) {
-						setDeployProgressLog((prev) => (prev[prev.length - 1] === msg.data.deployProgressLogLine ? prev : [...prev.slice(-(MAX_PROGRESS_LINES - 1)), msg.data.deployProgressLogLine!]));
-					}
-					// Subscription status
-					if (msg.data.isSubscribed !== undefined) setSubscribed(msg.data.isSubscribed);
-					// Host-persisted mode (seed once — see ref) + strip order
-					if (msg.data.tabOrder) setTabOrder(msg.data.tabOrder);
-					if (msg.data.sidebarMode && !sidebarModeSeededRef.current) {
-						sidebarModeSeededRef.current = true;
-						setSidebarMode(msg.data.sidebarMode);
-					}
-					break;
-
-				case 'sidebar:toolsUpdate':
-					setTools(msg.tools);
-					setAvailableTools(msg.available);
-					break;
-
-				case 'sidebar:extrasUpdate':
-					// The slow half of a full update — the sync half (apps,
-					// entries, connection state) is already on screen.
-					if (msg.userName !== undefined) setUserName(msg.userName || undefined);
-					if (msg.userEmail !== undefined) setUserEmail(msg.userEmail || undefined);
-					setTools(msg.tools);
-					setAvailableTools(msg.availableTools);
-					setDevToolHost(msg.devToolHost);
-					break;
-
-				case 'sidebar:stripSeed':
-					// Synchronous strip bootstrap (first message after
-					// view:ready): pinned tools with their last-known icons,
-					// the persisted order, and the persisted mode — the strip
-					// paints its final shape at once instead of reshuffling as
-					// account data trickles in. The full update's fresh rows
-					// replace these in place.
-					setTools(msg.tools);
-					setTabOrder(msg.tabOrder);
-					if (msg.disabledBuiltins) setDisabledBuiltins(msg.disabledBuiltins);
-					if (!sidebarModeSeededRef.current) {
-						sidebarModeSeededRef.current = true;
-						setSidebarMode(msg.sidebarMode);
-					}
-					break;
-
-				case 'prefs:init':
-					// Hydrates the realm's prefs store (resolves its `ready`).
-					prefsBridge.seed(msg.values);
-					break;
-
-				case 'devtool:activeDoc':
-					setActiveToolDoc({ appId: msg.appId, docKey: msg.docKey });
-					break;
-
-				case 'svc:fs:result':
-					svcFs.onResult(msg);
-					break;
-
-				case 'svc:fs:event':
-					svcFs.onEvent(msg);
-					break;
-
-				case 'sidebar:modeUpdate':
-					// Host-driven selection (a tool panel gained focus) — unlike
-					// the full-update seed, this ALWAYS applies.
-					sidebarModeSeededRef.current = true;
-					setSidebarMode(msg.mode);
-					break;
-
-				case 'sidebar:statusUpdate':
-					// Per-source diagnostics from the canvas editor's host-side
-					// cache — pushed into the PIPELINES TOOL's ingress.
-					pushSourceDiagnostics({ projectId: msg.projectId, sourceId: msg.sourceId, errors: msg.errors, warnings: msg.warnings });
-					break;
-
-			}
-		},
-	});
+	// The ONLY remaining postMessage traffic is sidebar:command (unrestricted
+	// executeCommand — a deliberate host decision) and the view:ready boot
+	// signal (the page-lifecycle marker the host's watcher reset keys off).
+	const { sendMessage } = useMessaging<SidebarWebviewToHost, SidebarHostToWebview>({});
 
 	// The clients below are created ONCE and capture the latest sendMessage
 	// through this ref — their identities (and every peer/capability they
@@ -229,9 +123,9 @@ const SidebarViewWebview: React.FC = () => {
 	sendRef.current = sendMessage;
 
 	// ── Workspace-FS capability ─────────────────────────────────────────────
-	// The ToolWorkspaceFs the shared tool code runs against; its svc:fs
-	// request/response + watch traffic routes through the message switch.
-	const svcFs = useMemo(() => createSvcFsClient((m) => sendRef.current(m)), []);
+	// The ToolWorkspaceFs the shared tool code runs against — host.fs.* ops
+	// (the bus correlates) + the realm-registered sidebar.fs.event push.
+	const workspaceFs = useMemo(() => createBusWorkspaceFs(), []);
 
 	// ── Tool peers (bus-carried) ────────────────────────────────────────────
 	// Stable sidebar-side peers per tool, riding the bus's retained/signal
@@ -249,11 +143,116 @@ const SidebarViewWebview: React.FC = () => {
 		};
 	}, []);
 
-	// This realm's prefs backend: a hydrate-once bridged store — the host
-	// seeds the snapshot in its view:ready reply (prefs:init) and persists
-	// writes (prefs:set) into its Memento bags. Per-tool partitions are
-	// carved off it in the builtin strip items.
-	const prefsBridge = useMemo(() => createBridgedPrefsStore((key, value, scope) => sendRef.current({ type: 'prefs:set', key, value, scope })), []);
+	// This realm's prefs backend: a hydrate-once bridged store over the bus —
+	// `host.prefs.snapshot` seeds it (resolving its `ready`), writes ride
+	// `host.prefs.set` (the same ops the account and pipeline pages use).
+	// Per-tool partitions are carved off it in the builtin strip items.
+	const prefsBridge = useMemo(() => createBridgedPrefsStore((key, value, scope) => ConnectionManager.getInstance().emitOp('host.prefs.set', { key, value, scope } as never)), []);
+	useEffect(() => {
+		void ConnectionManager.getInstance()
+			.request('host.prefs.snapshot', {} as never)
+			.then((values) => {
+				const snap = (values ?? {}) as Record<string, unknown>;
+				prefsBridge.seed(snap);
+				// The strip prefs ride the same bag: the persisted mode (seed
+				// once — a user selection made before the snapshot landed must
+				// not be reverted), the strip order, and the disabled builtins.
+				const mode = snap['sidebarMode'];
+				if (typeof mode === 'string' && !sidebarModeSeededRef.current) {
+					sidebarModeSeededRef.current = true;
+					setSidebarMode(mode as SidebarMode);
+				}
+				const order = snap['sidebarTabOrder'];
+				if (Array.isArray(order)) setTabOrder(order as string[]);
+				const disabled = snap['disabledBuiltins'];
+				if (Array.isArray(disabled)) setDisabledBuiltins(disabled as string[]);
+			})
+			.catch(() => {
+				/* snapshot unavailable — defaults stand */
+			});
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- one hydration per realm
+	}, []);
+
+	// Host-driven strip state over the bus: the fronted tool document
+	// (RETAINED — replay covers a freshly booted webview; both-null is the
+	// explicit "non-tool tab fronted" value) and host-driven tab selection
+	// (a SIGNAL — a tool panel gained focus; always applies).
+	useEffect(() => {
+		const cm = ConnectionManager.getInstance();
+		const offs = [
+			// ── Connection facts, derived from the mirrors ──────────────────
+			// Dev half: read the RAW status off the shell:status snapshot —
+			// the realm CM's normalize collapses the transitional states
+			// (connecting / downloading-engine / auth-failed) the footer
+			// renders. configMode is the CONFIGURED dev mode.
+			cm.subscribe('shell:status', (snap) => {
+				const s = snap as { status?: { state?: string; connectionMode?: string; progressMessage?: string; progressLogLine?: string }; configMode?: string } | undefined;
+				const st = s?.status;
+				if (!st) return;
+				const mode = s?.configMode ?? st.connectionMode;
+				setConnection({ state: st.state as ConnectionInfo['state'], mode });
+				if (mode) setDevelopmentMode(mode);
+				setDevProgressMessage(st.progressMessage);
+				// Accumulate engine log lines; clear on connect. Publishes are
+				// per status tick (nothing coalesces), so every line arrives.
+				if (st.state === 'connected') setDevProgressLog([]);
+				else if (st.progressLogLine) setDevProgressLog((prev) => (prev[prev.length - 1] === st.progressLogLine ? prev : [...prev.slice(-(MAX_PROGRESS_LINES - 1)), st.progressLogLine!]));
+			}),
+			// Deploy half — host-only state (DeployManager), mirrored whole.
+			cm.subscribe('shell:deployStatus', (snap) => {
+				const s = snap as { status?: { state?: string; progressMessage?: string; progressLogLine?: string }; configMode?: string | null } | undefined;
+				const st = s?.status;
+				if (!st) return;
+				if (st.state) setDeployConnectionState(st.state);
+				setDeployTargetMode(s?.configMode ?? null);
+				setDeployProgressMessage(st.progressMessage);
+				if (st.state === 'connected') setDeployProgressLog([]);
+				else if (st.progressLogLine) setDeployProgressLog((prev) => (prev[prev.length - 1] === st.progressLogLine ? prev : [...prev.slice(-(MAX_PROGRESS_LINES - 1)), st.progressLogLine!]));
+			}),
+			// Staged cloud auth + identity (host-resolved fallback included).
+			cm.subscribe('shell:cloudAuth', (snap) => {
+				const a = snap as { connected?: boolean; userName?: string; userEmail?: string } | undefined;
+				if (!a) return;
+				if (a.connected !== undefined) setCloudSignedIn(a.connected);
+				setUserName(a.userName || undefined);
+				setUserEmail(a.userEmail || undefined);
+			}),
+			// Subscription gate — the shared predicate over the mirrored account.
+			cm.on('shell:accountUpdate', () => setSubscribed(isAppSubscribed(cm.getAccountInfo(), PIPE_BUILDER_APP_ID))),
+			// devToolSidebar mount facts: the MF entry URL only, derived from
+			// the mirrored engine base; no token ever crosses into this realm.
+			cm.on('shell:statusChange', () => {
+				setDevToolHost(cm.isConnected() ? { engineHttpUrl: (cm.getHttpUrl() || 'http://localhost:5565').replace(/\/$/, '') } : null);
+			}),
+			// The strip's tool rows + the dev-tool catalog (RETAINED — the
+			// cached seed replays into any fresh webview, the slow compose
+			// replaces it in place; a snapshot without `available` keeps the
+			// last catalog instead of wiping the Modules list).
+			cm.subscribe('devtools:rows', (snap) => {
+				const rows = snap as { tools?: ToolTab[]; available?: ToolTab[] } | undefined;
+				if (!rows?.tools) return;
+				setTools(rows.tools);
+				if (rows.available) setAvailableTools(rows.available);
+			}),
+			cm.subscribe('devtools:activeDoc', (snap) => {
+				const d = snap as { appId: string | null; docKey: string | null } | undefined;
+				if (d) setActiveToolDoc({ appId: d.appId, docKey: d.docKey });
+			}),
+			// Per-source diagnostics from the canvas editor's host-side cache —
+			// a signal into the PIPELINES TOOL's ingress.
+			cm.subscribe('pipeline:sourceDiagnostics', (payload) => {
+				const d = payload as { projectId?: string; sourceId?: string; errors?: string[]; warnings?: string[] } | undefined;
+				if (d?.projectId && d.sourceId) pushSourceDiagnostics({ projectId: d.projectId, sourceId: d.sourceId, errors: d.errors ?? [], warnings: d.warnings ?? [] });
+			}),
+			cm.subscribe('sidebar:modeSelect', (payload) => {
+				const m = payload as { mode?: SidebarMode } | undefined;
+				if (!m?.mode) return;
+				sidebarModeSeededRef.current = true;
+				setSidebarMode(m.mode);
+			}),
+		];
+		return () => offs.forEach((off) => off());
+	}, []);
 
 	// NO realm socket: the controllers reach the engine over the SHELL BUS
 	// (request('client.*') to the extension host's broker), and the realm
@@ -265,37 +264,29 @@ const SidebarViewWebview: React.FC = () => {
 
 	// ── Host verbs for the tools ─────────────────────────────────────────────
 
-	const onOpenFile = useCallback(
-		(path: string) => {
-			sendMessage({ type: 'sidebar:openFile', fsPath: path });
-		},
-		[sendMessage]
-	);
+	const onOpenFile = useCallback((path: string) => {
+		ConnectionManager.getInstance().emitOp('host.pipeline.openFile', { fsPath: path } as never);
+	}, []);
 
-	const onSourceAction = useCallback(
-		(action: string, filePath: string, sourceId: string, projectId?: string) => {
-			switch (action) {
-				case 'run':
-					sendMessage({ type: 'sidebar:runPipeline', fsPath: filePath, sourceId });
-					break;
-				case 'stop':
-					if (projectId) sendMessage({ type: 'sidebar:stopPipeline', projectId, sourceId });
-					break;
-			}
-		},
-		[sendMessage]
-	);
+	const onSourceAction = useCallback((action: string, filePath: string, sourceId: string, projectId?: string) => {
+		const cm = ConnectionManager.getInstance();
+		switch (action) {
+			case 'run':
+				cm.emitOp('host.pipeline.runFile', { fsPath: filePath, sourceId } as never);
+				break;
+			case 'stop':
+				if (projectId) cm.emitOp('host.pipeline.stopSource', { projectId, sourceId } as never);
+				break;
+		}
+	}, []);
 
 	const onOpenDocs = useCallback(() => {
 		sendMessage({ type: 'sidebar:command', command: 'rocketride.sidebar.documentation.open' });
 	}, [sendMessage]);
 
-	const onOpenUnknownTask = useCallback(
-		(projectId: string, sourceId: string, displayName: string) => {
-			sendMessage({ type: 'sidebar:openUnknownTask', projectId, sourceId, displayName });
-		},
-		[sendMessage]
-	);
+	const onOpenUnknownTask = useCallback((projectId: string, sourceId: string, displayName: string) => {
+		ConnectionManager.getInstance().emitOp('host.pipeline.openStatus', { projectId, sourceId, displayName } as never);
+	}, []);
 
 	/** The tools' generic page surface, mapped onto this host's pages. Keys
 	 *  this host has no page for ('desktop', 'agent:<id>') no-op. */
@@ -309,7 +300,7 @@ const SidebarViewWebview: React.FC = () => {
 			return;
 		}
 		if (key.startsWith('app:')) {
-			sendMessage({ type: 'sidebar:openApp', appId: key.slice('app:'.length) });
+			ConnectionManager.getInstance().emitOp('host.app.open', { appId: key.slice('app:'.length) } as never);
 			return;
 		}
 	}, [sendMessage]);
@@ -318,31 +309,31 @@ const SidebarViewWebview: React.FC = () => {
 	// own their state; this host contributes generic verbs plus the
 	// workspace-FS capability its extension host serves.
 	const toolServices = useMemo<BuiltinToolServices>(() => ({
-		workspaceFs: svcFs.workspaceFs,
+		workspaceFs,
 		openPage,
 		openFile: onOpenFile,
 		pipelineAction: onSourceAction,
 		newPipeline: () => sendRef.current({ type: 'sidebar:command', command: 'rocketride.sidebar.files.createFile' }),
 		openUnknownTask: onOpenUnknownTask,
 		isSubscribed: subscribed,
-	}), [svcFs, openPage, onOpenFile, onSourceAction, onOpenUnknownTask, subscribed]);
+	}), [workspaceFs, openPage, onOpenFile, onSourceAction, onOpenUnknownTask, subscribed]);
 
-	/** Flips one builtin's enabled state (optimistic; host persists). */
+	/** Flips one builtin's enabled state (optimistic; persisted as a pref). */
 	const onToggleBuiltin = useCallback((id: string, enabled: boolean) => {
 		setDisabledBuiltins((prev) => {
 			const next = enabled ? prev.filter((d) => d !== id) : [...prev.filter((d) => d !== id), id];
-			sendMessage({ type: 'sidebar:setDisabledBuiltins', ids: next });
+			ConnectionManager.getInstance().emitOp('host.prefs.set', { key: 'disabledBuiltins', value: next, scope: 'workspace' } as never);
 			return next;
 		});
-	}, [sendMessage]);
+	}, []);
 
 	// Shared builtin-strip glue: items (with per-tool scoped prefs), store
 	// rows, and the activation/deactivation discipline. Builtins have no
 	// isolated frame document in this host, so the hook's stable loopback
 	// peers satisfy the contract.
 	const revealTool = useCallback((toolId: string) => {
-		sendMessage({ type: 'sidebar:focusTool', toolId });
-	}, [sendMessage]);
+		ConnectionManager.getInstance().emitOp('host.devtools.reveal', { appId: toolId } as never);
+	}, []);
 	const { builtinItems, builtinStoreRows, focusTool: onFocusTool, deactivateReplacedTab, announceBuiltinSelected } = useToolStrip({
 		host: 'vscode',
 		services: toolServices,
@@ -353,32 +344,37 @@ const SidebarViewWebview: React.FC = () => {
 
 	// ── Store-tool callbacks ────────────────────────────────────────────────
 
-	/** Tool tab → open/focus the tool's frame panel (extension host). */
+	/** Tool tab → open/focus the tool's frame panel — the existing
+	 *  host.openToolPanel op (the bus peer's summon rides the same one). */
 	const onOpenTool = useCallback((toolId: string) => {
-		sendMessage({ type: 'sidebar:openTool', toolId });
-	}, [sendMessage]);
+		ConnectionManager.getInstance().emitOp('host.openToolPanel', { appId: toolId } as never);
+	}, []);
 
-	/** Tool panel Remove row → unpin (extension host persists). */
+	/** Tool panel Remove row → unpin — the existing host.devtools.remove op
+	 *  (the details pages ride the same one; changes broadcast back on
+	 *  host.devtools.changed). */
 	const onRemoveTool = useCallback((toolId: string) => {
-		sendMessage({ type: 'sidebar:removeTool', toolId });
-	}, [sendMessage]);
+		ConnectionManager.getInstance().emitOp('host.devtools.remove', { appId: toolId } as never);
+	}, []);
 
 	/** Dev Tools panel RESET → ext host re-fetches the app registry and
 	 *  reloads every loaded tool (stale frame panels + this webview). */
+	// emitOp on purpose: the RESET reboots THIS webview's own page mid-flight,
+	// so a request would die with its caller.
 	const onRefreshTools = useCallback(() => {
-		sendMessage({ type: 'sidebar:refreshTools' });
-	}, [sendMessage]);
+		ConnectionManager.getInstance().emitOp('host.devtools.refresh', {} as never);
+	}, []);
 
 	/** Modules-list row → the tool's details page (README + Install/Remove). */
 	const onShowTool = useCallback((toolId: string) => {
-		sendMessage({ type: 'sidebar:showToolReadme', toolId });
-	}, [sendMessage]);
+		ConnectionManager.getInstance().emitOp('host.devtools.readme', { appId: toolId } as never);
+	}, []);
 
-	/** Drag-reorder → apply optimistically, host persists to workspace state. */
+	/** Drag-reorder → apply optimistically, persist as a workspace pref. */
 	const onReorderTabs = useCallback((orderedIds: string[]) => {
 		setTabOrder(orderedIds);
-		sendMessage({ type: 'sidebar:reorderTabs', order: orderedIds });
-	}, [sendMessage]);
+		ConnectionManager.getInstance().emitOp('host.prefs.set', { key: 'sidebarTabOrder', value: orderedIds, scope: 'workspace' } as never);
+	}, []);
 
 	// Lazy activation: a tool's sidebar mount loads only once its tab has been
 	// selected — by the user, or by the host syncing focus from the tool's
@@ -398,8 +394,8 @@ const SidebarViewWebview: React.FC = () => {
 		const cached = documentsRef.current.get(appId);
 		if (cached) return cached;
 		const api = {
-			open: (docKey: string, title: string) => sendRef.current({ type: 'sidebar:openToolDocument', appId, docKey, title }),
-			close: (docKey: string) => sendRef.current({ type: 'sidebar:closeToolDocument', appId, docKey }),
+			open: (docKey: string, title: string) => ConnectionManager.getInstance().emitOp('host.devtools.openDoc', { appId, docKey, title } as never),
+			close: (docKey: string) => ConnectionManager.getInstance().emitOp('host.devtools.closeDoc', { appId, docKey } as never),
 		};
 		documentsRef.current.set(appId, api);
 		return api;
@@ -443,13 +439,13 @@ const SidebarViewWebview: React.FC = () => {
 			// single-pane contract) rides the selection; MF pins get theirs
 			// via SidebarChrome's onFocusTool.
 			announceBuiltinSelected(mode);
-			// A user selection counts as the seed: an `update` composed before
-			// the persist round trip completed must not revert it.
+			// A user selection counts as the seed: a snapshot resolving after
+			// this click must not revert it.
 			sidebarModeSeededRef.current = true;
 			setSidebarMode(mode);
-			sendMessage({ type: 'sidebar:setSidebarMode', mode });
+			ConnectionManager.getInstance().emitOp('host.prefs.set', { key: 'sidebarMode', value: mode, scope: 'workspace' } as never);
 		},
-		[sendMessage, deactivateReplacedTab, announceBuiltinSelected]
+		[deactivateReplacedTab, announceBuiltinSelected]
 	);
 
 	// ── Footer ──────────────────────────────────────────────────────────────

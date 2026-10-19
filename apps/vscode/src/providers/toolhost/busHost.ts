@@ -38,6 +38,10 @@ import type { IRetainedRegistry } from 'shell/src/ops/retained';
 import type { ClientOpMap } from 'shell/src/ops/clientOps';
 import type { IBusEndpoint, IBusRouter, SummonLookup } from 'shell/src/ops/busBridge';
 import type { ConnectionManager } from '../../connection/connection';
+import { isCloudConnected } from '../../connection/connection';
+import { DeployManager } from '../../connection/deploy-manager';
+import { CloudAuthProvider } from '../../auth/CloudAuthProvider';
+import { ConfigManager } from '../../config';
 import { getLogger } from '../../shared/util/output';
 
 /** The bus envelope key (must match shell busBridge.ts). */
@@ -146,17 +150,96 @@ export class BusHost {
 			this.connectionManager.on(event, pushStatus);
 			this.disposables.push({ dispose: () => this.connectionManager.off(event, pushStatus) });
 		}
-		const pushAccount = (): void => this.retained.publish('shell:account', this.connectionManager.getClient()?.getAccountInfo() ?? null);
-		this.connectionManager.on('shell:accountUpdate', pushAccount);
-		this.disposables.push({ dispose: () => this.connectionManager.off('shell:accountUpdate', pushAccount) });
+		// The account lands with the CONNECT handshake, but `shell:accountUpdate`
+		// only fires when the engine PUSHES a change (apaext_account) — so the
+		// connection events are what actually make the catalog available, and
+		// the topic must republish on them too. Without this the seeded value
+		// (null, published before the client connected) is what every
+		// LATE-attaching realm replays, and any page deriving its facts from
+		// the mirrored account sees an empty app list forever.
+		let lastAccount = '';
+		const pushAccount = (): void => {
+			const account = this.connectionManager.getClient()?.getAccountInfo() ?? null;
+			// Status ticks are frequent; only a real change crosses the wire
+			// (a retained re-publish re-delivers to every subscriber).
+			const sig = account ? JSON.stringify(account) : '';
+			if (sig === lastAccount) return;
+			lastAccount = sig;
+			this.retained.publish('shell:account', account);
+		};
+		for (const event of ['shell:accountUpdate', 'shell:statusChange', 'shell:connected', 'shell:disconnected'] as const) {
+			this.connectionManager.on(event, pushAccount);
+			this.disposables.push({ dispose: () => this.connectionManager.off(event, pushAccount) });
+		}
 		const pushServices = (): void => this.retained.publish('shell:services', this.connectionManager.getCachedServices() ?? null);
 		this.connectionManager.on('shell:servicesUpdated', pushServices);
 		this.disposables.push({ dispose: () => this.connectionManager.off('shell:servicesUpdated', pushServices) });
+		// Deploy-slot status + staged cloud auth — HOST-ONLY state (the deploy
+		// manager and auth provider live in this process alone), mirrored so
+		// the sidebar's footer facts derive realm-side.
+		const dm = DeployManager.getDeployInstance();
+		const pushDeploy = (): void =>
+			this.retained.publish('shell:deployStatus', {
+				status: dm.getConnectionStatus(),
+				// The CONFIGURED deploy mode (null = shared with dev) — the
+				// footer renders configuration, not the transient active mode.
+				configMode: ConfigManager.getInstance().getConfig().deployment.connectionMode,
+			});
+		for (const event of ['shell:statusChange', 'shell:connected', 'shell:disconnected'] as const) {
+			dm.on(event, pushDeploy);
+			this.disposables.push({ dispose: () => dm.off(event, pushDeploy) });
+		}
+		const auth = CloudAuthProvider.getInstance();
+		const pushCloudAuth = (): void => {
+			void (async () => {
+				// Identity: the cloud-connected account's display name wins;
+				// the auth provider's stored name is the fallback (both are
+				// cosmetic — never block the push on them).
+				const config = ConfigManager.getInstance().getConfig();
+				const devAccount = this.connectionManager.getClient()?.getAccountInfo();
+				const deployAccount = dm.getClient()?.getAccountInfo();
+				const account = (config.development.connectionMode === 'cloud' ? devAccount : null) ?? (config.deployment.connectionMode === 'cloud' ? deployAccount : null);
+				let cloudName: string | undefined;
+				if (!account?.displayName && isCloudConnected()) {
+					try {
+						cloudName = await auth.getUserName();
+					} catch {
+						/* cosmetic */
+					}
+				}
+				this.retained.publish('shell:cloudAuth', {
+					connected: isCloudConnected(),
+					userName: account?.displayName || cloudName || undefined,
+					userEmail: account?.email || undefined,
+				});
+			})();
+		};
+		auth.onDidChange.on('changed', pushCloudAuth);
+		this.disposables.push({ dispose: () => auth.onDidChange.removeListener('changed', pushCloudAuth) });
+		// Identity + cloud-connectedness also move with either connection.
+		for (const event of ['shell:statusChange', 'shell:accountUpdate'] as const) {
+			this.connectionManager.on(event, pushCloudAuth);
+			this.disposables.push({ dispose: () => this.connectionManager.off(event, pushCloudAuth) });
+			dm.on(event, pushCloudAuth);
+			this.disposables.push({ dispose: () => dm.off(event, pushCloudAuth) });
+		}
+		// Config edits change the rendered modes (dev + deploy) — republish.
+		const configListener = vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration('rocketride')) {
+				pushStatus();
+				pushDeploy();
+				pushCloudAuth();
+			}
+		});
+		this.disposables.push(configListener);
+
 		// Seed the topics so realms attaching before the first trigger event
 		// still replay a current snapshot.
 		pushStatus();
 		pushAccount();
 		pushServices();
+		pushDeploy();
+		pushCloudAuth();
 		// Engine events are a STREAM, not state — they stay on the broadcast
 		// lane; realms fold task/status events off their local bus exactly as
 		// they did off their own socket.
@@ -167,12 +250,16 @@ export class BusHost {
 		this.disposables.push({ dispose: () => this.connectionManager.off('shell:event', onEvent) });
 	}
 
-	/** The 'shell:status' snapshot (consumed by CM installMirrorSubscriptions). */
+	/** The 'shell:status' snapshot (consumed by CM installMirrorSubscriptions;
+	 *  the sidebar also reads the RAW status off it — the realm normalize
+	 *  collapses transitional states the footer renders). `configMode` is the
+	 *  CONFIGURED dev mode (the active connection's mode can lag it). */
 	private statusTopic(): Record<string, unknown> {
 		return {
 			connected: this.connectionManager.isConnected(),
 			status: this.connectionManager.getConnectionStatus(),
 			engineHttpUrl: (this.connectionManager.getHttpUrl() || '').replace(/\/$/, ''),
+			configMode: ConfigManager.getInstance().getConfig().development.connectionMode,
 		};
 	}
 

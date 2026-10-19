@@ -26,7 +26,7 @@ import { listAppFolders, scaffoldApp } from '../appdev/scaffolder';
 const DEFAULT_DEVELOPER_ID = 'local';
 
 /** What the registrations need from the host. */
-export interface IAppDevOpsDeps {
+interface IAppDevOpsDeps {
 	context: vscode.ExtensionContext;
 	connectionManager: ConnectionManager;
 	/** Fire-and-forget op to every attached realm (BusHost.broadcastEmitOp). */

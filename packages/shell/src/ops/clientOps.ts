@@ -107,7 +107,7 @@ export interface ClientOpMap extends ShellOpMap {
 	'client.deploy.versions': ShellOpSpec<{ projectId: string }, unknown>;
 	'client.deploy.get': ShellOpSpec<{ projectId: string; teamId: string }, unknown>;
 	'client.deploy.artifact': ShellOpSpec<{ projectId: string; version: number }, unknown>;
-	'client.deploy.history': ShellOpSpec<{ projectId: string; teamId?: string }, unknown>;
+	'client.deploy.history': ShellOpSpec<{ projectId: string; teamId?: string; page?: number; pageSize?: number }, unknown>;
 	'client.deploy.deploy': ShellOpSpec<{ projectId: string; version: number; teamId: string }, unknown>;
 	'client.deploy.disable': ShellOpSpec<{ projectId: string; teamId: string }, unknown>;
 	'client.deploy.enable': ShellOpSpec<{ projectId: string; teamId: string }, unknown>;
@@ -123,6 +123,24 @@ export interface ClientOpMap extends ShellOpMap {
 	 *  carried) — the deploy drawers' live-run scan. A NAMED allowlist entry
 	 *  over the one extension command (never a generic call passthrough). */
 	'client.listRunningTasks': ShellOpSpec<Record<string, never>, unknown>;
+
+	// ── App store lifecycle (the App Builder's pure-SDK half — shared by both
+	//    hosts' App Builder surfaces; see apps/shared tools/appdev). Version-
+	//    taking impls re-validate at runtime: the typed map gives NO runtime
+	//    guarantee at a process boundary, and Number(null)/Number('') coerce
+	//    to 0 ("unspecified version") on the wire. ─────────────────────────────
+	'client.app.listDeployments': ShellOpSpec<{ appId: string }, unknown>;
+	'client.app.where': ShellOpSpec<{ appId: string }, unknown>;
+	'client.app.submit': ShellOpSpec<{ appId: string; version: number }, unknown>;
+	'client.app.publish': ShellOpSpec<{ appId: string; version: number; target: string }, unknown>;
+	'client.app.withdraw': ShellOpSpec<{ appId: string; version: number }, unknown>;
+	'client.app.removePublish': ShellOpSpec<{ appId: string; target: string }, unknown>;
+	'client.app.buildLog': ShellOpSpec<{ appId: string; version: number }, unknown>;
+	'client.app.reply': ShellOpSpec<{ appId: string; message: string; version?: number }, unknown>;
+	/** Wraps the one extension command (named allowlist entries, never a
+	 *  generic passthrough). */
+	'client.app.developerStatus': ShellOpSpec<Record<string, never>, unknown>;
+	'client.app.developerRegister': ShellOpSpec<{ developerId: string }, unknown>;
 
 	// ── Run-log sessions (the DVR) — stateful SDK streams brokered by id.
 	//    The REALM allocates the sessionId (globally unique) and registers
@@ -215,6 +233,20 @@ export interface IClientOpsOptions {
 	portalReturnUrl?: () => string;
 }
 
+/**
+ * Registry-version runtime guard. Number(null) and Number('') both coerce to
+ * 0, which passes a naive isInteger check and reaches the server as
+ * "unspecified version" — so version-taking app ops re-validate here even
+ * though their params are typed.
+ */
+function requireRegistryVersion(value: unknown): number {
+	const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
+	if (!Number.isSafeInteger(n) || n <= 0) {
+		throw new Error(`Invalid registry version: ${String(value)}`);
+	}
+	return n;
+}
+
 /** Decodes a base64 payload into the Uint8Array the SDK wants. */
 function b64ToBytes(b64: string): Uint8Array {
 	if (typeof atob === 'function') {
@@ -303,7 +335,10 @@ export function registerClientOps(bus: IOpBus, source: IClientOpsSource, options
 		'client.deploy.versions': (p) => client().deploy.versions(p.projectId),
 		'client.deploy.get': (p) => client().deploy.get(p.projectId, p.teamId),
 		'client.deploy.artifact': (p) => client().deploy.artifact(p.projectId, p.version),
-		'client.deploy.history': (p) => client().deploy.history(p.projectId, p.teamId !== undefined ? { teamId: p.teamId } : undefined),
+		'client.deploy.history': (p) => {
+			const options = { ...(p.teamId !== undefined ? { teamId: p.teamId } : {}), ...(p.page !== undefined ? { page: p.page } : {}), ...(p.pageSize !== undefined ? { pageSize: p.pageSize } : {}) };
+			return client().deploy.history(p.projectId, Object.keys(options).length > 0 ? options : undefined);
+		},
 		'client.deploy.deploy': (p) => client().deploy.deploy(p.projectId, p.version, p.teamId),
 		'client.deploy.disable': (p) => client().deploy.disable(p.projectId, p.teamId),
 		'client.deploy.enable': (p) => client().deploy.enable(p.projectId, p.teamId),
@@ -315,6 +350,16 @@ export function registerClientOps(bus: IOpBus, source: IClientOpsSource, options
 		'client.deploy.setSourceConfig': (p) => client().deploy.setSourceConfig(p.projectId, p.sourceId, p.teamId, { ...(p.traceLevel ? { traceLevel: p.traceLevel } : {}), ...(p.debugOut !== undefined ? { debugOut: p.debugOut } : {}) }),
 		'client.deploy.preview': (p) => client().deploy.preview(p.cron, p.count),
 		'client.listRunningTasks': () => client().call('rrext_get_tasks'),
+		'client.app.listDeployments': (p) => client().listDeployments(p.appId),
+		'client.app.where': (p) => client().whereApp(p.appId),
+		'client.app.submit': (p) => client().submitApp(p.appId, requireRegistryVersion(p.version)),
+		'client.app.publish': (p) => client().publishApp(p.appId, requireRegistryVersion(p.version), String(p.target ?? '')),
+		'client.app.withdraw': (p) => client().withdrawApp(p.appId, requireRegistryVersion(p.version)),
+		'client.app.removePublish': (p) => client().removeAppPublish(p.appId, String(p.target ?? '')),
+		'client.app.buildLog': (p) => client().buildLog(p.appId, requireRegistryVersion(p.version)),
+		'client.app.reply': (p) => client().replyApp(p.appId, p.message, p.version),
+		'client.app.developerStatus': () => client().call('rrext_deploy_app', { subcommand: 'developer_status' }),
+		'client.app.developerRegister': (p) => client().call('rrext_deploy_app', { subcommand: 'developer_register', developerId: p.developerId }),
 		'client.log.chapters': (p) => client().log.chapters({ projectId: p.projectId, source: p.source, ...(p.teamId ? { teamId: p.teamId } : {}) }),
 		'client.log.openStream': (p) => {
 			// A reused session id must release its old stream first — the

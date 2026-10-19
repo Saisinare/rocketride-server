@@ -333,16 +333,6 @@
 		},
 		"commands": [
 			{
-				"command": "rocketride.provider.connection.focus",
-				"title": "Connections",
-				"category": "RocketRide"
-			},
-			{
-				"command": "rocketride.provider.files.focus",
-				"title": "Pipelines",
-				"category": "RocketRide"
-			},
-			{
 				"command": "rocketride.page.monitor.open",
 				"title": "Server Monitor",
 				"category": "RocketRide",
@@ -414,18 +404,6 @@
 				"category": "RocketRide Pipeline"
 			},
 			{
-				"command": "rocketride.sidebar.files.openFile",
-				"title": "Open Status Page",
-				"icon": "$(dashboard)",
-				"category": "RocketRide Pipeline"
-			},
-			{
-				"command": "rocketride.sidebar.files.openStatus",
-				"title": "Select Component",
-				"icon": "$(symbol-class)",
-				"category": "RocketRide Pipeline"
-			},
-			{
 				"command": "rocketride.sidebar.files.createFile",
 				"title": "Create New Pipeline",
 				"icon": "$(add)",
@@ -439,18 +417,6 @@
 			{
 				"command": "rocketride.pipeline.save",
 				"title": "Save Pipeline",
-				"category": "RocketRide Pipeline"
-			},
-			{
-				"command": "rocketride.sidebar.files.runPipeline",
-				"title": "Run",
-				"icon": "$(play)",
-				"category": "RocketRide Pipeline"
-			},
-			{
-				"command": "rocketride.sidebar.files.stopPipeline",
-				"title": "Stop Pipeline",
-				"icon": "$(primitive-square)",
 				"category": "RocketRide Pipeline"
 			},
 			{
@@ -505,35 +471,11 @@
 			],
 			"commandPalette": [
 				{
-					"command": "rocketride.sidebar.files.openStatus",
-					"when": "false"
-				},
-				{
-					"command": "rocketride.sidebar.files.openFile",
-					"when": "false"
-				},
-				{
-					"command": "rocketride.sidebar.files.runPipeline",
-					"when": "false"
-				},
-				{
-					"command": "rocketride.sidebar.files.stopPipeline",
-					"when": "false"
-				},
-				{
 					"command": "rocketride.openPipelineAsText",
 					"when": "false"
 				},
 				{
 					"command": "rocketride.page.settings.setupCredentials",
-					"when": "false"
-				},
-				{
-					"command": "rocketride.provider.connection.focus",
-					"when": "false"
-				},
-				{
-					"command": "rocketride.provider.files.focus",
 					"when": "false"
 				},
 				{
@@ -583,30 +525,6 @@
 				{
 					"command": "rocketride.app.open",
 					"when": "false"
-				}
-			],
-			"view/title": [
-				{
-					"command": "rocketride.sidebar.files.refresh",
-					"when": "view == rocketride.provider.files",
-					"group": "navigation"
-				},
-				{
-					"command": "rocketride.sidebar.files.createFile",
-					"when": "view == rocketride.provider.files",
-					"group": "navigation@2"
-				}
-			],
-			"view/item/context": [
-				{
-					"command": "rocketride.sidebar.files.runPipeline",
-					"when": "view == rocketride.provider.files && viewItem =~ /^pipelineSource:stopped/",
-					"group": "inline@1"
-				},
-				{
-					"command": "rocketride.sidebar.files.stopPipeline",
-					"when": "view == rocketride.provider.files && viewItem =~ /^pipelineSource:running/ || view == rocketride.provider.files && viewItem == unknownTask",
-					"group": "inline@1"
 				}
 			]
 		},
@@ -669,7 +587,6 @@
 		"README.md",
 		"rocketride-dark-icon.png",
 		"rocketride-light-icon.png",
-		"rocketride.js",
 		"package.json",
 		"LICENSE",
 		"docs/**",

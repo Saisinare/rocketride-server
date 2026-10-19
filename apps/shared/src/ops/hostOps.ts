@@ -58,6 +58,16 @@ export interface EnvSlotsPayload {
 // THE VOCABULARY
 // =============================================================================
 
+/** What a dev-tool frame needs to mount its remote (`host.devtools.load`). */
+export interface DevToolViewPayload {
+	/** Whether the host currently holds a server connection. */
+	connected: boolean;
+	/** Engine base URL, no trailing slash ('' when disconnected). */
+	engineHttpUrl: string;
+	/** The tool to mount, or null when disconnected / not in the catalog. */
+	app: { id: string; moduleId: string; name: string; registryVersion: number } | null;
+}
+
 /** The host-environment op map. */
 export interface HostOpMap extends ShellOpMap {
 	/** Opens a URL in the user's real browser (never inside the realm).
@@ -87,6 +97,11 @@ export interface HostOpMap extends ShellOpMap {
 	 *  SUMMON: a sidebar event found no live frame (a sidebar post is a user
 	 *  action by the peer contract). */
 	'host.openToolPanel': ShellOpSpec<{ appId: string }, void>;
+	/** A tool frame's boot state, PULLED by the panel realm (its appId is
+	 *  stamped into the served HTML). The host owns the catalog and the
+	 *  connection, so it answers authoritatively — a late-attaching realm
+	 *  must not have to re-derive this from mirror replay. */
+	'host.devtools.load': ShellOpSpec<{ appId: string }, DevToolViewPayload>;
 	/** The pinned (installed) dev tool ids — host-persisted strip state. */
 	'host.devtools.installed': ShellOpSpec<Record<string, never>, { ids: string[] }>;
 	/** Pins a tool to the strip. */
@@ -95,6 +110,22 @@ export interface HostOpMap extends ShellOpMap {
 	'host.devtools.remove': ShellOpSpec<{ appId: string }, void>;
 	/** PUSH — the pinned set changed (any surface). */
 	'host.devtools.changed': ShellOpSpec<{ ids: string[] }, void>;
+	/** Brings an OPEN window of the tool forward — never creates one (a mere
+	 *  strip tab switch is not a summon; emitOp). */
+	'host.devtools.reveal': ShellOpSpec<{ appId: string }, void>;
+	/** Opens the tool's details page (README + Install/Remove; emitOp). */
+	'host.devtools.readme': ShellOpSpec<{ appId: string }, void>;
+	/** The Dev Tools RESET: re-fetch the app registry and reload every loaded
+	 *  tool — stale frame panels AND the calling sidebar's own page (emitOp:
+	 *  the caller's realm reboots mid-flight). */
+	'host.devtools.refresh': ShellOpSpec<Record<string, never>, void>;
+	/** Opens one of a tool's OWN documents (the DevToolProps.documents API —
+	 *  e.g. one editor tab per database connection; emitOp). */
+	'host.devtools.openDoc': ShellOpSpec<{ appId: string; docKey: string; title: string }, void>;
+	/** Closes one of a tool's documents (emitOp). */
+	'host.devtools.closeDoc': ShellOpSpec<{ appId: string; docKey: string }, void>;
+	/** Opens an app's App Builder document (emitOp). */
+	'host.app.open': ShellOpSpec<{ appId: string }, void>;
 }
 
 // =============================================================================

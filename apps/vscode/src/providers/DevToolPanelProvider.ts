@@ -45,7 +45,10 @@ import * as crypto from 'crypto';
 import { readFileSync } from 'fs';
 import { ConnectionManager } from '../connection/connection';
 import type { BusHost } from './toolhost/busHost';
-import type { DevToolInitPayload, DevToolWebviewToHost } from './types/devToolTypes';
+import { registerOpHandlers } from 'shell/src/ops/busOps';
+import type { OpImplTable } from 'shell/src/ops/busOps';
+import type { HostOpMap, DevToolViewPayload } from 'shared/ops/hostOps';
+import type { DevToolWebviewToHost } from './types/devToolTypes';
 
 // =============================================================================
 // PROVIDER
@@ -154,6 +157,18 @@ export class DevToolPanelProvider {
 		});
 		this.disposables.push(revealCmd);
 		this.context.subscriptions.push(revealCmd);
+
+		// A frame realm PULLS its boot state (the panel's appId is stamped
+		// into the served HTML). The host owns the catalog and the engine
+		// connection, so it answers authoritatively — a tool panel opens
+		// long after activation, and a late realm must not have to
+		// re-derive this from mirror replay.
+		if (this.busHost) {
+			const impls: OpImplTable<HostOpMap> = {
+				'host.devtools.load': (p) => this.toolView(p.appId),
+			};
+			registerOpHandlers<HostOpMap>(this.busHost.rootBus, impls);
+		}
 		// The Dev Tools reset flow: recreate panels whose mounted registry
 		// version went stale (a publish bumped it under a live panel).
 		const refreshCmd = vscode.commands.registerCommand('rocketride.devtool.refreshStale', () => {
@@ -162,13 +177,16 @@ export class DevToolPanelProvider {
 		this.disposables.push(refreshCmd);
 		this.context.subscriptions.push(refreshCmd);
 
-		// A connection change invalidates every open tool (new engine origin,
-		// new CSP, possibly new versions): re-init each panel; the webview
-		// re-runs its connect + mount pipeline (or shows the disconnected
-		// state). Version changes are handled at show() time.
+		// Connection changes reach each panel realm directly (the shell:status
+		// mirror re-emits shell:statusChange inside the webview, and the
+		// account mirror carries the catalog) — the webview re-runs its
+		// connect + mount pipeline itself. The host's only remaining job here
+		// is cosmetic: name panels that were created while disconnected once
+		// the catalog knows the tool.
 		const statusListener = this.connectionManager.on('shell:statusChange', () => {
 			for (const entry of this.panels.values()) {
-				void this.sendInit(entry).catch(() => {});
+				const row = this.findApp(entry.appId);
+				if (row?.name && !entry.docKey) entry.panel.title = row.name;
 			}
 		});
 		this.disposables.push(statusListener as any);
@@ -251,11 +269,11 @@ export class DevToolPanelProvider {
 		this.panels.set(key, entry);
 		if (row?.registryVersion !== undefined) this.panelVersions.set(key, row.registryVersion);
 
-		panel.webview.html = this.getHtmlForWebview(panel.webview);
+		panel.webview.html = this.getHtmlForWebview(panel.webview, appId, docKey);
 
 		// The panel is a bus realm: the tool's peer traffic (and any engine
 		// access) rides the `__rrbus` envelope beside the typed devtool:*
-		// boot messages. Presence feeds the sidebar peer's summon decisions —
+		// document messages. Presence feeds the sidebar peer's summon decisions —
 		// a webview can die without running unmount cleanup, so the HOST's
 		// panel count is the authority.
 		const detachRealm = this.busHost?.attachWebview(panel.webview, `tool:${appId}/${docKey || 'main'}`);
@@ -264,9 +282,6 @@ export class DevToolPanelProvider {
 		panel.webview.onDidReceiveMessage(async (message: DevToolWebviewToHost) => {
 			try {
 				switch (message.type) {
-					case 'view:ready':
-						await this.sendInit(entry);
-						break;
 					case 'devtool:openDocument':
 						// The tool asks for one of ITS documents (DevToolProps
 						// .documents.open) — e.g. a database connection's tab.
@@ -370,33 +385,29 @@ export class DevToolPanelProvider {
 	// INIT PAYLOAD
 	// =========================================================================
 
+	/**
+	 * A frame's boot state — the authoritative answer to
+	 * `host.devtools.load` (and what the retired `devtool:init` push carried).
+	 *
+	 * @param appId - The tool whose frame is asking.
+	 */
+	private toolView(appId: string): DevToolViewPayload {
+		const connected = this.connectionManager.isConnected();
+		const row = connected ? this.findApp(appId) : undefined;
+		return {
+			connected,
+			engineHttpUrl: connected ? (this.connectionManager.getHttpUrl() || 'http://localhost:5565').replace(/\/$/, '') : '',
+			app: row && row.registryVersion !== undefined
+				? { id: row.id, moduleId: row.moduleId, name: row.name, registryVersion: row.registryVersion }
+				: null,
+		};
+	}
+
 	/** One account-payload app row, as this provider reads it. */
 	private findApp(appId: string): { id: string; moduleId: string; name: string; registryVersion?: number } | undefined {
 		const client = this.connectionManager.getClient();
 		const apps = (client?.getAccountInfo()?.apps ?? []) as Array<{ id: string; moduleId: string; name: string; registryVersion?: number }>;
 		return apps.find((a) => a?.id === appId);
-	}
-
-	/**
-	 * Posts the `devtool:init` payload for one tool panel.
-	 *
-	 * @param entry - The panel entry to post to.
-	 */
-	private async sendInit(entry: PanelEntry): Promise<void> {
-		const connected = this.connectionManager.isConnected();
-		const row = connected ? this.findApp(entry.appId) : undefined;
-		const payload: DevToolInitPayload = {
-			docKey: entry.docKey,
-			engineHttpUrl: connected ? (this.connectionManager.getHttpUrl() || 'http://localhost:5565').replace(/\/$/, '') : '',
-			connected,
-			app: row && row.registryVersion !== undefined
-				? { id: row.id, moduleId: row.moduleId, name: row.name, registryVersion: row.registryVersion }
-				: null,
-		};
-		// The tool's single frame is titled by the tool; per-document panels
-		// keep the title the tool gave them through documents.open().
-		if (row?.name && !entry.docKey) entry.panel.title = row.name;
-		await entry.panel.webview.postMessage({ type: 'devtool:init', payload });
 	}
 
 	// =========================================================================
@@ -410,10 +421,17 @@ export class DevToolPanelProvider {
 	 * chunk fetches ride `connect-src`), and rewrites static asset URLs to
 	 * webview-safe URIs.
 	 *
+	 * The panel's identity (tool id + document key) is STAMPED into the body
+	 * (`data-rr-tool` / `data-rr-doc`), present before any script runs — the
+	 * realm derives everything else (connection, engine URL, catalog row)
+	 * from its mirrored ConnectionManager. There is no init message.
+	 *
 	 * @param webview - The webview to generate HTML for.
+	 * @param appId - The tool's app id (stamped).
+	 * @param docKey - The host-document key, '' for the tool's single frame (stamped).
 	 * @returns The HTML string to set as `webview.html`.
 	 */
-	private getHtmlForWebview(webview: vscode.Webview): string {
+	private getHtmlForWebview(webview: vscode.Webview, appId: string, docKey: string): string {
 		const nonce = crypto.randomBytes(32).toString('base64url');
 		const htmlPath = vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'devtool', 'page-devtool.html');
 
@@ -431,6 +449,10 @@ export class DevToolPanelProvider {
 
 			// Step 1: template placeholders.
 			htmlContent = htmlContent.replace(/\{\{nonce\}\}/g, nonce).replace(/\{\{cspSource\}\}/g, webview.cspSource);
+
+			// Step 1b: the panel's identity, present before any script runs.
+			const esc = (v: string): string => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+			htmlContent = htmlContent.replace('<body', `<body data-rr-tool="${esc(appId)}" data-rr-doc="${esc(docKey)}"`);
 
 			// Step 2: widen the CSP — per-panel runtime CSP (precedent:
 			// ProjectProvider's openLink panel). SCRIPTS stay engine-only

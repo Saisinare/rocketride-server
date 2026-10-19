@@ -40,13 +40,14 @@
  * document defines (rocketride-default.css + the VS Code variable mapping).
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { registerRemotes, loadRemote } from '@module-federation/runtime';
 import { createToolChannel, createFrameBusPeer, ConnectionManager } from 'shell';
 import type { AppDescriptor, DevToolProps, ToolChannel } from 'shell';
 import { useMessaging } from '../hooks/useMessaging';
-import type { DevToolHostToWebview, DevToolInitPayload, DevToolWebviewToHost } from '../../types/devToolTypes';
+import type { DevToolWebviewToHost } from '../../types/devToolTypes';
+import type { DevToolViewPayload } from 'shared/ops/hostOps';
 
 // =============================================================================
 // STYLES
@@ -122,20 +123,63 @@ function entryUrl(base: string, appId: string, version: number): string {
 // COMPONENT
 // =============================================================================
 
+/** The panel's identity — stamped into the served HTML by the host,
+ *  present before any script ran. */
+const STAMPED_APP_ID = document.body.dataset.rrTool ?? '';
+const STAMPED_DOC_KEY = document.body.dataset.rrDoc ?? '';
+
 const DevToolWebview: React.FC = () => {
-	const [data, setData] = useState<DevToolInitPayload | null>(null);
+	const cm = ConnectionManager.getInstance();
+	// Boot state is PULLED from the host (host.devtools.load), which owns the
+	// catalog and the connection — a tool panel opens long after activation,
+	// so this realm must not have to re-derive it from mirror replay.
+	// `undefined` = the answer has not arrived yet (render Loading, not
+	// "Not connected" — those are different states).
+	const [data, setData] = useState<DevToolViewPayload | undefined>(undefined);
 	const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
 	// One container per document: a loaded MF remote cannot be repointed —
 	// the host recreates the whole panel on version change.
 	const mountedRef = useRef<string | null>(null);
 
-	const onMessage = useCallback((message: DevToolHostToWebview) => {
-		if (message.type === 'devtool:init') {
-			setData(message.payload);
-		}
+	// Pull on boot, and re-pull whenever this realm's mirrored connection
+	// state moves — a reconnect brings a new engine origin and possibly new
+	// versions, exactly what the host's re-sent init used to cover.
+	useEffect(() => {
+		let alive = true;
+		let attempt = 0;
+		const pull = (): void => {
+			if (!alive) return;
+			void cm.request('host.devtools.load', { appId: STAMPED_APP_ID } as never).then(
+				(payload) => {
+					if (!alive) return;
+					attempt = 0;
+					setData(payload as DevToolViewPayload);
+				},
+				() => {
+					// A first pull can race this realm's attach handshake, and
+					// a rejected answer must NEVER leave the frame parked on
+					// 'Loading…' forever — back off and ask again. Status
+					// changes re-pull too, but a panel opened while the host
+					// is settling may see no further status tick at all.
+					if (!alive || attempt >= 5) return;
+					attempt += 1;
+					setTimeout(pull, attempt * 500);
+				}
+			);
+		};
+		pull();
+		const off = cm.on('shell:statusChange', () => {
+			attempt = 0;
+			pull();
+		});
+		return () => {
+			alive = false;
+			off();
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	const { sendMessage } = useMessaging<DevToolWebviewToHost, DevToolHostToWebview>({ onMessage });
+	const { sendMessage } = useMessaging<DevToolWebviewToHost, never>({});
 
 	// The DevToolProps.documents API — the host opens one editor-area panel
 	// per document key (e.g. one tab per database connection).
@@ -188,21 +232,23 @@ const DevToolWebview: React.FC = () => {
 	// The frame-side BUS peer (shell busPeer): subscribing replays the host
 	// connection state, then the retained channel state, then live traffic —
 	// and announces this frame (HELLO) so the sidebar peer flushes buffered
-	// events. Built once the tool's identity arrives with devtool:init.
+	// events. The tool's identity is stamped — build once, immediately.
 	const peerRef = useRef<{ appId: string; peer: DevToolProps['peer']; channel: ToolChannel } | null>(null);
-	if (data?.app && peerRef.current?.appId !== data.app.id) {
-		const peer = createFrameBusPeer(data.app.id, ConnectionManager.getInstance());
-		peerRef.current = { appId: data.app.id, peer, channel: createToolChannel(peer) };
+	if (STAMPED_APP_ID && peerRef.current?.appId !== STAMPED_APP_ID) {
+		const peer = createFrameBusPeer(STAMPED_APP_ID, ConnectionManager.getInstance());
+		peerRef.current = { appId: STAMPED_APP_ID, peer, channel: createToolChannel(peer) };
 	}
 
 	// ── Render ───────────────────────────────────────────────────────────────
 	if (!data || !data.connected || !data.app) {
+		// `undefined` = the load answer has not arrived yet; a delivered
+		// payload with no app/connection is a real disconnected state.
 		return (
 			<div style={styles.page}>
 				<div style={styles.status}>
 					<div style={{ textAlign: 'center', maxWidth: 420, padding: '0 24px' }}>
-						<div style={styles.statusTitle}>{data === null ? 'Loading…' : 'Not connected'}</div>
-						{data !== null && <div>Connect to a RocketRide server to open this tool.</div>}
+						<div style={styles.statusTitle}>{data === undefined ? 'Loading…' : 'Not connected'}</div>
+						{data !== undefined && <div>Connect to a RocketRide server to open this tool.</div>}
 					</div>
 				</div>
 			</div>
@@ -214,7 +260,7 @@ const DevToolWebview: React.FC = () => {
 		return (
 			<div style={styles.page}>
 				<div style={styles.frameHost}>
-					<Frame peer={peerRef.current!.peer} channel={peerRef.current!.channel} documents={documents} {...(data.docKey ? { docKey: data.docKey } : {})} />
+					<Frame peer={peerRef.current!.peer} channel={peerRef.current!.channel} documents={documents} {...(STAMPED_DOC_KEY ? { docKey: STAMPED_DOC_KEY } : {})} />
 				</div>
 			</div>
 		);

@@ -19,6 +19,7 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 import { GenericEvent, ConnectionState, PIPE_BUILDER_APP_ID } from '../shared/types';
 import type { TaskStatus } from 'shared/tools/pipelines/project/types';
 import { ConnectionManager } from '../connection/connection';
@@ -30,7 +31,7 @@ import { getLogger } from '../shared/util/output';
 // into the extension-host compile; parse.ts is pure.
 import { parsePipelineContent } from 'shared/tools/pipelines/parse';
 import { isSubscribed } from '../shared/util/subscriptionGate';
-import { isDeployRunBody } from '../shared/util/runClassification';
+import { isDeployRunBody } from 'shared/tools/pipelines/project/runKind';
 import { handleMissingEnvVars } from '../shared/util/envVarCheck';
 import { isCloudConnectionConfigured as hasCloudConnectionConfigured } from '../shared/util/connectionModeAuth';
 import { savePipelineDocument } from '../shared/util/pipelineSave';
@@ -998,12 +999,8 @@ export class PipelineProvider implements vscode.CustomTextEditorProvider {
 	}
 
 	private generateNonce(): string {
-		let text = '';
-		const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-		for (let i = 0; i < 32; i++) {
-			text += possible.charAt(Math.floor(Math.random() * possible.length));
-		}
-		return text;
+		// CSP nonce — must be unpredictable (this page's CSP admits Stripe).
+		return randomBytes(24).toString('base64url');
 	}
 
 	// =========================================================================

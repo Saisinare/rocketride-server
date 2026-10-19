@@ -104,7 +104,7 @@ export class ToolRows {
 	}
 
 	/** The persisted last-known tool rows, by app id (see {@link TOOL_META_KEY}). */
-	readToolMeta(): Record<string, ToolRowDTO> {
+	private readToolMeta(): Record<string, ToolRowDTO> {
 		return this.context?.workspaceState.get<Record<string, ToolRowDTO>>(TOOL_META_KEY) ?? {};
 	}
 

@@ -46,7 +46,8 @@ export interface ServicePanelProps {
 	onRemove: () => void;
 	onStart: () => void;
 	onStop: () => void;
-	/** Whether the sudo password overlay is visible (Linux/macOS only). */
+	/** Whether the sudo password entry is visible (Linux/macOS only — shown
+	 *  when host.engine.control answered needsSudo). */
 	sudoPromptVisible: boolean;
 	sudoPasswordInput: string;
 	onSudoPasswordChange: (password: string) => void;

@@ -5,4 +5,3 @@
 
 // Checkout empty-state dialog (why the Subscribe click cannot open checkout)
 export { CheckoutUnavailableNotice } from './CheckoutUnavailableNotice';
-export type { CheckoutUnavailableNoticeProps } from './CheckoutUnavailableNotice';

@@ -28,7 +28,7 @@ import { readPrefsSnapshot, writePref } from '../providers/PrefsBag';
 import { FrameworkProvider } from '../providers/toolhost/frameworkProvider';
 
 /** What the registrations need from the host. */
-export interface IVscodeHostOpsDeps {
+interface IVscodeHostOpsDeps {
 	context: vscode.ExtensionContext;
 	connectionManager: ConnectionManager;
 	/** Fire-and-forget op to every attached realm (BusHost.broadcastEmitOp). */
@@ -73,6 +73,10 @@ export function registerVscodeHostOps(bus: IOpBus, deps: IVscodeHostOpsDeps): vo
 		// The bus peer's frame SUMMON: a sidebar event found no live frame.
 		'host.openToolPanel': async (p) => {
 			await vscode.commands.executeCommand('rocketride.devtool.open', p.appId);
+		},
+		// The App Builder document for an app (the sidebar's MY APPS rows).
+		'host.app.open': async (p) => {
+			await vscode.commands.executeCommand('rocketride.app.open', p.appId);
 		},
 	};
 	registerOpHandlers<HostOpMap>(bus, impls);

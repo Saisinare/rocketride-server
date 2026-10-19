@@ -12,9 +12,9 @@
  * local disk, all else proxies to the engine), parses the process output
  * for the dev URL and build results, and notifies the App Builder panel:
  * the dev entry + fresh WORKSPACE manifest for the panel's client-side
- * registration push, watch status for the DEV badge, and a debounced
- * preview reload on each successful rebuild. The server holds NO dev
- * state — registration lives in preview pages and dies with them.
+ * registration push and watch status for the DEV badge (MF HMR owns
+ * in-place updates — there is no separate reload push). The server holds NO
+ * dev state — registration lives in preview pages and dies with them.
  *
  * Lifecycle: started when an App Builder panel opens (setting-gated by
  * `rocketride.appdev.autoWatch`), stopped when the panel closes or the
@@ -48,8 +48,6 @@ interface DevSession {
 	startedAt: number;
 	/** Dev server origin once parsed from output (http://localhost:<port>). */
 	devOrigin?: string;
-	/** Rebuild-reload debounce timer. */
-	reloadTimer?: NodeJS.Timeout;
 	/** Millisecond stamp when the current build started (for the badge). */
 	buildStart?: number;
 	/** Watches the app's package.json — a dep edit reinstalls and restarts. */
@@ -233,18 +231,6 @@ export class DevSessionManager {
 	}
 
 	/**
-	 * Awaitable readiness for an app's dev server: resolves with the served
-	 * origin (http://localhost:<port>) once it is actually serving (spawned
-	 * and its banner parsed). Rejects when the start fails or the session is
-	 * stopped first. Undefined when the app was never started.
-	 *
-	 * @param appId - The app to await.
-	 */
-	public whenReady(appId: string): Promise<string> | undefined {
-		return this.readiness.get(appId)?.promise;
-	}
-
-	/**
 	 * Appends an operation to the app's serialized chain (see `chains`).
 	 * Failures propagate to THIS caller but never break the chain for the
 	 * next operation.
@@ -303,7 +289,6 @@ export class DevSessionManager {
 				this.console(app.id, 'log', 'reopened within the linger window — reusing the running dev server');
 				this.notify(app.id, { state: 'ok', target: existing.devOrigin?.replace(/^https?:\/\//, '') });
 				void this.notifyDevEntry(existing);
-				this.scheduleReload(existing);
 			}
 			return;
 		}
@@ -451,7 +436,6 @@ export class DevSessionManager {
 	 * session installs its own watcher on the same file.
 	 */
 	private disposeSessionResources(session: DevSession): void {
-		if (session.reloadTimer) clearTimeout(session.reloadTimer);
 		if (session.pkgTimer) clearTimeout(session.pkgTimer);
 		if (session.heartbeatTimer) clearInterval(session.heartbeatTimer);
 		session.pkgWatcher?.dispose();
@@ -904,11 +888,12 @@ export class DevSessionManager {
 			session.buildStart = undefined;
 			session.firstBuildDone = true;
 			this.notify(session.app.id, { state: 'ok', durationMs, target: session.devOrigin?.replace(/^https?:\/\//, '') });
-			// Fresh cache-busted entry FIRST (same-URL re-registration would
-			// resolve to the browser-cached container — the stale-bundle bug),
-			// then the debounced re-inject.
+			// Fresh cache-busted entry (same-URL re-registration would resolve
+			// to the browser-cached container — the stale-bundle bug). The
+			// realm's content-keyed manifest/entry comparison owns re-injection;
+			// there is no separate reload push (it was a no-op by design — MF
+			// HMR owns updates).
 			void this.notifyDevEntry(session);
-			this.scheduleReload(session);
 		} else if (/build failed|error {3}/i.test(compilerText)) {
 			session.buildStart = undefined;
 			// step: a failure SETTLES the first build too — otherwise the
@@ -985,14 +970,6 @@ export class DevSessionManager {
 		}
 	}
 
-	/** Debounced (300ms) preview reload after a successful rebuild. */
-	private scheduleReload(session: DevSession): void {
-		if (session.reloadTimer) clearTimeout(session.reloadTimer);
-		session.reloadTimer = setTimeout(() => {
-			this.appScreen.notifyReload(session.app.id);
-		}, 300);
-	}
-
 	/** Forwards a watch status to the app's panel DEV badge. */
 	private notify(appId: string, status: AppWatchStatus): void {
 		this.appScreen.notifyWatch(appId, status);
@@ -1028,7 +1005,7 @@ function formatMs(ms: number): string {
  *
  * @param appRoot - The app's absolute folder path.
  */
-export function resolveRsbuildInvocation(appRoot: string): { cmd: string; args: string[]; shell: boolean } {
+function resolveRsbuildInvocation(appRoot: string): { cmd: string; args: string[]; shell: boolean } {
 	// HAND-ROLLED resolution, never require.resolve: inside the esbuild-
 	// bundled extension the bundler's require shim cannot do real
 	// filesystem resolution, so the resolve always threw and silently

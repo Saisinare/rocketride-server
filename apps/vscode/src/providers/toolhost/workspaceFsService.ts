@@ -22,46 +22,25 @@
 // =============================================================================
 
 // =============================================================================
-// TOOLHOST — generic workspace-FS capability service
+// TOOLHOST — generic workspace-FS capability service (the host.fs.* backend)
 // =============================================================================
 //
-// The host side of the `services.fs`/`watch` capability from the
-// sidebar-as-controller architecture: tool controllers running in the
-// sidebar webview find, read, and watch workspace files through this RPC —
-// the host executes globs and reads, and knows NOTHING about what the
-// controller is looking for (`.rrapp` bindings, `.pipe` files, …). That
-// knowledge lives with each tool in apps/shared/src/tools/<tool>.
+// The host half of the `ToolWorkspaceFs` capability: tool controllers in the
+// sidebar realm find, read, and watch workspace files through the
+// `host.fs.*` ops (shared/ops/fsOps) — the host executes globs and reads and
+// knows NOTHING about what the controller is looking for (`.rrapp` bindings,
+// `.pipe` files, …). That knowledge lives with each tool in
+// apps/shared/src/tools/<tool>.
 //
-// Wire protocol (webview → host):
-//   { type:'svc:fs',         id, method:'findFiles',  include, exclude? }
-//   { type:'svc:fs',         id, method:'workspaceRoots' }
-//   { type:'svc:fs',         id, method:'readText',   path }
-//   { type:'svc:fs',         id, method:'readBase64', path, maxBytes }
-//   { type:'svc:fs:watch',   id, globs }
-//   { type:'svc:fs:unwatch', id }
-// host → webview:
-//   { type:'svc:fs:result', id, ok:true, result } | { ..., ok:false, error }
-//   { type:'svc:fs:event',  id, path }
-//
-// Reads are confined to the open workspace folders — the webview can never
-// use this to read outside them. Watch subscriptions belong to one webview
-// PAGE: resetSubscriptions() runs on every view:ready, so a reloaded page
-// (whose subscription ids restart) never leaks its predecessor's watchers.
+// Reads are confined to the open workspace folders — a realm can never use
+// this to read outside them. Watch subscriptions belong to one webview PAGE
+// (keyed by the realm-generated `sub` string): resetSubscriptions() runs on
+// every page boot, so a reloaded page never inherits (or leaks) its
+// predecessor's watchers. Watch events emit through the callback the owning
+// provider supplies (the realm-registered `sidebar.fs.event` op).
 // =============================================================================
 
 import * as vscode from 'vscode';
-
-/** A request message this service consumes. */
-type FsServiceRequest =
-	| { type: 'svc:fs'; id: number; method: 'findFiles'; include: string; exclude?: string }
-	| { type: 'svc:fs'; id: number; method: 'workspaceRoots' }
-	| { type: 'svc:fs'; id: number; method: 'readText'; path: string }
-	| { type: 'svc:fs'; id: number; method: 'readBase64'; path: string; maxBytes: number }
-	| { type: 'svc:fs:watch'; id: number; globs: string[] }
-	| { type: 'svc:fs:unwatch'; id: number };
-
-/** Posts one message into the owning webview. */
-type Post = (message: unknown) => void;
 
 /** Whether an absolute path lies inside one of the open workspace folders. */
 function insideWorkspace(fsPath: string): boolean {
@@ -75,77 +54,42 @@ function insideWorkspace(fsPath: string): boolean {
 
 /**
  * The generic workspace-FS service for one webview (the sidebar). Owns the
- * live watch subscriptions; the owning provider routes matching messages in
- * and disposes the service with itself.
+ * live watch subscriptions; the owning provider serves the `host.fs.*` ops
+ * through it and disposes the service with itself.
  */
 export class WorkspaceFsService {
-	/** Live watch disposables per subscription id (one watcher per glob,
+	/** Live watch disposables per subscription key (one watcher per glob,
 	 *  plus the workspace-folders listener). */
-	private watchers = new Map<number, vscode.Disposable[]>();
+	private watchers = new Map<string, vscode.Disposable[]>();
 
-	/**
-	 * Routes one webview message. Returns true when this service consumed it.
-	 *
-	 * @param message - The raw webview message.
-	 * @param post - Posts responses/events back into the webview.
-	 * @returns True when handled.
-	 */
-	public handle(message: unknown, post: Post): boolean {
-		const msg = message as FsServiceRequest | null;
-		if (!msg || typeof msg !== 'object' || typeof (msg as { type?: unknown }).type !== 'string') return false;
-		switch (msg.type) {
-			case 'svc:fs':
-				void this.respond(msg, post);
-				return true;
-			case 'svc:fs:watch':
-				this.startWatch(msg.id, msg.globs, post);
-				return true;
-			case 'svc:fs:unwatch':
-				this.stopWatch(msg.id);
-				return true;
-			default:
-				return false;
-		}
+	/** Glob search over the open workspace folders → absolute fsPaths. */
+	public async findFiles(include: string, exclude?: string): Promise<string[]> {
+		const uris = await vscode.workspace.findFiles(include, exclude ?? null);
+		return uris.map((uri) => uri.fsPath);
 	}
 
-	/** Executes one request and posts its result (errors in-band). */
-	private async respond(msg: Extract<FsServiceRequest, { type: 'svc:fs' }>, post: Post): Promise<void> {
-		try {
-			let result: unknown;
-			switch (msg.method) {
-				case 'findFiles': {
-					const uris = await vscode.workspace.findFiles(msg.include, msg.exclude ?? null);
-					result = uris.map((uri) => uri.fsPath);
-					break;
-				}
-				case 'workspaceRoots':
-					result = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
-					break;
-				case 'readText': {
-					this.assertInside(msg.path);
-					const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(msg.path));
-					result = Buffer.from(bytes).toString('utf8');
-					break;
-				}
-				case 'readBase64': {
-					this.assertInside(msg.path);
-					const uri = vscode.Uri.file(msg.path);
-					// Stat before reading: the size gate is what keeps the
-					// response (and the caller's data: URI) bounded.
-					const stat = await vscode.workspace.fs.stat(uri);
-					if (stat.size > msg.maxBytes) {
-						result = null;
-						break;
-					}
-					const bytes = await vscode.workspace.fs.readFile(uri);
-					result = Buffer.from(bytes).toString('base64');
-					break;
-				}
-			}
-			post({ type: 'svc:fs:result', id: msg.id, ok: true, result });
-		} catch (error) {
-			post({ type: 'svc:fs:result', id: msg.id, ok: false, error: error instanceof Error ? error.message : String(error) });
-		}
+	/** The open workspace folders' absolute fsPaths. */
+	public workspaceRoots(): string[] {
+		return (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+	}
+
+	/** One workspace file as UTF-8 (containment-guarded). */
+	public async readText(fsPath: string): Promise<string> {
+		this.assertInside(fsPath);
+		const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(fsPath));
+		return Buffer.from(bytes).toString('utf8');
+	}
+
+	/** One workspace file as base64, null when over `maxBytes`. */
+	public async readBase64(fsPath: string, maxBytes: number): Promise<string | null> {
+		this.assertInside(fsPath);
+		const uri = vscode.Uri.file(fsPath);
+		// Stat before reading: the size gate is what keeps the response (and
+		// the caller's data: URI) bounded.
+		const stat = await vscode.workspace.fs.stat(uri);
+		if (stat.size > maxBytes) return null;
+		const bytes = await vscode.workspace.fs.readFile(uri);
+		return Buffer.from(bytes).toString('base64');
 	}
 
 	/** Guards a read path to the open workspace folders. */
@@ -153,41 +97,41 @@ export class WorkspaceFsService {
 		if (!insideWorkspace(fsPath)) throw new Error(`Path is outside the workspace: ${fsPath}`);
 	}
 
-	/** Starts one watch subscription (a watcher per glob). */
-	private startWatch(id: number, globs: string[], post: Post): void {
-		this.stopWatch(id);
-		const emit = (uri: vscode.Uri): void => post({ type: 'svc:fs:event', id, path: uri.fsPath });
+	/** Starts one watch subscription (idempotent-by-replace per key). */
+	public watch(sub: string, globs: string[], emit: (path: string) => void): void {
+		this.unwatch(sub);
+		const onUri = (uri: vscode.Uri): void => emit(uri.fsPath);
 		const disposables: vscode.Disposable[] = globs.map((glob) => {
 			const watcher = vscode.workspace.createFileSystemWatcher(glob);
-			watcher.onDidCreate(emit);
-			watcher.onDidChange(emit);
-			watcher.onDidDelete(emit);
+			watcher.onDidCreate(onUri);
+			watcher.onDidChange(onUri);
+			watcher.onDidDelete(onUri);
 			return watcher;
 		});
 		// Adding/removing a workspace folder fires no file event, but
-		// invalidates any glob's result set — tick the subscription with a
-		// synthetic event so the subscriber re-evaluates.
-		disposables.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
-			post({ type: 'svc:fs:event', id, path: '' });
-		}));
-		this.watchers.set(id, disposables);
+		// invalidates any glob's result set — tick the subscription with the
+		// synthetic '' event so the subscriber re-evaluates.
+		disposables.push(vscode.workspace.onDidChangeWorkspaceFolders(() => emit('')));
+		this.watchers.set(sub, disposables);
 	}
 
 	/** Stops one watch subscription. */
-	private stopWatch(id: number): void {
-		const watchers = this.watchers.get(id);
+	public unwatch(sub: string): void {
+		const watchers = this.watchers.get(sub);
 		if (!watchers) return;
-		this.watchers.delete(id);
+		this.watchers.delete(sub);
 		for (const watcher of watchers) watcher.dispose();
 	}
 
 	/**
-	 * Drops every live subscription — called on the webview's view:ready: a
-	 * fresh page restarts its ids from zero and must not inherit (or leak)
-	 * its predecessor's watchers.
+	 * Drops every live subscription — called on the webview's page boot
+	 * (view:ready): a fresh page mints fresh keys and must not inherit (or
+	 * leak) its predecessor's watchers. view:ready stays the page-lifecycle
+	 * signal because HTML rewrites (the CSP reboot, the Dev Tools RESET)
+	 * reboot the page WITHOUT re-resolving the webview.
 	 */
 	public resetSubscriptions(): void {
-		for (const id of [...this.watchers.keys()]) this.stopWatch(id);
+		for (const sub of [...this.watchers.keys()]) this.unwatch(sub);
 	}
 
 	/** Disposes all watchers (provider teardown). */

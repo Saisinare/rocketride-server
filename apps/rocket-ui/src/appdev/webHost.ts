@@ -41,8 +41,8 @@
 
 import { ConnectionManager } from 'shell';
 import type { RocketRideClient } from 'shell';
-import { projectListing, applyListing, probePackage, runListingPreflight, toRungPins, toVersionInfos, walkDeploymentHistory } from 'shared/tools/appdev';
-import type { BuildStatusTick, IAppBuilderHost, WireHistoryRow, WirePin, WireRailEntry } from 'shared/tools/appdev';
+import { createBusAppBuilderHost, projectListing, applyListing, probePackage, runListingPreflight } from 'shared/tools/appdev';
+import type { IAppBuilderHost } from 'shared/tools/appdev';
 import { appFileExists, readAppImageDataUri, readAppPackage, readAppText, writeAppPackage } from './appStore';
 import { packAppSource } from './pack';
 import type { WebDevSession } from './devSession';
@@ -90,6 +90,10 @@ export function createWebAppBuilderHost(o: WebHostOptions): IAppBuilderHost {
 	const prefKey = (key: string): string => `rr:appdev:${appId}:${key}`;
 
 	return {
+		// The SDK half — the brokered client.* ops + realm-local shell:event
+		// derivations, shared with every other host (shared/tools/appdev).
+		...createBusAppBuilderHost({ bus: ConnectionManager.getInstance(), appId, hasReviewLadder }),
+
 		capabilities: {
 			hasNativeFiles: false,
 			canDebug: true,
@@ -103,23 +107,6 @@ export function createWebAppBuilderHost(o: WebHostOptions): IAppBuilderHost {
 		subscribeConsole: session ? (listener) => session.subscribeConsole(listener) : undefined,
 		subscribeErrors: session ? (listener) => session.subscribeErrors(listener) : undefined,
 		subscribeWatch: session ? (listener) => session.subscribeWatch(listener) : undefined,
-		subscribeBuildStatus: (listener: (tick: BuildStatusTick) => void) => {
-			// The server delivers DEPLOY-typed events only to connections that
-			// monitored them — arm the wildcard monitor exactly like the other
-			// deployment surfaces do (useDeployments.ts).
-			client.addMonitor({ token: '*' }, ['deploy']).catch((err) => {
-				console.error('[webHost] deploy monitor subscription failed:', err);
-			});
-			const unsub = ConnectionManager.getInstance().on('shell:event', ({ event }: { event: { event?: string; body?: { appId?: string; version?: number; status?: string } } }) => {
-				if (event?.event !== 'apaevt_build_status') return;
-				const body = event.body;
-				if (!body || body.appId !== appId) return;
-				listener({ version: body.version, status: body.status ?? '' });
-			});
-			return () => {
-				unsub();
-			};
-		},
 		reloadPreview: onReloadPreview,
 		getPreviewUrl: () => previewUrl,
 		// Debug = the LINKED preview in a first-class browser tab: the
@@ -141,53 +128,16 @@ export function createWebAppBuilderHost(o: WebHostOptions): IAppBuilderHost {
 			} catch { /* storage full/unavailable — the pref just does not stick */ }
 		},
 
-		// ── Deploy (the publish ladder) — direct SDK calls ───────────────
-		listVersions: async () => toVersionInfos((await client.listDeployments(appId)) as unknown as WireRailEntry[]),
-		// DEPLOY = pack the VFS source, upload bytes; the server builds the
-		// one true bundle (auto-enqueued on receipt). Progress streams back
-		// through apaevt_build into the Console pane.
+		// ── Deploy — the one SDK member that stays host-specific here:
+		// DEPLOY = pack the STORE-VFS source, upload bytes; the server builds
+		// the one true bundle (auto-enqueued on receipt). Progress streams
+		// back through apaevt_build into the Console pane. ────────────────
 		deploy: async (message) => {
 			session?.pushConsole('log', '[deploy] packing source...');
 			const data = await packAppSource(client, folder);
 			session?.pushConsole('log', `[deploy] uploading ${(data.byteLength / 1024).toFixed(0)} KB...`);
 			await client.deploy.add({ kind: 'app', data, comment: message });
 			session?.pushConsole('log', '[deploy] accepted — server build queued.');
-		},
-		publish: async (version, target) => {
-			await client.publishApp(appId, version, target);
-		},
-		removePublish: async (target) => {
-			await client.removeAppPublish(appId, target);
-		},
-		listTeams: async () => (client.getAccountInfo()?.organization?.teams ?? []).map((t) => ({ id: t.id, name: t.name })),
-		getWhereLive: async () => toRungPins((await client.whereApp(appId)) as unknown as WirePin[], hasReviewLadder),
-		loadBuildLog: async (version) => {
-			const body = (await client.buildLog(appId, version)) as { log?: string } | undefined;
-			return body?.log ?? '';
-		},
-		submitForReview: hasReviewLadder
-			? async (version) => {
-					await client.submitApp(appId, version);
-				}
-			: undefined,
-		withdrawReview: hasReviewLadder
-			? async (version) => {
-					await client.withdrawApp(appId, version);
-				}
-			: undefined,
-		getDeveloperId: async () => {
-			const res = (await client.call('rrext_deploy_app', { subcommand: 'developer_status' })) as { developerId?: string | null } | undefined;
-			return res?.developerId ?? '';
-		},
-		registerDeveloper: async (developerId) => {
-			const res = (await client.call('rrext_deploy_app', { subcommand: 'developer_register', developerId })) as { developerId?: string } | undefined;
-			return res?.developerId ?? developerId;
-		},
-
-		// ── Dashboard + review thread ────────────────────────────────────
-		loadHistory: async () => walkDeploymentHistory(async (page, pageSize) => (await client.deploy.history(appId, { page, pageSize })) as { rows?: WireHistoryRow[]; total?: number } | undefined),
-		sendReply: async (message, version) => {
-			await client.replyApp(appId, message, version);
 		},
 
 		// ── Store — the listing IS the .appdev package.json appManifest ──
