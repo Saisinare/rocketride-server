@@ -443,6 +443,7 @@ class Store(DocumentStoreBase):
 
         must: List[Filter] = []
         must.append(Filter.by_property('chunkId').equal(0))
+        must.append(Filter.by_property('isDeleted').equal(False))
 
         # If parent specified, add condition
         if parent is not None:
@@ -456,8 +457,8 @@ class Store(DocumentStoreBase):
         # Build paths dictionary
         paths = {}
         for record in docs:
-            parent_id = record.metadata['parent']
-            object_id = record.metadata['objectId']
+            parent_id = record.metadata.parent
+            object_id = record.metadata.objectId
 
             if parent_id and object_id:
                 paths[parent_id] = object_id
@@ -538,59 +539,35 @@ class Store(DocumentStoreBase):
         self.collectionObj.data.delete_many(where=Filter.any_of(objectIdsFilter))
         return
 
+    def _setDeleted(self, objectIds: List[str], deleted: bool) -> None:
+        """Update every matching chunk, draining batches in the opposite state.
+
+        Filtering out chunks already updated keeps each query bounded without
+        using offsets into a shrinking result set or the server's result window.
+        """
+        if not objectIds or not self.doesCollectionExist():
+            return
+
+        pending = Filter.all_of(
+            [
+                Filter.any_of([Filter.by_property('objectId').equal(oid) for oid in objectIds]),
+                Filter.by_property('isDeleted').equal(not deleted),
+            ]
+        )
+        while True:
+            points = self.collectionObj.query.fetch_objects(filters=pending, limit=1000)
+            if not points.objects:
+                return
+            for point in points.objects:
+                self.collectionObj.data.update(uuid=point.uuid, properties={'isDeleted': deleted})
+
     def markDeleted(self, objectIds: List[str]) -> None:
-        """
-        Mark the set of documents with the given objectId as deleted.
-
-        They then will not be returned from the search without specifying deleted=True
-        """
-        # By definition, if the collection does not exists, there
-        # is nothing to mark
-        if not self.doesCollectionExist():
-            return
-
-        if not objectIds:
-            return
-
-        objectIdsFilter: List[Filter] = []
-        for objectId in objectIds:
-            objectIdsFilter.append(Filter.by_property('objectId').equal(objectId))
-        points = self.collectionObj.query.fetch_objects(filters=Filter.any_of(objectIdsFilter))
-        for point in points.objects:
-            self.collectionObj.data.update(
-                uuid=point.uuid,
-                properties={
-                    'isDeleted': True,
-                },
-            )
-        return
+        """Hide every chunk of the named documents from ordinary retrieval."""
+        self._setDeleted(objectIds, True)
 
     def markActive(self, objectIds: List[str]) -> None:
-        """
-        Mark the set of documents with the given objectId as active.
-
-        This occurs if a document now "comes back" after begin deleted
-        """
-        # By definition, if the collection does not exists, there
-        # is nothing to mark
-        if not self.doesCollectionExist():
-            return
-
-        if not objectIds:
-            return
-
-        objectIdsFilter: List[Filter] = []
-        for objectId in objectIds:
-            objectIdsFilter.append(Filter.by_property('objectId').equal(objectId))
-        points = self.collectionObj.query.fetch_objects(filters=Filter.any_of(objectIdsFilter))
-        for point in points.objects:
-            self.collectionObj.data.update(
-                uuid=point.uuid,
-                properties={
-                    'isDeleted': False,
-                },
-            )
-        return
+        """Restore every soft-deleted chunk of the named documents."""
+        self._setDeleted(objectIds, False)
 
     def render(self, objectId: str, callback: Callable[[str], None]) -> None:
         """

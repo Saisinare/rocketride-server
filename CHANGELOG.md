@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **docker**: the engine image is built FROM a shared `engine-base` and runs as uid 1000 (was a system user, uid 999). An existing `/opt/data` volume has to be handed over once: `docker run --rm -v rocketride-data:/opt/data alpine chown -R 1000:1000 /opt/data`. The engine now refuses to start, naming that command, when its data directory is not writable.
 
 ### Fixed
+- **nodes**: vector-store trash operations preserve Qdrant metadata and update every matching Weaviate chunk; `objdir` excludes soft-deleted documents on Astra, Atlas, Chroma, Milvus, Pinecone and Weaviate (#2587).
 - **nodes**: the `objdir` tool of `store_postgres` and `rocketride_vector` no longer lists the store's internal `schema` control row (it appeared as a `None` key) or soft-deleted documents (#2587)
 - **ai**: the shared embedding factory imports providers from the shipped `nodes` package (#2587).
 - **nodes**: PostgreSQL vector stores accept document metadata fields outside the SQL schema and roll back failed chunk replacements, preserving existing documents (#2587).

@@ -35,7 +35,6 @@ from ai.common.config import Config
 from rocketlib import debug
 import uuid
 import numpy as np
-import json
 import sys
 import re
 
@@ -582,15 +581,15 @@ class Store(DocumentStoreBase):
         if not self.doesCollectionExist():
             return {}
 
-        # Base filter: Only chunk 0
-        filter_dict = {'chunk': 0}
+        # Chroma stores flat metadata; combine predicates explicitly.
+        filters = [{'chunkId': {'$eq': 0}}, {'isDeleted': {'$eq': False}}]
 
         # If parent specified, add condition
         if parent is not None:
-            filter_dict['parent'] = {'$eq': json.dumps(parent, ensure_ascii=False)}
+            filters.append({'parent': {'$eq': parent}})
 
         # Perform the query
-        results = self.collectionObj.get(where=filter_dict, limit=limit, offset=offset)
+        results = self.collectionObj.get(where={'$and': filters}, limit=limit, offset=offset)
 
         # Build paths dictionary
         paths = {}

@@ -625,7 +625,7 @@ class Store(DocumentStoreBase):
 
         # Set all the objects with the given objectId to true
         self.client.set_payload(
-            collection_name=self.collection, payload={'meta': {'isDeleted': True}}, points=filter_objectId
+            collection_name=self.collection, payload={'isDeleted': True}, key='meta', points=filter_objectId
         )
         return
 
@@ -645,7 +645,7 @@ class Store(DocumentStoreBase):
 
         # Set all the objects with the given objectId to false
         self.client.set_payload(
-            collection_name=self.collection, payload={'meta': {'isDeleted': False}}, points=filter_objectId
+            collection_name=self.collection, payload={'isDeleted': False}, key='meta', points=filter_objectId
         )
         return
 

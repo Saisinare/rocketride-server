@@ -7,8 +7,8 @@
 Tests for Qdrant store markDeleted / markActive payload path.
 
 Validates that soft-delete flags are written to the nested ``meta.isDeleted``
-path (matching the query filter and payload index) instead of a top-level
-``isDeleted`` field.
+path (matching the query filter and payload index), preserving the other
+metadata fields so a soft-deleted document can still be found and restored.
 
 Usage:
     python -m pytest nodes/test/store_qdrant/test_mark_deleted.py -v
@@ -58,6 +58,13 @@ _mock_store_mod.DocumentStoreBase = _FakeDocumentStoreBase
 
 _mock_config_mod = MagicMock()
 _mock_schema_mod = MagicMock()
+
+# Prefer the installed client's local backend for the round-trip regression.
+# Keep the existing lightweight unit tests runnable without that dependency.
+try:
+    importlib.import_module('qdrant_client')
+except ImportError:
+    pass
 
 for name, mock in {
     'numpy': MagicMock(),
@@ -117,9 +124,8 @@ class TestQdrantMarkDeleted:
 
         store.client.set_payload.assert_called_once()
         _, kwargs = store.client.set_payload.call_args
-        assert kwargs['payload'] == {'meta': {'isDeleted': True}}, (
-            f'Expected {{"meta": {{"isDeleted": true}}}} but got {kwargs["payload"]}'
-        )
+        assert kwargs['payload'] == {'isDeleted': True}
+        assert kwargs['key'] == 'meta'
 
     def test_markActive_writes_meta_isDeleted_false(self):
         """MarkActive must set meta.isDeleted = False, not top-level isDeleted."""
@@ -129,9 +135,8 @@ class TestQdrantMarkDeleted:
 
         store.client.set_payload.assert_called_once()
         _, kwargs = store.client.set_payload.call_args
-        assert kwargs['payload'] == {'meta': {'isDeleted': False}}, (
-            f'Expected {{"meta": {{"isDeleted": false}}}} but got {kwargs["payload"]}'
-        )
+        assert kwargs['payload'] == {'isDeleted': False}
+        assert kwargs['key'] == 'meta'
 
     def test_markDeleted_skips_when_collection_missing(self):
         """MarkDeleted is a no-op when the collection does not exist."""
@@ -150,3 +155,52 @@ class TestQdrantMarkDeleted:
             store.markActive(['obj-1'])
 
         store.client.set_payload.assert_not_called()
+
+
+def test_trash_round_trip_preserves_metadata_with_real_qdrant():
+    """The real client's local backend must preserve siblings under meta."""
+    from copy import deepcopy
+    from types import SimpleNamespace
+
+    import pytest
+    from qdrant_client import QdrantClient, models
+    from ai.common.store.document_store import VectorStoreToolMixin
+
+    if QdrantClient.__module__ != 'qdrant_client.qdrant_client':
+        pytest.skip('requires the real qdrant-client, not the protocol mock')
+    client = QdrantClient(':memory:')
+    try:
+        client.create_collection(
+            'test-collection', vectors_config=models.VectorParams(size=2, distance=models.Distance.COSINE)
+        )
+        original = {
+            1: {'content': 'first', 'meta': {'objectId': 'a', 'chunkId': 0, 'parent': '/a', 'isDeleted': False}},
+            2: {'content': 'second', 'meta': {'objectId': 'a', 'chunkId': 1, 'parent': '/a', 'isDeleted': False}},
+            3: {'content': 'other', 'meta': {'objectId': 'b', 'chunkId': 0, 'parent': '/b', 'isDeleted': False}},
+        }
+        client.upsert(
+            'test-collection',
+            points=[
+                models.PointStruct(id=i, vector=[1.0, 0.0], payload=deepcopy(payload))
+                for i, payload in original.items()
+            ],
+        )
+        store = _make_store()
+        store.client = client
+        tools = VectorStoreToolMixin()
+        tools.IGlobal = SimpleNamespace(store=store, expose_tools=True, allow_write=True)
+
+        assert tools.soft_delete({'object_ids': ['a']})['success'] is True
+        expected = deepcopy(original)
+        for i in (1, 2):
+            expected[i]['meta']['isDeleted'] = True
+        assert {p.id: p.payload for p in client.retrieve(store.collection, ids=list(original))} == expected
+        assert tools.objdir({})['paths'] == {'/b': 'b'}
+        assert 'soft-deleted' in tools.get({'object_id': 'a'})['error']
+
+        assert tools.restore({'object_ids': ['a']})['success'] is True
+        assert {p.id: p.payload for p in client.retrieve(store.collection, ids=list(original))} == original
+        assert tools.objdir({})['paths'] == {'/a': 'a', '/b': 'b'}
+        assert [c['content'] for c in tools.get({'object_id': 'a'})['chunks']] == ['first', 'second']
+    finally:
+        client.close()

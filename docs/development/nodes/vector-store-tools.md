@@ -44,9 +44,10 @@ name and vector size, read on every collection check). `upsert`, `delete`,
 
 ## Optional capability: listing documents
 
-`getPaths` keys its result by parent path, so documents that share a path
-collapse into one entry and no chunk count is available. A driver that can do
-better opts in:
+`getPaths` lists active documents only, filtering out soft-deleted chunks
+before applying the page. It keys its result by parent path, so documents
+that share a path collapse into one entry and no chunk count is available.
+A driver that can do better opts in:
 
 ```python
 class Store(DocumentStoreBase):
@@ -85,6 +86,13 @@ Both may return the number of chunk rows the backend matched, or `None` as
 before; the tools report it as `matched_chunks` (`null` when the driver gives
 no count) and never claim a count the driver did not give. The Postgres
 drivers return the statement's row count.
+
+Both operations must preserve content and all metadata other than
+`isDeleted`, and must update every matching chunk even when a document spans
+multiple backend query pages. A successful restore makes its paths visible
+to `objdir` again. Qdrant updates only the nested flag; Weaviate drains bounded
+batches of chunks still in the opposite state, without offsets into a
+shrinking result set.
 
 ## Verification
 

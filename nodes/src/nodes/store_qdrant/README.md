@@ -81,7 +81,7 @@ Requires an embedding provider bound to the node (the embedding sub-block in the
 
 ### `objdir`
 
-List the distinct parent paths in the collection as a map of parent path to one object ID each. Takes optional `parent`, `offset` and `limit` (default and cap 1000); documents that share a parent path appear as one entry.
+List the distinct parent paths of active documents in the collection as a map of parent path to one object ID each. Takes optional `parent`, `offset` and `limit` (default and cap 1000); documents that share a parent path appear as one entry.
 
 ### `get`
 

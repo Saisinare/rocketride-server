@@ -323,7 +323,7 @@ class Store(DocumentStoreBase):
             return {}
 
         # Build match stage filter
-        match_filter = {'meta.chunkId': 0}
+        match_filter = {'meta.chunkId': 0, 'meta.isDeleted': False}
 
         if parent is not None:
             match_filter['meta.parent'] = parent

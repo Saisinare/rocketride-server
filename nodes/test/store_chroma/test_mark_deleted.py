@@ -35,11 +35,23 @@ class _FakeCollection:
 
     def get(self, ids=None, where=None, limit=None, offset=None, where_document=None, include=None):
         self.get_calls.append(where)
-        wanted = set(where['objectId']['$in'])
-        hits = [(row_id, meta) for row_id, meta in self.rows.items() if meta['objectId'] in wanted]
+
+        def matches(meta, clause):
+            if '$and' in clause:
+                return all(matches(meta, child) for child in clause['$and'])
+            assert len(clause) == 1  # Chroma requires one field per clause.
+            field, condition = next(iter(clause.items()))
+            if '$in' in condition:
+                return meta.get(field) in condition['$in']
+            return meta.get(field) == condition['$eq']
+
+        hits = [(row_id, meta) for row_id, meta in self.rows.items() if matches(meta, where)]
+        hits = hits[offset or 0 :]
+        if limit is not None:
+            hits = hits[:limit]
         return {
             'ids': [row_id for row_id, _ in hits],
-            'metadatas': [dict(meta) for _, meta in hits] if 'metadatas' in (include or []) else None,
+            'metadatas': [dict(meta) for _, meta in hits] if include is None or 'metadatas' in include else None,
             'embeddings': None,
             'documents': None,
             'uris': None,
@@ -161,3 +173,17 @@ def test_the_trash_tools_work_on_this_driver(store):
     assert _deleted_flags(store.collectionObj)['b-0'] is True
     assert tool.restore({'object_ids': ['b']}) == {'success': True, 'object_ids': ['b'], 'matched_chunks': 1}
     assert _deleted_flags(store.collectionObj)['b-0'] is False
+
+
+def test_trash_round_trip_filters_paths_before_paging(store):
+    store.collectionObj.rows.update(_rows('schema', 1, deleted=True))
+    assert store.getPaths(offset=1, limit=1) == {'/b': 'b'}
+
+    store.markDeleted(['a'])
+    assert store.getPaths(limit=1) == {'/b': 'b'}
+    assert store.getPaths(parent='/a') == {}
+    assert store.getPaths(offset=1, limit=1) == {}
+
+    store.markActive(['a'])
+    assert store.getPaths(parent='/a') == {'/a': 'a'}
+    assert store.getPaths() == {'/a': 'a', '/b': 'b'}

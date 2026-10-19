@@ -104,7 +104,13 @@ def _make_obj_records(object_id: str, count: int, *, is_deleted: bool) -> dict[s
     """
     return {
         f'{object_id}-{index}': {
-            'properties': {'objectId': object_id, 'isDeleted': is_deleted},
+            'properties': {
+                'objectId': object_id,
+                'isDeleted': is_deleted,
+                'chunkId': index,
+                'parent': f'/{object_id}',
+                'content': f'chunk {index}',
+            },
             'vector': [0.1, 0.2],
         }
         for index in range(count)
@@ -177,3 +183,43 @@ def test_mutation_updates_only_matching_object_ids(
     ]
     assert obj1 == expected_obj1_is_deleted
     assert obj2 == expected_obj2_is_deleted
+
+
+@pytest.mark.parametrize('method, initial', [('markDeleted', False), ('markActive', True)])
+def test_trash_drains_capped_pages_for_multiple_documents(monkeypatch, method, initial):
+    """A short response is not the last page; already updated chunks must not repeat."""
+    records = _make_obj_records('a', 62, is_deleted=initial)
+    records.update(_make_obj_records('b', 42, is_deleted=initial))
+    records.update(_make_obj_records('already-done', 2, is_deleted=not initial))
+    records.update(_make_obj_records('untouched', 3, is_deleted=initial))
+    store, collection = _make_store(records)
+    fetch = collection.query.fetch_objects
+    calls = []
+
+    def capped_fetch(**kwargs):
+        calls.append(kwargs)
+        assert len(calls) <= 10, 'mutation is not making progress'
+        kwargs['limit'] = min(kwargs.get('limit', 100), 25)
+        return fetch(**kwargs)
+
+    monkeypatch.setattr(collection.query, 'fetch_objects', capped_fetch)
+    getattr(store, method)(['a', 'b', 'already-done', 'missing'])
+
+    assert len(calls) == 6  # five data pages, then an empty page
+    for record in collection._storage.values():
+        meta = record['properties']
+        assert meta['isDeleted'] is (initial if meta['objectId'] == 'untouched' else not initial)
+
+
+def test_trash_round_trip_removes_paths_and_keeps_parent_filter():
+    """Directory listings hide trash before paging and show it again after restore."""
+    records = _make_obj_records('a', 2, is_deleted=False)
+    records.update(_make_obj_records('b', 1, is_deleted=False))
+    records.update(_make_obj_records('schema', 1, is_deleted=True))
+    store, _ = _make_store(records)
+    store.markDeleted(['a'])
+    assert store.getPaths(limit=1) == {'/b': 'b'}
+    assert store.getPaths(parent='/a') == {}
+    store.markActive(['a'])
+    assert store.getPaths(parent='/a') == {'/a': 'a'}
+    assert store.getPaths(offset=1, limit=1) == {'/b': 'b'}

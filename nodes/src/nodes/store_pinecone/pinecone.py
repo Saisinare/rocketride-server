@@ -329,7 +329,7 @@ class Store(DocumentStoreBase):
             return {}
 
         # Build up the filter for chunkId = 0
-        filterList = [{'chunkId': {'$eq': 0}}]
+        filterList = [{'chunkId': {'$eq': 0}}, {'isDeleted': {'$eq': False}}]
 
         # If parent specified, add it to the filter
         if parent is not None:

@@ -100,7 +100,7 @@ class Filter:
         combined = Filter(logic='and')
         for f in filters:
             if isinstance(f, Filter):
-                combined.conditions.extend(f.conditions)
+                combined.conditions.append({'filter': f})
         return combined
 
     @classmethod
@@ -108,7 +108,7 @@ class Filter:
         combined = Filter(logic='or')
         for f in filters:
             if isinstance(f, Filter):
-                combined.conditions.extend(f.conditions)
+                combined.conditions.append({'filter': f})
         return combined
 
     def __and__(self, other: 'Filter') -> 'Filter':
@@ -121,6 +121,9 @@ class Filter:
 
         results = []
         for cond in self.conditions:
+            if 'filter' in cond:
+                results.append(cond['filter'].matches(properties))
+                continue
             prop_name = cond.get('property')
             op = cond.get('op')
             value = cond.get('value')
