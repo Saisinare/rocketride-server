@@ -21,7 +21,9 @@
 // SOFTWARE.
 // =============================================================================
 
-export type RocketRideConnectionMode = 'cloud' | 'docker' | 'service' | 'onprem' | 'local';
+// ONE declaration for this union — see shared/types/connection.ts.
+import type { ConnectionMode } from '../types/connection';
+export type RocketRideConnectionMode = ConnectionMode;
 
 export interface CloudConnectionConfig {
 	development: {

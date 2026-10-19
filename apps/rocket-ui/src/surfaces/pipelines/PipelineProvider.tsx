@@ -907,7 +907,25 @@ const PipelineProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, 
 						const docState = getDocs()?.getState();
 						return (docState ? Object.values(docState.editors).find((editor) => editor.documentUri === uri)?.label : undefined) || projectDisplayName(filename);
 					})()}
-					{...(isReadonly ? {} : { fetchDeployLifecycle, teamDeployments, deployTeams, onDeployPublish: handleDeployPublish, onDeployVersion: handleDeployVersion, onOpenDeployment: handleOpenDeployment, onDeploySetDisabled: handleDeploySetDisabled, onDeployRemove: handleDeployRemove, onDeploySetSchedule: handleDeploySetSchedule, onDeploySetSchedulePaused: handleDeploySetSchedulePaused, onDeployPreviewSchedule: handleDeployPreviewSchedule, fetchDeployArtifact: handleDeployFetchArtifact, onSaveDocument: () => performSave(filename, pipeline, { rethrow: true }) })}
+					{...(isReadonly
+						? {}
+						: {
+								deploy: {
+									fetchLifecycle: fetchDeployLifecycle,
+									publish: handleDeployPublish,
+									deployVersion: handleDeployVersion,
+									teamDeployments,
+									teams: deployTeams,
+									openDeployment: handleOpenDeployment,
+									setDisabled: handleDeploySetDisabled,
+									remove: handleDeployRemove,
+									setSchedule: handleDeploySetSchedule,
+									setSchedulePaused: handleDeploySetSchedulePaused,
+									previewSchedule: handleDeployPreviewSchedule,
+									fetchArtifact: handleDeployFetchArtifact,
+									saveDocument: () => performSave(filename, pipeline, { rethrow: true }),
+								},
+							})}
 					servicesJson={servicesJson}
 					isConnected={isConnected}
 					isSubscribed={isSubscribed}

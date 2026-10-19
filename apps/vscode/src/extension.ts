@@ -907,10 +907,8 @@ export async function deactivate(): Promise<void> {
 // =========================================================================
 
 /** Cached GitHub releases (engine binaries). Written via setCachedEngineVersions; currently no reader (kept so the ops-side setter contract stays stable). */
-let _cachedEngineVersions: Array<{ tag_name: string; prerelease: boolean }> = [];
 /** Replaces the cached engine version list. Called by settingsOps after a successful GitHub API fetch. */
 export const setCachedEngineVersions = (v: Array<{ tag_name: string; prerelease: boolean }>) => {
-	_cachedEngineVersions = v;
 };
 
 /** Cached GHCR container tags (Docker images). Populated by ConnectionMessageHandler.fetchAndBroadcastDockerTags(). */
@@ -924,5 +922,4 @@ export const setCachedDockerTags = (t: string[]) => {
 export const getExtensionContext = () => extensionContext;
 export const getConnectionManager = () => connectionManager;
 export const getEngineRegistry = () => engineRegistry;
-export const getConfigManager = () => configManager;
 export const getPipelineProvider = () => pipeline;

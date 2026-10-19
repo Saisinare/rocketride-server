@@ -236,8 +236,6 @@ function makeStageFilesAction() {
 				'devServerGuard.cjs',
 				'rocketride-dark-icon.png',
 				'rocketride-light-icon.png',
-				'docker.svg',
-				'onprem.svg',
 				'package.json',
 				'LICENSE',
 				'README.md',
@@ -308,14 +306,6 @@ function makeStageFilesAction() {
 				throw new Error(`devServerGuard.cjs missing at ${guardSrc} — the dev-server tether cannot ship`);
 			}
 			await copyFile(guardSrc, path.join(BUILD_DIR, 'devServerGuard.cjs'));
-			const dockerSvg = path.join(APP_ROOT, 'docker.svg');
-			const onpremSvg = path.join(APP_ROOT, 'onprem.svg');
-			if (await exists(dockerSvg)) {
-				await copyFile(dockerSvg, path.join(BUILD_DIR, 'docker.svg'));
-			}
-			if (await exists(onpremSvg)) {
-				await copyFile(onpremSvg, path.join(BUILD_DIR, 'onprem.svg'));
-			}
 			await copyFile(path.join(PROJECT_ROOT, 'LICENSE'), path.join(BUILD_DIR, 'LICENSE'));
 			if (!(await exists(README_DEST))) {
 				throw new Error(
@@ -482,6 +472,9 @@ module.exports = {
 					await setState(SRC_HASH_KEY, null);
 					await setState(BUNDLE_HASH_KEY, null);
 					await setState(SHARED_UI_HASH_KEY, null);
+					// Every hash key, or a survivor marks the next build clean —
+					// the exact hazard the comment at BUNDLE_SHARED_UI_HASH_KEY warns of.
+					await setState(BUNDLE_SHARED_UI_HASH_KEY, null);
 					task.output = 'Cleaned vscode';
 				},
 			}),

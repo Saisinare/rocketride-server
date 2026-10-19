@@ -704,36 +704,38 @@ const PipelineWebview: React.FC = () => {
 				fetchTimeline={fetchTimeline}
 				{...(!isReadonly && projectId
 					? {
-							fetchDeployLifecycle,
-							// Where-live rows enriched with the folded run state
-							// (the running badges track live without polling).
-							teamDeployments: teamDeployments.map((d) => ({ ...d, ...(deployRunsByTeam[d.teamId] ? { runningSources: deployRunsByTeam[d.teamId] } : {}) })),
-							deployTeams,
-							onDeployPublish: handleDeployPublish,
-							onDeployVersion: handleDeployVersion,
-							onOpenDeployment: handleOpenDeployment,
-							// Where-live interactions ride the SAME deployment:* protocol
-							// as the record drawer (teamId is on every message); the rows
-							// refresh via deploy:fetch once the mutation resolves.
-							onDeploySetDisabled: async (teamId: string, disabled: boolean) => {
-								await deploymentActions.setDisabled(projectIdRef.current, teamId, disabled);
-								void fetchDeployLifecycle();
+							deploy: {
+								fetchLifecycle: fetchDeployLifecycle,
+								publish: handleDeployPublish,
+								deployVersion: handleDeployVersion,
+								// Where-live rows enriched with the folded run state
+								// (the running badges track live without polling).
+								teamDeployments: teamDeployments.map((d) => ({ ...d, ...(deployRunsByTeam[d.teamId] ? { runningSources: deployRunsByTeam[d.teamId] } : {}) })),
+								teams: deployTeams,
+								openDeployment: handleOpenDeployment,
+								// Where-live interactions ride the SAME client.deploy.* ops
+								// as the record drawer (teamId on every call); the rows
+								// refresh via fetchLifecycle once the mutation resolves.
+								setDisabled: async (teamId: string, disabled: boolean) => {
+									await deploymentActions.setDisabled(projectIdRef.current, teamId, disabled);
+									void fetchDeployLifecycle();
+								},
+								remove: async (teamId: string) => {
+									await deploymentActions.remove(projectIdRef.current, teamId);
+									void fetchDeployLifecycle();
+								},
+								setSchedule: async (teamId: string, sourceId: string, cron: string | null, ttl: number | null) => {
+									await deploymentActions.setSchedule(projectIdRef.current, teamId, sourceId, cron, ttl);
+									void fetchDeployLifecycle();
+								},
+								setSchedulePaused: async (teamId: string, sourceId: string, paused: boolean) => {
+									await deploymentActions.setSchedulePaused(projectIdRef.current, teamId, sourceId, paused);
+									void fetchDeployLifecycle();
+								},
+								previewSchedule: async (cron: string, count: number) => (await deploymentActions.preview(cron, count)) as SchedulePreviewResultDTO,
+								fetchArtifact: fetchDeployArtifact,
+								saveDocument: handleDeploySaveDocument,
 							},
-							onDeployRemove: async (teamId: string) => {
-								await deploymentActions.remove(projectIdRef.current, teamId);
-								void fetchDeployLifecycle();
-							},
-							onDeploySetSchedule: async (teamId: string, sourceId: string, cron: string | null, ttl: number | null) => {
-								await deploymentActions.setSchedule(projectIdRef.current, teamId, sourceId, cron, ttl);
-								void fetchDeployLifecycle();
-							},
-							onDeploySetSchedulePaused: async (teamId: string, sourceId: string, paused: boolean) => {
-								await deploymentActions.setSchedulePaused(projectIdRef.current, teamId, sourceId, paused);
-								void fetchDeployLifecycle();
-							},
-							onDeployPreviewSchedule: async (cron: string, count: number) => (await deploymentActions.preview(cron, count)) as SchedulePreviewResultDTO,
-							fetchDeployArtifact,
-							onSaveDocument: handleDeploySaveDocument,
 						}
 					: {})}
 			/>

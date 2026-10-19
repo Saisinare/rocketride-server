@@ -29,7 +29,9 @@ import * as vscode from 'vscode';
 import { getLogger } from './shared/util/output';
 import { RocketRideClient } from 'rocketride';
 
-export type ConnectionMode = 'cloud' | 'docker' | 'service' | 'onprem' | 'local';
+// ONE declaration for this union — see shared/types/connection.ts.
+import type { ConnectionMode } from './shared/types/connection';
+export type { ConnectionMode };
 
 /** Which settings group a connection reads from. */
 export type ConnectionGroup = 'development' | 'deployment';

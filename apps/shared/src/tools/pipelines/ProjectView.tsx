@@ -39,13 +39,11 @@ import { SourcePanel } from './panels/development/SourcePanel';
 // Direct file imports (not the deploy-panel barrel): the barrel pulls
 // DeploymentView, which imports SourcePanel back from this module — file
 // paths keep the cross-module reference cycle-free.
-import { DeployPanel } from 'shared/panels/deploy/DeployPanel';
-import type { DeploySnapshot } from 'shared/panels/deploy/DeployPanel';
-import type { DeployTeamRef, TeamDeployment, TeamDeploymentRow } from 'shared/panels/deploy/types';
-import type { SchedulePreviewResult } from 'shared/panels/deploy/DeploymentView';
 import type { TaskEventMessage, TaskEventSession, TaskTimeline } from './panels/development/hooks/useTaskEvents';
 import { createLiveEventStore, type LiveEventStore } from './panels/development/hooks/liveEventSession';
 import type { ProjectViewMode, ViewState, TaskStatus } from './types';
+import { DeployTab } from './panels/deploy';
+import type { IPipelineDeploy } from './panels/deploy';
 import { TASK_STATE } from './types';
 import { writeProjectPreference } from './utils/prefs';
 
@@ -160,44 +158,10 @@ export interface IProjectViewProps {
 	 * disables the activity timeline.
 	 */
 	fetchTimeline?: (stream: { source: string; runKind: 'dev' | 'deploy' }) => Promise<TaskTimeline>;
-	/**
-	 * Registry snapshot fetch for the DEPLOY page (wraps `client.deploy`
-	 * versions + history). Its PRESENCE enables the page — omitted, the page
-	 * renders the not-available empty state (the listConnections presence
-	 * switch). The panel owns fetching/refresh, like SourcePanel.
-	 */
-	fetchDeployLifecycle?: () => Promise<DeploySnapshot>;
-	/** LIVE team deployments of this project as RAW facts (team, pointer,
-	    state, schedule records) — the host polls/pushes these for its other
-	    deploy surfaces already. Source names are resolved HERE against the
-	    pipeline this view holds, never by the host. */
-	teamDeployments?: TeamDeployment[];
-	/** Teams visible to the caller, with resolved names + control rights. */
-	deployTeams?: DeployTeamRef[];
-	/** Publish the SAVED pipeline as the next registry version. */
-	onDeployPublish?: (comment: string, deployTo?: string) => Promise<void>;
-	/** Point a team at a registry version (promotion and rollback alike). */
-	onDeployVersion?: (version: number, teamId: string) => Promise<void>;
-	/** Open a deployment record drawer (team-level without a sourceId). */
-	onOpenDeployment?: (teamId: string, sourceId?: string) => void;
-	/** Toggle one team deployment's kill switch (where-live state dot). */
-	onDeploySetDisabled?: (teamId: string, disabled: boolean) => Promise<void>;
-	/** Soft-remove one team's deployment from the where-live header. */
-	onDeployRemove?: (teamId: string) => Promise<void>;
-	/** Set/clear one source's schedule on a team deployment (where-live pill). */
-	onDeploySetSchedule?: (teamId: string, sourceId: string, cron: string | null, ttl: number | null) => Promise<void>;
-	/** Pause/resume ONE source's schedule, preserving cron/ttl. */
-	onDeploySetSchedulePaused?: (teamId: string, sourceId: string, paused: boolean) => Promise<void>;
-	/** Cron preview via the server's single evaluator (schedule editor). */
-	onDeployPreviewSchedule?: (cron: string, count: number) => Promise<SchedulePreviewResult>;
-	/** Fetch one immutable artifact's pipeline JSON — makes the DEPLOY
-	    page's version cards open a readonly-canvas record drawer. Typed
-	    with DeployPanel's own artifact shape so drift between the host
-	    contract and the panel surfaces at compile time, not via a cast. */
-	fetchDeployArtifact?: NonNullable<ComponentProps<typeof DeployPanel>['fetchArtifact']>;
-	/** Save the document and resolve when it is on disk — the DEPLOY page's
-	    'Save & publish' path for a dirty document. */
-	onSaveDocument?: () => Promise<void>;
+	/** The host's DEPLOY capability — one object, not a dozen loose props
+	 *  (appdev's IAppBuilderHost shape). Its PRESENCE enables the Deploy
+	 *  tab; omitted, the tab renders the not-available state. */
+	deploy?: IPipelineDeploy;
 }
 
 // =============================================================================
@@ -293,7 +257,7 @@ function migrateViewMode(mode: string | undefined): ProjectViewMode {
 // COMPONENT
 // =============================================================================
 
-const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, servicesJson, isConnected, cloudConnectionConfigured, isSubscribed = true, statusMap, serverHost = '', isDirty = false, isNew = false, initialViewState, initialPrefs, onContentChanged, onValidate, getNodeSchema, onPipelineAction, onViewStateChange, onPrefsChange, onOpenLink, onOpenCloudSetup, oauth2RootUrl = OAUTH_ROOT_URL, oauthReturnUrl, onOpenExternal, pendingOAuthTokens, clearPendingOAuthTokens, onSave, onExport, isReadonly = false, envKeys, onMissingEnvVars, liveLogEvents = [], openEventStream, fetchTimeline, fetchDeployLifecycle, teamDeployments = [], deployTeams = [], onDeployPublish, onDeployVersion, onOpenDeployment, onDeploySetDisabled, onDeployRemove, onDeploySetSchedule, onDeploySetSchedulePaused, onDeployPreviewSchedule, fetchDeployArtifact, onSaveDocument }) => {
+const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, servicesJson, isConnected, cloudConnectionConfigured, isSubscribed = true, statusMap, serverHost = '', isDirty = false, isNew = false, initialViewState, initialPrefs, onContentChanged, onValidate, getNodeSchema, onPipelineAction, onViewStateChange, onPrefsChange, onOpenLink, onOpenCloudSetup, oauth2RootUrl = OAUTH_ROOT_URL, oauthReturnUrl, onOpenExternal, pendingOAuthTokens, clearPendingOAuthTokens, onSave, onExport, isReadonly = false, envKeys, onMissingEnvVars, liveLogEvents = [], openEventStream, fetchTimeline, deploy }) => {
 	// --- Local view state (initialized from props, managed locally) -----------
 
 	const [viewState, setViewState] = useState<ViewState>(() => ({
@@ -337,36 +301,6 @@ const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, serv
 
 	// --- Where-live rows for the DEPLOY page ---------------------------------
 	// The host feeds raw deployment facts; THIS view resolves source names
-	// against the pipeline it already holds (the `sources` list above), so
-	// the derivation exists exactly once for both hosts. Source lines =
-	// pipeline sources ∪ schedule records (a schedule on a renamed/removed
-	// source still shows, id-named).
-	const teamDeploymentRows: TeamDeploymentRow[] = useMemo(() => {
-		const names = new Map(sources.map((s) => [s.id, s.name]));
-		return teamDeployments.map((dep) => {
-			const sourceIds = [...new Set([...names.keys(), ...Object.keys(dep.schedules)])];
-			return {
-				teamId: dep.teamId,
-				teamName: dep.teamName,
-				version: dep.version,
-				state: dep.state,
-				deployedAt: dep.deployedAt,
-				sources: sourceIds.map((sourceId) => {
-					const sched = dep.schedules[sourceId];
-					return {
-						sourceId,
-						sourceName: names.get(sourceId) ?? sourceId,
-						cron: sched?.cron ?? '',
-						paused: sched?.paused === true,
-						...(sched?.ttl ? { ttl: sched.ttl } : {}),
-						...(sched?.lastRunAt ? { lastRunAt: sched.lastRunAt } : {}),
-						...(dep.runningSources?.[sourceId] ? { running: true } : {}),
-					};
-				}),
-			};
-		});
-	}, [teamDeployments, sources]);
-
 	/** Map component id → display name for the trace viewer. */
 	const componentNames: Map<string, string> = useMemo(() => {
 		const map = new Map<string, string>();
@@ -665,44 +599,20 @@ const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, serv
 			content: renderDocPanel(renderSections('dev')),
 		},
 		deploy: {
-			// The deploy LIFECYCLE surface (mockup v5 screen B): version strip,
-			// where-live, merged history — composed HERE like the sibling pages,
-			// capability-fed from the host closures (fetchDeployLifecycle's
-			// presence enables it). Publish gating derives from the document
-			// state this view already holds: only a never-saved doc blocks (no
-			// registry key yet); a dirty doc saves first via onSaveDocument.
-			// The per-source deploy monitoring lives on the per-team deployment
-			// TAB (screen A): a file no longer identifies ONE deploy continuum —
-			// teams are the environments, and several teams may run this
-			// project concurrently.
-			// TabPanel mounts EVERY panel and hides the inactive ones, so a
-			// readonly host (which removes the Deploy tab and clamps the mode)
-			// must not mount DeployPanel at all — its mount-time refresh()
-			// would fetch a lifecycle the user can never open.
+			// The deploy LIFECYCLE surface: version strip, where-live, merged
+			// history. Its pipeline-specific adaptation (the readonly guard,
+			// the team-deployment row mapping, publish gating from document
+			// state) lives in the panel — see panels/deploy.
 			content: renderDocPanel(
-				!isReadonly && fetchDeployLifecycle && onDeployPublish && onDeployVersion ? (
-					<DeployPanel
-						fetchLifecycle={fetchDeployLifecycle}
-						deployments={teamDeploymentRows}
-						teams={deployTeams}
-						pipelineName={project?.name ?? ''}
-						{...(onDeploySetDisabled ? { onSetDisabled: onDeploySetDisabled } : {})}
-						{...(onDeployRemove ? { onRemove: onDeployRemove } : {})}
-						{...(onDeploySetSchedule ? { onSetSchedule: onDeploySetSchedule } : {})}
-						{...(onDeploySetSchedulePaused ? { onSetSchedulePaused: onDeploySetSchedulePaused } : {})}
-						{...(fetchDeployArtifact ? { fetchArtifact: fetchDeployArtifact, servicesJson, handleValidatePipeline: handleValidate, isConnected, isSubscribed, serverHost, ...(onOpenLink ? { onOpenLink } : {}) } : {})}
-						{...(onDeployPreviewSchedule ? { previewSchedule: onDeployPreviewSchedule } : {})}
-						canPublish={!isDirty && !isNew}
-						{...(isNew ? { publishDisabledReason: 'Save the pipeline first' } : {})}
-						requiresSave={isDirty && !isNew}
-						{...(onSaveDocument ? { onSaveDocument } : {})}
-						onPublish={onDeployPublish}
-						onDeploy={onDeployVersion}
-						{...(onOpenDeployment ? { onOpenDeployment } : {})}
-					/>
-				) : (
-					<div style={commonStyles.empty}>Deployment lifecycle is not available in this host yet</div>
-				)
+				<DeployTab
+					{...(deploy ? { deploy } : {})}
+					sources={sources}
+					pipelineName={project?.name ?? ''}
+					isReadonly={isReadonly}
+					isDirty={isDirty}
+					isNew={isNew}
+					artifactContext={{ servicesJson, handleValidatePipeline: handleValidate, isConnected, isSubscribed, serverHost, ...(onOpenLink ? { onOpenLink } : {}) }}
+				/>
 			),
 		},
 	};
