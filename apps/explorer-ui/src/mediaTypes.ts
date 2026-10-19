@@ -25,9 +25,9 @@
 // =============================================================================
 //
 // The extension → category/MIME/content-mode table now lives in
-// `shared/modules/files/mediaTypes` so the workspace Explorer (rocket-ui) and
+// `shared/utils/mediaTypes` so the workspace Explorer (rocket-ui) and
 // this app's viewers classify files identically. This shim keeps every
 // existing `./mediaTypes` import in explorer-ui working unchanged.
 // =============================================================================
 
-export * from 'shared/modules/files/mediaTypes';
+export * from 'shared/utils/mediaTypes';

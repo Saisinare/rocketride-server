@@ -4,29 +4,18 @@
 // =============================================================================
 
 /**
- * Project host/webview protocol — the residual message contract between
- * PipelineProvider (extension host) and the project editor webview. Everything
- * else rides the shell bus (host.pipeline.* ops + retained doc topics); only
- * the subscription-gate pushes and the host-side publish verb remain here.
- * Checkout itself rides the shell bus (client.billing.* ops + host.stripeKey).
+ * Pipeline editor message types — all that remain are REALM-LOCAL.
  *
- * Pure types only — imported by both the extension host and the webview.
+ * The host sends the webview nothing: publish is `host.pipeline.publish`,
+ * the Subscribe overlay is the per-doc `:checkout` signal, and subscription
+ * state is derived from the mirrored account. `shell:event` below is
+ * synthesized BY THE REALM from its bus `mirror.event` so the existing fold
+ * keeps its shape; `view:ready` is useMessaging's page-lifecycle marker.
  */
 
-/** All messages the extension host can send to the ProjectWebview. */
-export type PipelineHostToWebview =
-	// Synthesized LOCALLY from the realm's bus event (mirror.event → the
-	// same fold) — no host posts it anymore.
-	| { type: 'shell:event'; event: unknown }
-	// Subscription gate pushes (the Subscribe overlay opens on these).
-	| { type: 'checkout:required' }
-	| { type: 'checkout:subscriptionUpdate'; isSubscribed: boolean }
-	// Publish is the one deploy verb still host-side (it snapshots the
-	// TextDocument); everything else rides client.deploy.* on the bus.
-	| { type: 'deploy:actionResult'; requestId: number; error?: string | null };
+/** REALM-LOCAL only: synthesized from the bus `mirror.event` so the existing
+ *  event fold keeps its shape. The host posts nothing. */
+export type PipelineHostToWebview = { type: 'shell:event'; event: unknown };
 
-/** All messages the ProjectWebview can send to the extension host. */
-export type PipelineWebviewToHost =
-	| { type: 'view:ready' }
-	// Publish is the one deploy verb still host-side (see above).
-	| { type: 'deploy:publish'; requestId: number; comment?: string; deployTo?: string };
+/** useMessaging's page-lifecycle marker — the only thing still posted. */
+export type PipelineWebviewToHost = { type: 'view:ready' };

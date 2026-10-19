@@ -20,17 +20,18 @@ import type { IProject } from 'shell';
 // Project module is imported via subpath (not the 'shared' barrel): the
 // barrel is the shell's MF share and must stay canvas-free; this webview
 // bundles the project module directly.
-import { ProjectView, parseServerEvent, isDevLiveEvent, isTeamLiveEvent } from 'shared/tools/pipelines/project';
-import { mergeProjectPreferences } from 'shared/tools/pipelines/project/projectPreferences';
-import { registerServiceIcons } from 'shared/tools/pipelines/canvas/util/Icon';
-import { foldProjectDeployRuns } from 'shared/tools/pipelines/taskFold';
-import type { TaskLifecycleEvent } from 'shared/tools/pipelines/taskFold';
-import type { TaskEventMessage, TaskEventSession, TaskStatus, TaskTimeline, ViewState } from 'shared/tools/pipelines/project';
+import { ProjectView, parseServerEvent, isDevLiveEvent, isTeamLiveEvent } from 'shared/tools/pipelines';
+import { mergeProjectPreferences } from 'shared/tools/pipelines/utils/prefs';
+import { registerServiceIcons } from 'shared/tools/pipelines/panels/design/canvas';
+import { foldProjectDeployRuns } from 'shared/tools/pipelines/sidebar/taskFold';
+import type { TaskLifecycleEvent } from 'shared/tools/pipelines/sidebar/taskFold';
+import type { TaskEventMessage, TaskEventSession, TaskStatus, TaskTimeline, ViewState } from 'shared/tools/pipelines';
 import { CheckoutModal } from 'shell';
 import type { CheckoutPlan, PlanAction } from 'shell';
-import { DeploymentRecordPanel, TeamDeploymentRecordPanel } from 'shared/components/deploy-panel';
-import type { DeploySnapshot } from 'shared/components/deploy-panel';
+import { DeploymentRecordPanel, TeamDeploymentRecordPanel } from 'shared/panels/deploy';
+import type { DeploySnapshot } from 'shared/panels/deploy';
 import { createBridgedPrefsStore, useGridConfigAnswering, ConnectionManager } from 'shell';
+import { isAppSubscribed } from 'shared/utils/subscriptionGate';
 import { PIPE_BUILDER_APP_ID } from '../../../shared/types';
 import { fetchDeployLifecycle as fetchLifecycleOp, fetchDeployment as fetchDeploymentOp, deploymentActions, toWireTeamId } from './deployOps';
 import { useMessaging } from '../hooks/useMessaging';
@@ -101,10 +102,6 @@ const PipelineWebview: React.FC = () => {
 	// it; begin/end flip it. Ref advances synchronously for event bursts.
 	const [deployRunsByTeam, setDeployRunsByTeam] = useState<Record<string, Record<string, boolean>>>({});
 	const deployRunsRef = useRef<Record<string, Record<string, boolean>>>({});
-	// Pending publish round-trips keyed by requestId — publish is the ONE
-	// deploy verb still host-side (it needs the TextDocument).
-	const pendingDeployActions = useRef<Map<number, { resolve: () => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>>(new Map());
-	const deployRequestCounter = useRef(0);
 
 	// Deployment record DRAWER (the Add Node model: a component this webview
 	// loads into a DetailPanel): open team, its pushed snapshot, and the
@@ -220,6 +217,18 @@ const PipelineWebview: React.FC = () => {
 				saveAfterOAuthRef.current = true;
 				setPendingOAuthTokens({ tokens: t.tokens, state: t.state });
 				cm.publish(`pipeline:doc:${doc}:oauth`, undefined);
+			}),
+			// The host's run gate asks for the Subscribe overlay — a SIGNAL
+			// (one-shot): replaying it after a later subscribe would reopen it.
+			cm.subscribe(`pipeline:doc:${doc}:checkout`, (payload) => {
+				if ((payload as { required?: boolean } | undefined)?.required) setShowCheckout(true);
+			}),
+			// Subscription state follows the MIRRORED account — the host no
+			// longer pushes it (every realm can derive the same answer).
+			cm.on('shell:accountUpdate', () => {
+				const sub = isAppSubscribed(cm.getAccountInfo(), PIPE_BUILDER_APP_ID);
+				setSubscribed(sub);
+				if (sub) setShowCheckout(false);
 			}),
 			// Global-scoped project-preference changes from any editor.
 			cm.subscribe('pipeline:prefs', (payload) => {
@@ -361,26 +370,6 @@ const PipelineWebview: React.FC = () => {
 							});
 						}
 					}
-				}
-				break;
-			}
-			case 'checkout:required':
-				// Host says subscription is required — show inline prompt (handled by ProjectView's Subscribe button)
-				console.log('[ProjectWebview] checkout:required received');
-				setShowCheckout(true);
-				break;
-			case 'checkout:subscriptionUpdate':
-				setSubscribed((msg as any).isSubscribed);
-				if ((msg as any).isSubscribed) setShowCheckout(false);
-				break;
-			case 'deploy:actionResult': {
-				// Settle the pending publish/deploy promise for this correlation id.
-				const pending = pendingDeployActions.current.get(msg.requestId);
-				if (pending) {
-					pendingDeployActions.current.delete(msg.requestId);
-					clearTimeout(pending.timer);
-					if (msg.error) pending.reject(new Error(msg.error));
-					else pending.resolve();
 				}
 				break;
 			}
@@ -532,23 +521,6 @@ const PipelineWebview: React.FC = () => {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [isConnected]);
 
-	/** One requestId-correlated deploy action settled by deploy:actionResult. */
-	const deployRequest = useCallback((build: (requestId: number) => PipelineWebviewToHost): Promise<void> => {
-		return new Promise<void>((resolve, reject) => {
-			// Step 1: allocate the correlation id and arm the timeout guard.
-			const requestId = ++deployRequestCounter.current;
-			const timer = setTimeout(() => {
-				if (pendingDeployActions.current.has(requestId)) {
-					pendingDeployActions.current.delete(requestId);
-					reject(new Error('The server did not respond in time'));
-				}
-			}, DEPLOY_REQUEST_TIMEOUT_MS);
-			// Step 2: register the resolver and post the message.
-			pendingDeployActions.current.set(requestId, { resolve, reject, timer });
-			sendMessageRef.current(build(requestId));
-		});
-	}, []);
-
 	/** Fetch one immutable artifact (the version cards' record drawer). The
 	    registry stores the saved pipeline document verbatim, so the raw
 	    artifact record IS the IProject the record drawer renders. */
@@ -556,12 +528,13 @@ const PipelineWebview: React.FC = () => {
 		return deploymentActions.artifact(projectIdRef.current, version).then((artifact) => artifact as unknown as IProject);
 	}, []);
 
-	/** Publish the SAVED document (the host snapshots it; only metadata travels). */
+	/** Publish the SAVED document — the host snapshots the TextDocument; only
+	    metadata travels. A host-side failure arrives as this call's rejection. */
 	const handleDeployPublish = useCallback(
 		async (comment: string, deployTo?: string): Promise<void> => {
-			await deployRequest((requestId) => ({ type: 'deploy:publish', requestId, comment, ...(deployTo ? { deployTo } : {}) }));
+			await ConnectionManager.getInstance().request('host.pipeline.publish', { doc: docRef.current, comment, ...(deployTo ? { deployTo } : {}) } as never);
 		},
-		[deployRequest]
+		[]
 	);
 
 	/** Point a team at a version (promotion and rollback alike). The caller

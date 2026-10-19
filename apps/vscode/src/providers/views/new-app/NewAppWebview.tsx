@@ -19,7 +19,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ConnectionManager } from 'shell';
 // Deep import by design: the wizard page carries the FORM alone — the
 // appdev barrel would pull the whole App Builder view layer into the bundle.
-import { NewAppForm } from 'shared/tools/appdev/NewAppForm';
+import { NewAppForm } from 'shared/tools/appdev/views/new-app/NewAppForm';
 import type { NewAppIdentity } from 'shared/tools/appdev/types';
 import type { FrameOptions } from 'shared/tools/appdev/templates';
 

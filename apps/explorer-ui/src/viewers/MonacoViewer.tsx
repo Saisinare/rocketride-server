@@ -34,7 +34,7 @@
 import React, { useCallback, useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import type { Documents } from 'shell';
-import { MonacoEditor, detectLanguage } from 'shared/modules/monaco';
+import { MonacoEditor, detectLanguage } from 'shared/components/monaco';
 
 // -----------------------------------------------------------------------------
 // Component

@@ -9,8 +9,9 @@
  *
  * The editor webview is a BUS REALM: boot state rides host.pipeline.load,
  * per-document state rides the pipeline:doc:<doc> topics, engine access is
- * request('client.*'). The remaining postMessage protocol is three
- * messages: the two checkout pushes and the deploy:publish pair.
+ * request('client.*'). NOTHING rides postMessage any more: publish is an
+ * op, the subscribe overlay is a per-doc signal, and subscription state is
+ * derived realm-side from the mirrored account.
  *
  * NOTE: the viewType stays 'rocketride.page.project' on purpose — it is
  * VS Code's tab-restore identity; renaming it orphans every user's open
@@ -19,9 +20,8 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { randomBytes } from 'crypto';
 import { GenericEvent, ConnectionState, PIPE_BUILDER_APP_ID } from '../shared/types';
-import type { TaskStatus } from 'shared/tools/pipelines/project/types';
+import type { TaskStatus } from 'shared/tools/pipelines/types';
 import { ConnectionManager } from '../connection/connection';
 import { CloudAuthProvider } from '../auth/CloudAuthProvider';
 import { ConfigManager } from '../config';
@@ -29,14 +29,15 @@ import type { PipelineConfig } from 'rocketride';
 import { getLogger } from '../shared/util/output';
 // Deep import on purpose — see SidebarProvider: the barrel drags view types
 // into the extension-host compile; parse.ts is pure.
-import { parsePipelineContent } from 'shared/tools/pipelines/parse';
+import { parsePipelineContent } from 'shared/tools/pipelines/utils/parse';
 import { isSubscribed } from '../shared/util/subscriptionGate';
-import { isDeployRunBody } from 'shared/tools/pipelines/project/runKind';
+import { isDeployRunBody } from 'shared/tools/pipelines/runKind';
 import { handleMissingEnvVars } from '../shared/util/envVarCheck';
 import { isCloudConnectionConfigured as hasCloudConnectionConfigured } from '../shared/util/connectionModeAuth';
 import { savePipelineDocument } from '../shared/util/pipelineSave';
 import { openExternalLink } from './pipeline/externalLink';
 import type { BusHost } from './toolhost/busHost';
+import { renderWebviewHtml } from './toolhost/frameworkProvider';
 // Deep import on purpose — ext-host-safe .ts leaf (see busHost.ts).
 import { registerOpHandlers } from 'shell/src/ops/busOps';
 import type { OpImplTable } from 'shell/src/ops/busOps';
@@ -144,11 +145,8 @@ export class PipelineProvider implements vscode.CustomTextEditorProvider {
 			}
 		});
 
-		// Account updates (subscription changes, env changes) are emitted as
-		// a dedicated shell:accountUpdate — no longer buried in shell:event
-		const accountUpdateListener = this.connectionManager.on('shell:accountUpdate', () => {
-			this.broadcastSubscriptionStatus();
-		});
+		// Subscription state is NOT pushed: every realm mirrors shell:account
+		// and derives it with isAppSubscribed. The host only GATES run.
 
 		const envKeysChangedListener = this.connectionManager.on('shell:envKeysChanged', () => {
 			void this.broadcastEnvKeys();
@@ -179,7 +177,7 @@ export class PipelineProvider implements vscode.CustomTextEditorProvider {
 		// Seed the topic so a panel opening before any config change replays it.
 		this.publishCloudSetup();
 
-		this.disposables.push(eventListener, accountUpdateListener, envKeysChangedListener, connectionStateListener, configChangeListener);
+		this.disposables.push(eventListener, envKeysChangedListener, connectionStateListener, configChangeListener);
 	}
 
 	// =========================================================================
@@ -294,21 +292,6 @@ export class PipelineProvider implements vscode.CustomTextEditorProvider {
 		}
 	}
 
-	/**
-	 * Broadcasts updated subscription status to all open editor webviews.
-	 * Called when an apaext_account event arrives (subscription change).
-	 */
-	private broadcastSubscriptionStatus(): void {
-		const client = this.connectionManager.getClient();
-		const subscribed = isSubscribed(client, PIPE_BUILDER_APP_ID);
-		for (const editorState of this.editorStates.values()) {
-			if (editorState.isReady && !editorState.isDisposed && editorState.webviewPanel.webview) {
-				editorState.webviewPanel.webview.postMessage({ type: 'checkout:subscriptionUpdate', isSubscribed: subscribed }).then(undefined, (err: unknown) => {
-					this.logger.error(`Failed to post subscriptionUpdate to webview: ${err}`);
-				});
-			}
-		}
-	}
 
 	// =========================================================================
 	// MONITORING
@@ -373,6 +356,29 @@ export class PipelineProvider implements vscode.CustomTextEditorProvider {
 		};
 		const impls: OpImplTable<PipelineHostOpMap> = {
 			'host.pipeline.load': (p) => this.loadForRealm(p.doc),
+			// Publish snapshots the DOCUMENT, never webview state: the immutable
+			// registry must hold exactly what is on disk, so a never-saved doc
+			// rejects outright and a dirty one is saved first. A throw here IS
+			// the realm's rejection — the bus does the correlation.
+			'host.pipeline.publish': async (p) => {
+				const document = stateFor(p.doc).document;
+				const deployClient = this.connectionManager.getClient();
+				if (!deployClient) throw new Error('Not connected to server');
+				if (document.isUntitled) throw new Error('Save the pipeline first');
+				if (document.isDirty) {
+					const saved = await document.save();
+					if (!saved) throw new Error('Save failed; publish cancelled');
+				}
+				const parsed = JSON.parse(document.getText()) as PipelineConfig;
+				// The registry renders pipelineName on every deploy surface;
+				// .pipe JSON rarely carries one (names live in FILENAMES), so the
+				// snapshot takes the file's basename when the JSON has none.
+				const pipeline = {
+					...parsed,
+					name: parsed.name || document.uri.path.split('/').pop()?.replace(/\.pipe(?:\.json)?$/, '') || document.uri.path,
+				};
+				await deployClient.deploy.add({ pipeline, ...(p.comment ? { comment: p.comment } : {}), ...(p.deployTo ? { deployTo: p.deployTo } : {}) });
+			},
 			'host.pipeline.contentSet': async (p) => {
 				const editorState = stateFor(p.doc);
 				const document = editorState.document;
@@ -455,7 +461,9 @@ export class PipelineProvider implements vscode.CustomTextEditorProvider {
 		}
 		const sub = isSubscribed(runClient, PIPE_BUILDER_APP_ID);
 		if (!sub) {
-			void webviewPanel.webview.postMessage({ type: 'checkout:required' });
+			// A one-shot "open the Subscribe overlay" — a SIGNAL, not state:
+			// replaying it after a later subscribe would reopen the overlay.
+			this.busHost.retained.signal(`pipeline:doc:${document.uri.toString()}:checkout`, { required: true });
 			return;
 		}
 		const uriKey = document.uri.toString();
@@ -722,49 +730,6 @@ export class PipelineProvider implements vscode.CustomTextEditorProvider {
 				// — no checkout:* request handling here. checkout:required and
 				// checkout:subscriptionUpdate remain host-originated pushes.
 
-				// Deploy lifecycle — publish stays HOST-side (it needs the
-				// TextDocument); everything else rides client.deploy.* in the
-				// realm (views/project/deployOps.ts).
-				case 'deploy:publish': {
-					try {
-						const deployClient = this.connectionManager.getClient();
-						if (!deployClient) throw new Error('Not connected to server');
-						// Publish snapshots the DOCUMENT, never webview state: the
-						// immutable registry must hold exactly what is on disk, so a
-						// dirty or never-saved document blocks the publish outright.
-						if (document.isUntitled) throw new Error('Save the pipeline first');
-						// Save-first: a dirty document is saved before the snapshot,
-						// so the registry still holds exactly what is on disk.
-						if (document.isDirty) {
-							const saved = await document.save();
-							if (!saved) throw new Error('Save failed; publish cancelled');
-						}
-						const parsed = JSON.parse(document.getText()) as PipelineConfig;
-						// The registry renders pipelineName on every deploy surface;
-						// .pipe JSON rarely carries one (names live in FILENAMES), so
-						// the snapshot takes the file's basename when the JSON has
-						// none — building the publish() signature's required name.
-						const pipeline = {
-							...parsed,
-							name:
-								parsed.name ||
-								document.uri.path
-									.split('/')
-									.pop()
-									?.replace(/\.pipe(?:\.json)?$/, '') ||
-								document.uri.path,
-						};
-						await deployClient.deploy.add({ pipeline, ...(data.comment ? { comment: data.comment as string } : {}), ...(data.deployTo ? { deployTo: data.deployTo as string } : {}) });
-						// The realm refreshes its own lifecycle rows on resolve —
-						// no re-push (the old one settled STALE waiters).
-						webview.postMessage({ type: 'deploy:actionResult', requestId: data.requestId });
-					} catch (error) {
-						const msg = error instanceof Error ? error.message : String(error);
-						this.logger.error(`[PipelineProvider] Publish failed: ${msg}`);
-						webview.postMessage({ type: 'deploy:actionResult', requestId: data.requestId, error: msg });
-					}
-					break;
-				}
 			}
 		});
 
@@ -965,43 +930,20 @@ export class PipelineProvider implements vscode.CustomTextEditorProvider {
 	// =========================================================================
 
 	private getHtmlForWebview(webview: vscode.Webview, doc: string): string {
-		const nonce = this.generateNonce();
-		const htmlPath = vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'page-pipeline.html');
-
-		try {
-			let htmlContent = require('fs').readFileSync(htmlPath.fsPath, 'utf8');
-
-			htmlContent = htmlContent.replace(/\{\{nonce\}\}/g, nonce).replace(/\{\{cspSource\}\}/g, webview.cspSource);
-			// The panel's bus identity, present before any script runs — the
-			// realm reads it synchronously (no handshake).
-			htmlContent = htmlContent.replace('<body', `<body data-rr-doc="${doc.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}"`);
-
-			// Inject CSP meta tag allowing Stripe Elements (js.stripe.com for scripts/frames,
-			// api.stripe.com for network calls). Required for the in-editor checkout flow.
-			const cspMeta = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' ${webview.cspSource} https://js.stripe.com; style-src 'unsafe-inline' ${webview.cspSource}; font-src ${webview.cspSource} data:; frame-src https://js.stripe.com; connect-src ${webview.cspSource} https://api.stripe.com; img-src ${webview.cspSource} data:;">`;
-			htmlContent = htmlContent.replace('<head>', `<head>\n\t${cspMeta}`);
-
-			return htmlContent.replace(/(?:src|href)="(\/static\/[^"]+)"/g, (match: string, relativePath: string): string => {
-				const cleanPath = relativePath.startsWith('/') ? relativePath.substring(1) : relativePath;
-				const resourceUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'webview', cleanPath));
-				return match.replace(relativePath, resourceUri.toString());
-			});
-		} catch (error) {
-			this.logger.error(`Error loading project editor HTML: ${error}`);
-			return `<!DOCTYPE html>
-            <html><body style="padding:20px;color:#f44336;">
-                <h3>Error Loading Project Editor</h3>
-                <p>${error}</p>
-                <p>Run <code>pnpm run build:webview</code> to build the webview.</p>
-                <p>Expected: <code>${htmlPath.fsPath}</code></p>
-            </body></html>`;
-		}
+		return renderWebviewHtml(this.context, webview, {
+			htmlFile: 'page-pipeline.html',
+			stamps: { doc },
+			// This page hosts Stripe Elements for the in-editor checkout, so it
+			// replaces the template's CSP with one admitting js.stripe.com
+			// (scripts/frames) and api.stripe.com (network).
+			transform: (html) =>
+				html.replace(
+					'<head>',
+					`<head>\n\t<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' ${webview.cspSource} https://js.stripe.com; style-src 'unsafe-inline' ${webview.cspSource}; font-src ${webview.cspSource} data:; frame-src https://js.stripe.com; connect-src ${webview.cspSource} https://api.stripe.com; img-src ${webview.cspSource} data:;">`
+				),
+		});
 	}
 
-	private generateNonce(): string {
-		// CSP nonce — must be unpredictable (this page's CSP admits Stripe).
-		return randomBytes(24).toString('base64url');
-	}
 
 	// =========================================================================
 	// DISPOSAL

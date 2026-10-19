@@ -26,7 +26,7 @@
 //
 // Initialises the Documents singleton with a content adapter for pipeline
 // files, renders DocTabs per editor group, and routes document content to
-// the appropriate view component (ProjectProvider, tool documents, pages).
+// the appropriate view component (PipelineProvider, tool documents, pages).
 // =============================================================================
 
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
@@ -40,27 +40,27 @@ import type { SidebarViewContainer } from 'shell';
 import { CodiconFiles, CodiconSourceControl, CodiconCircuitBoard, CodiconTypeHierarchy } from 'shared/components/icons/Codicon';
 import { AppsIcon } from 'shared/components/icons/AppsIcon';
 import { createDocs, destroyDocs, getDocs } from './docs';
-import { createWorkspace, getWorkspace, resolveWorkspaceScope } from './workspace/workspace';
-import { ModeSwitchBlockedError } from 'shared/workspace/commitPolicy';
-import { createProjectVfs } from './utils/projectVfs';
-import ProjectProvider from './providers/ProjectProvider';
-import WebviewProvider from './providers/WebviewProvider';
-import SidebarProvider from './providers/SidebarProvider';
-import WorkspaceExplorerProvider from './providers/WorkspaceExplorerProvider';
-import ScmProvider from './providers/ScmProvider';
-import FileProvider from './providers/FileProvider';
-import DiffProvider from './providers/DiffProvider';
+import { createWorkspace, getWorkspace, resolveWorkspaceScope } from './surfaces/workspace/vfs/workspace';
+import { ModeSwitchBlockedError } from 'shared/modules/vfs/commitPolicy';
+import { createProjectVfs } from './surfaces/workspace/projectVfs';
+import PipelineProvider from './surfaces/pipelines/PipelineProvider';
+import WebviewProvider from './surfaces/pages/WebviewProvider';
+import SidebarProvider from './surfaces/sidebar/SidebarProvider';
+import WorkspaceExplorerProvider from './surfaces/workspace/WorkspaceExplorerProvider';
+import ScmProvider from './surfaces/workspace/ScmProvider';
+import FileProvider from './surfaces/workspace/FileProvider';
+import DiffProvider from './surfaces/workspace/DiffProvider';
 import { ToolHostProvider } from 'shared/tools/core';
 import type { BuiltinToolServices } from 'shared/tools/core';
-import { appdevFrames } from './appdev/appdevFrames';
-import HtmlPageProvider from './providers/HtmlPageProvider';
-import DesktopProvider from './providers/DesktopProvider';
-import DevToolReadmeProvider from './providers/DevToolReadmeProvider';
-import DevToolMount from './devtools/DevToolMount';
-import { ToolGlyph } from './devtools/ToolGlyph';
-import { useDevToolPins } from './devtools/devToolPins';
+import { appdevFrames } from './surfaces/appdev/session/appdevFrames';
+import HtmlPageProvider from './surfaces/pages/HtmlPageProvider';
+import DesktopProvider from './surfaces/pages/DesktopProvider';
+import DevToolReadmeProvider from './surfaces/pages/DevToolReadmeProvider';
+import DevToolMount from './surfaces/devtools/DevToolMount';
+import { ToolGlyph } from './surfaces/devtools/ToolGlyph';
+import { useDevToolPins } from './surfaces/devtools/devToolPins';
 import { CodiconExtensions } from 'shared/components/icons/Codicon';
-import { AgentSession } from 'shared/agent/agent';
+import { AgentSession } from 'shared/modules/agent/agent';
 import { registerRocketHostOps } from './ops/hostOps';
 
 // This app IS the cloud host: its `host.*` implementations register once at
@@ -665,7 +665,7 @@ const RocketEditorContent: React.FC<{
 	onViewStateChange?: (viewState: Record<string, unknown>) => void;
 }> = ({ uri, content, dirty, isNew, initialViewState, onContentChanged, onViewStateChange }) => {
 	// Stable per-uri content handler. An inline arrow here would hand
-	// ProjectProvider (and ultimately <ReactFlow>) a new onContentChanged every
+	// PipelineProvider (and ultimately <ReactFlow>) a new onContentChanged every
 	// render, churning every derived node/edge handler and looping StoreUpdater
 	// ("Maximum update depth exceeded").
 	const handleProjectContentChanged = useCallback((updatedPipeline: any) => onContentChanged(uri, updatedPipeline), [onContentChanged, uri]);
@@ -707,8 +707,8 @@ const RocketEditorContent: React.FC<{
 	// pipeline: URIs are read-only views for running tasks with no local .pipe file
 	const isReadonly = uri.startsWith('pipeline:');
 
-	// Route pipeline files to ProjectProvider
-	return <ProjectProvider uri={uri} pipeline={pipeline} isDirty={dirty} isNew={isNew} isReadonly={isReadonly} {...(initialViewState ? { initialViewState } : {})} onContentChanged={handleProjectContentChanged} {...(onViewStateChange ? { onViewStateChange } : {})} />;
+	// Route pipeline files to PipelineProvider
+	return <PipelineProvider uri={uri} pipeline={pipeline} isDirty={dirty} isNew={isNew} isReadonly={isReadonly} {...(initialViewState ? { initialViewState } : {})} onContentChanged={handleProjectContentChanged} {...(onViewStateChange ? { onViewStateChange } : {})} />;
 };
 
 export default RocketApp;

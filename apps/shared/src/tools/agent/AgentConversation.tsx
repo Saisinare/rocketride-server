@@ -47,7 +47,7 @@ import type { CSSProperties } from 'react';
 import { ChatView, useChatMessages, useShellConnection, commonStyles } from 'shell';
 import type { DevToolProps } from 'shell';
 import type { TextResult } from 'shell';
-import { AgentSession } from '../../agent/agent';
+import { AgentSession } from '../../modules/agent/agent';
 import { buttonize } from '../../utils/buttonize';
 import { AgentIcon } from './AgentIcon';
 

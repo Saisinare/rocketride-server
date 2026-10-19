@@ -34,19 +34,81 @@ const FRAME_HTML = 'page-frame.html';
  * Exported for host surfaces that own MULTIPLE panels of one page (the
  * dev-tool details pages); FrameworkProvider's singleton panel uses it too.
  */
-export function renderPageFrameHtml(context: vscode.ExtensionContext, webview: vscode.Webview, page: string, args?: unknown): string {
-	const nonce = crypto.randomBytes(32).toString('base64url');
-	const htmlPath = vscode.Uri.joinPath(context.extensionUri, 'webview', FRAME_HTML);
+/** One webview page's HTML: which file, what identity to stamp, and any
+ *  CSP/markup transform that page needs. */
+export interface IRenderWebviewHtmlOptions {
+	/** Path under `webview/` — e.g. 'page-frame.html', 'devtool/page-devtool.html'. */
+	htmlFile: string;
+	/** `data-rr-*` identity stamped on `<body>`, present before any script
+	 *  runs. Keys are the suffix: `{ page: 'account' }` -> `data-rr-page`. */
+	stamps?: Record<string, string | undefined>;
+	/** Stamped as `data-rr-args` (JSON) for pages that open with an identity. */
+	args?: unknown;
+	/** Applied AFTER placeholder substitution, BEFORE asset rewriting — the
+	 *  seam for per-page CSP (Stripe's meta, the dev-tool engine origin). */
+	transform?: (html: string) => string;
+}
 
-	let htmlContent = readFileSync(htmlPath.fsPath, 'utf8');
-	htmlContent = htmlContent.replace(/\{\{nonce\}\}/g, nonce).replace(/\{\{cspSource\}\}/g, webview.cspSource);
-	const argsAttr = args === undefined ? '' : ` data-rr-args="${JSON.stringify(args).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}"`;
-	htmlContent = htmlContent.replace('<body', `<body data-rr-page="${page}"${argsAttr}`);
-	return htmlContent.replace(/(?:src|href)="(\/static\/[^"]+)"/g, (match: string, relativePath: string): string => {
-		const cleanPath = relativePath.startsWith('/') ? relativePath.substring(1) : relativePath;
-		const resourceUri = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'webview', cleanPath));
-		return match.replace(relativePath, resourceUri.toString());
+/** HTML-escapes a value destined for an attribute. */
+function escAttr(v: string): string {
+	return v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+/**
+ * THE webview HTML pipeline — one implementation for every page.
+ *
+ * Reads the built HTML, substitutes `{{nonce}}`/`{{cspSource}}`, stamps the
+ * page's identity onto `<body>` (present before any script runs — no
+ * handshake), applies the page's optional transform, and rewrites emitted
+ * `/static/...` asset URLs to webview URIs resolved against the HTML file's
+ * own directory.
+ *
+ * Every host surface uses this: PipelineProvider, AppScreenProvider,
+ * DevToolPanelProvider and FrameworkProvider. Hand-rolling a fifth copy is
+ * how the nonce, the CSP and the asset rewriting drift apart.
+ */
+export function renderWebviewHtml(context: vscode.ExtensionContext, webview: vscode.Webview, opts: IRenderWebviewHtmlOptions): string {
+	const nonce = crypto.randomBytes(32).toString('base64url');
+	const parts = opts.htmlFile.split('/');
+	const htmlPath = vscode.Uri.joinPath(context.extensionUri, 'webview', ...parts);
+	// Assets resolve against the HTML's OWN directory: the dev-tool build
+	// emits into webview/devtool/, the rest into webview/.
+	const assetDir = parts.slice(0, -1);
+
+	let html: string;
+	try {
+		html = readFileSync(htmlPath.fsPath, 'utf8');
+	} catch (error) {
+		return `<!DOCTYPE html><html><body style="padding:20px;color:var(--vscode-errorForeground)">
+			<h3>Could not load ${escAttr(opts.htmlFile)}</h3>
+			<p>Reload the window; if it persists the extension build is incomplete.</p>
+			<pre>${escAttr(String(error))}</pre></body></html>`;
+	}
+
+	html = html.replace(/\{\{nonce\}\}/g, nonce).replace(/\{\{cspSource\}\}/g, webview.cspSource);
+
+	const stamps = Object.entries(opts.stamps ?? {})
+		.filter(([, v]) => v !== undefined)
+		.map(([k, v]) => ` data-rr-${k}="${escAttr(String(v))}"`)
+		.join('');
+	const argsAttr = opts.args === undefined ? '' : ` data-rr-args="${escAttr(JSON.stringify(opts.args))}"`;
+	if (stamps || argsAttr) html = html.replace('<body', `<body${stamps}${argsAttr}`);
+
+	if (opts.transform) html = opts.transform(html);
+
+	return html.replace(/(?:src|href)="(\.?\/?static\/[^"]+)"/g, (match: string, rel: string): string => {
+		const clean = rel.replace(/^\.?\//, '');
+		const uri = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'webview', ...assetDir, clean));
+		return match.replace(rel, uri.toString());
 	});
+}
+
+/**
+ * A framework page's HTML — the ONE page-frame bundle, stamped with which
+ * page to mount. Thin wrapper over {@link renderWebviewHtml}.
+ */
+export function renderPageFrameHtml(context: vscode.ExtensionContext, webview: vscode.Webview, page: string, args?: unknown): string {
+	return renderWebviewHtml(context, webview, { htmlFile: FRAME_HTML, stamps: { page }, ...(args !== undefined ? { args } : {}) });
 }
 
 /** One framework page's wiring. */

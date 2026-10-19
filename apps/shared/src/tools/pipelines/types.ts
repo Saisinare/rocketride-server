@@ -1,76 +1,58 @@
 // =============================================================================
 // MIT License
-// Copyright (c) 2026 Aparavi Software AG
+// Copyright (c) 2026 Aparavi Software AG Inc.
 // =============================================================================
 
 /**
- * Sidebar types — shared between VS Code webview and rocket-ui hosts.
+ * Project module types — shared data types for ProjectView and its consumers.
  *
- * The host builds a flat array of ProjectEntry (one per .pipe file) and
- * passes it into <SidebarMain>.  The component derives the directory
- * hierarchy on the fly via path parsing (S3-style).
+ * Transport / message protocol types live in the VS Code extension, not here.
  */
 
-
-
 // =============================================================================
-// TOOLS/PIPELINES — sidebar data types
-// =============================================================================
-//
-// The Pipelines tool's list/task shapes (moved from modules/sidebar).
-
+// RE-EXPORTS
 // =============================================================================
 
-/** A parsed source component inside a pipeline file. */
-export interface ProjectSource {
-	/** Component ID (e.g. 'chat_1'). */
-	id: string;
-	/** Human-readable name (e.g. 'Chat'). */
-	name: string;
-	/** Provider type (e.g. 'chat', 'webhook'). */
-	provider?: string;
+// SDK-native names, aliased to this module's public vocabulary. Importing
+// them from 'rocketride' (not the 'shell' barrel) keeps this module pure:
+// the VS Code extension host compiles it under Node16, and the SDK's d.ts
+// surface is digestible there while the shell's UI source is not.
+export type { TASK_STATUS as TaskStatus } from 'rocketride';
+export type { TASK_STATUS_FLOW as FlowData } from 'rocketride';
+export { TASK_STATE } from 'rocketride';
+
+// =============================================================================
+// TRACE TYPES — owned by the trace COMPONENT; re-exported here so existing
+// pipeline consumers keep their import path.
+// =============================================================================
+
+// Deep import ON PURPOSE — the trace barrel is index.tsx and this file is
+// compiled by the VS Code EXTENSION HOST (no --jsx). types.ts is a pure leaf.
+export type { TraceEvent, TraceRow, TraceLevel } from 'shared/components/trace/types';
+
+// =============================================================================
+// VIEW TYPES
+// =============================================================================
+
+/** View state — per-view UI state (mode, flowViewMode, viewport). */
+export interface ViewState {
+	mode: ProjectViewMode;
+	flowViewMode?: 'pipeline' | 'component';
+	viewport?: { x: number; y: number; zoom: number };
 }
 
 /**
- * A pipeline file entry — stored in a flat array, hierarchy derived from path.
- *
- * The host is responsible for finding all .pipe files and reading each one
- * to extract projectId and sources before passing them here.
+ * Top-level document pages (UI direction v5): DESIGN edits the canvas,
+ * DEVELOPMENT monitors + replays the dev continuum, DEPLOY the deploy
+ * continuum (plus, when the deploy feature lands, its lifecycle card).
+ * The former per-view modes (status/tokens/flow/trace/errors) became
+ * per-source pills inside each page's SourcePanels.
  */
-export interface ProjectEntry {
-	/** Full relative path (e.g. 'ingest/analyze.pipe' or 'ingest/dir1'). */
-	path: string;
-	/** Entry type — 'file' (default) or 'dir'. Dirs are only needed when the
-	 *  host supports file management (rocket-ui); VS Code omits them. */
-	type?: 'file' | 'dir';
-	/** Project UUID parsed from the .pipe JSON (files only). */
-	projectId?: string;
-	/** Source components parsed from the .pipe JSON (files only). */
-	sources?: ProjectSource[];
-}
+export type ProjectViewMode = 'design' | 'development' | 'deploy';
 
-/** Synthesized directory node — returned by getChildren, never stored. */
-export interface DirEntry {
-	/** Directory name (e.g. 'ingest'). */
-	name: string;
-	/** Full directory path (e.g. 'ingest/dir1'). */
-	path: string;
-	/** Always 'dir'. */
-	type: 'dir';
+/** Base view props (for ServerView, WelcomeView, etc.). */
+export interface IViewProps {
+	isConnected: boolean;
+	initialState?: Record<string, unknown>;
+	onStateChange?: (state: Record<string, unknown>) => void;
 }
-
-/** Runtime state for a single source (keyed by 'projectId.sourceId'). */
-export interface ActiveTaskState {
-	running: boolean;
-	errors: string[];
-	warnings: string[];
-}
-
-/** An unknown task running on the server with no local .pipe file. */
-export interface UnknownTask {
-	projectId: string;
-	sourceId: string;
-	displayName: string;
-	projectLabel: string;
-}
-

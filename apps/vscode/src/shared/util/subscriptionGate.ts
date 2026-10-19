@@ -12,12 +12,12 @@
  */
 
 import type { RocketRideClient } from 'rocketride';
-import { isAppSubscribed } from 'shared/util/subscriptionGate';
+import { isAppSubscribed } from 'shared/utils/subscriptionGate';
 
 /**
  * Returns true if pipeline execution is allowed for the given app — the
  * client-flavored wrapper over the shared account predicate
- * (shared/util/subscriptionGate: the ONE implementation; realms apply it to
+ * (shared/utils/subscriptionGate: the ONE implementation; realms apply it to
  * their mirrored account snapshot).
  *
  * @param client - The RocketRide client instance (may be undefined if disconnected).

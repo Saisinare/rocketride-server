@@ -32,7 +32,7 @@ import * as crypto from 'crypto';
 import { ConfigManager } from '../config';
 import { ConnectionManager } from '../connection/connection';
 import { GenericEvent } from '../shared/types';
-import { isDeployRunBody } from 'shared/tools/pipelines/project/runKind';
+import { isDeployRunBody } from 'shared/tools/pipelines/runKind';
 import { getLogger } from '../shared/util/output';
 import { getPipelineProvider } from '../extension';
 import { DevToolStore } from './DevToolStore';

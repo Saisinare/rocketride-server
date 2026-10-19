@@ -48,8 +48,8 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type * as MonacoNS from 'monaco-editor';
-import { MonacoEditor } from 'shared/modules/monaco';
-import type { Monaco } from 'shared/modules/monaco';
+import { MonacoEditor } from 'shared/components/monaco';
+import type { Monaco } from 'shared/components/monaco';
 import type { SqlDialect } from '../connect';
 import type { CompletionModel } from '../sql/completion';
 import { suggestAt } from '../sql/completion';

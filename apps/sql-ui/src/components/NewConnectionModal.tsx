@@ -39,8 +39,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react';
 import { Banner, Button, ConnectionManager, ContentHeader, Modal } from 'shell';
 import type { IFormData, IService, IServiceSchema } from 'shell';
-import NodeConfigForm, { validationProblemFromResponse } from 'shared/components/node-config/NodeConfigForm';
-import type { INodeConfigFormHandle } from 'shared/components/node-config/NodeConfigForm';
+import NodeConfigForm, { validationProblemFromResponse } from 'shared/components/node-config';
+import type { INodeConfigFormHandle } from 'shared/components/node-config';
 import { PIPELINE_SCHEMA_VERSION } from 'shared/components/node-config';
 import {
 	DATABASE_PROVIDERS,

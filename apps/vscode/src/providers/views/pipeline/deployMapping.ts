@@ -18,8 +18,8 @@ import type { DeployTeamRefDTO, DeployVersionCardDTO, TeamDeploymentRowDTO, Depl
 // Team resolution is the ONE shared implementation (both hosts ran
 // line-for-line copies before) — re-exported here so this module stays the
 // deploy layer's single import.
-import { teamNameOf } from 'shared/components/deploy-panel/teams';
-export { resolveDeployTeams, teamNameOf, wireTeamIdOf } from 'shared/components/deploy-panel/teams';
+import { teamNameOf } from 'shared/panels/deploy/teams';
+export { resolveDeployTeams, teamNameOf, wireTeamIdOf } from 'shared/panels/deploy/teams';
 
 // =============================================================================
 // REGISTRY MAPPERS

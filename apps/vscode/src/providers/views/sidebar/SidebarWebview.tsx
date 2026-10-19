@@ -41,7 +41,7 @@ import type { DevToolHostInfo } from './DevToolSidebarMount';
 import type { SidebarHostToWebview, SidebarWebviewToHost } from './messages';
 import { createBusWorkspaceFs } from './svcFsClient';
 import { buildFooterMenuItems } from './footerMenu';
-import { isAppSubscribed } from 'shared/util/subscriptionGate';
+import { isAppSubscribed } from 'shared/utils/subscriptionGate';
 import { PIPE_BUILDER_APP_ID } from '../../../shared/types';
 import { attachBusRealm } from '../hooks/busRealm';
 

@@ -26,7 +26,7 @@
  */
 
 import * as vscode from 'vscode';
-import { randomBytes } from 'crypto';
+import { renderWebviewHtml } from './toolhost/frameworkProvider';
 import { ConnectionManager } from '../connection/connection';
 import { scanWorkspaceApps } from 'shared/tools/appdev';
 import { hostWorkspaceFs } from './toolhost/hostWorkspaceFs';
@@ -405,27 +405,9 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	 * before any script runs — there is no init message.
 	 */
 	private getHtmlForWebview(webview: vscode.Webview, appId: string): string {
-		const nonce = this.generateNonce();
-		const htmlPath = vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'page-app.html');
-
-		try {
-			let htmlContent = require('fs').readFileSync(htmlPath.fsPath, 'utf8');
-			htmlContent = htmlContent.replace(/\{\{nonce\}\}/g, nonce).replace(/\{\{cspSource\}\}/g, webview.cspSource);
-			htmlContent = htmlContent.replace('<body', `<body data-rr-app="${appId.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}"`);
-			return htmlContent.replace(/(?:src|href)="(\/static\/[^"]+)"/g, (match: string, relativePath: string): string => {
-				const cleanPath = relativePath.startsWith('/') ? relativePath.substring(1) : relativePath;
-				const resourceUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'webview', cleanPath));
-				return match.replace(relativePath, resourceUri.toString());
-			});
-		} catch (error) {
-			return `<html><body><p>Error loading App Builder: ${error}</p></body></html>`;
-		}
+		return renderWebviewHtml(this.context, webview, { htmlFile: 'page-app.html', stamps: { app: appId } });
 	}
 
-	private generateNonce(): string {
-		// Cryptographic source — a CSP nonce must be unpredictable.
-		return randomBytes(24).toString('base64url');
-	}
 
 	// =========================================================================
 	// DISPOSAL

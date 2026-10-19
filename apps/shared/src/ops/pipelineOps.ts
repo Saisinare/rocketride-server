@@ -79,6 +79,12 @@ export interface PipelineHostOpMap extends ShellOpMap {
 	'host.pipeline.stop': ShellOpSpec<{ doc: string; source: string }, void>;
 	/** Saves the document — same flow as the Ctrl+S keybinding. */
 	'host.pipeline.save': ShellOpSpec<{ doc: string }, void>;
+	/** Publishes an immutable version of the document to the registry.
+	 *  HOST-side because it snapshots the TextDocument, never webview state:
+	 *  an untitled doc rejects outright and a dirty one is saved first, so
+	 *  the registry holds exactly what is on disk. Rejects with the failure
+	 *  message — the bus carries the error, so no result correlation. */
+	'host.pipeline.publish': ShellOpSpec<{ doc: string; comment?: string; deployTo?: string }, void>;
 	/** ROCKETRIDE_* refs the canvas found that are not in the env — the host
 	 *  offers the add-variables flow. */
 	'host.pipeline.missingEnv': ShellOpSpec<{ keys: string[] }, void>;

@@ -26,8 +26,8 @@ import type { ConnectionManager } from '../../connection/connection';
 // Deep import on purpose: the tools/pipelines BARREL exports the discovery
 // controller, which carries sidebar view types the extension host's no-DOM
 // compile must never see. parse.ts is the pure parsing contract.
-import { parsePipelineContent } from 'shared/tools/pipelines/parse';
-import type { ParsedPipelineFile, ServiceClassInfo } from 'shared/tools/pipelines/parse';
+import { parsePipelineContent } from 'shared/tools/pipelines/utils/parse';
+import type { ParsedPipelineFile, ServiceClassInfo } from 'shared/tools/pipelines/utils/parse';
 import { checkMissingEnvVars } from '../../shared/util/envVarCheck';
 import { getLogger } from '../../shared/util/output';
 import { getPipelineProvider } from '../../extension';

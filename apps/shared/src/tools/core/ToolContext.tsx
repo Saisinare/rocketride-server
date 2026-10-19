@@ -37,7 +37,7 @@ import type { ComponentType } from 'react';
 import { useToolHost as useShellToolHost } from 'shell';
 import type { ToolHostServices, ExplorerFileAction } from 'shell';
 import type { AppListItem } from '../appdev/sidebarTypes';
-import type { ProjectEntry } from '../pipelines/types';
+import type { ProjectEntry } from '../pipelines/sidebar/types';
 
 // The generic layer, re-exported so in-repo code keeps one import root.
 export { ToolHostProvider, createLoopbackPeer } from 'shell';

@@ -41,10 +41,9 @@
 
 import * as vscode from 'vscode';
 import { getLogger } from '../shared/util/output';
-import * as crypto from 'crypto';
-import { readFileSync } from 'fs';
 import { ConnectionManager } from '../connection/connection';
 import type { BusHost } from './toolhost/busHost';
+import { renderWebviewHtml } from './toolhost/frameworkProvider';
 import { registerOpHandlers } from 'shell/src/ops/busOps';
 import type { OpImplTable } from 'shell/src/ops/busOps';
 import type { HostOpMap, DevToolViewPayload } from 'shared/ops/hostOps';
@@ -432,9 +431,6 @@ export class DevToolPanelProvider {
 	 * @returns The HTML string to set as `webview.html`.
 	 */
 	private getHtmlForWebview(webview: vscode.Webview, appId: string, docKey: string): string {
-		const nonce = crypto.randomBytes(32).toString('base64url');
-		const htmlPath = vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'devtool', 'page-devtool.html');
-
 		// The engine origin this panel may load SCRIPTS from — computed per
 		// creation (the engine URL is a user setting).
 		let engineOrigin = '';
@@ -443,52 +439,24 @@ export class DevToolPanelProvider {
 		} catch {
 			/* no engine origin — the CSP stays as the template wrote it */
 		}
-
-		try {
-			let htmlContent = readFileSync(htmlPath.fsPath, 'utf8');
-
-			// Step 1: template placeholders.
-			htmlContent = htmlContent.replace(/\{\{nonce\}\}/g, nonce).replace(/\{\{cspSource\}\}/g, webview.cspSource);
-
-			// Step 1b: the panel's identity, present before any script runs.
-			const esc = (v: string): string => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-			htmlContent = htmlContent.replace('<body', `<body data-rr-tool="${esc(appId)}" data-rr-doc="${esc(docKey)}"`);
-
-			// Step 2: widen the CSP — per-panel runtime CSP (precedent:
-			// ProjectProvider's openLink panel). SCRIPTS stay engine-only
-			// (code loading is the sensitive direction); DATA fetches open up
-			// to any http(s) origin because file content rides presigned
-			// storage URLs on cloud connections (fsGetUrl → S3/Azure blob
-			// origins), mirroring the template's own `frame-src http: https:`.
-			if (engineOrigin) {
-				htmlContent = htmlContent
-					.replace(/script-src /, `script-src ${engineOrigin} `)
-					// The remote's ASYNC CSS chunks load from the engine too.
-					.replace(/style-src /, `style-src ${engineOrigin} `)
-					.replace(/connect-src /, 'connect-src http: https: ws: wss: blob: ')
-					.replace(/img-src /, 'img-src http: https: blob: ')
-					.replace(/font-src /, 'font-src http: https: ')
-					// The template carries no media-src and default-src is
-					// 'none' — audio/video viewers need it added outright.
-					.replace(/default-src 'none';/, "default-src 'none'; media-src http: https: data: blob:;");
-			}
-
-			// Step 3: rewrite static asset URLs (the MF build emits with
-			// assetPrefix 'auto', so refs may be relative) to webview URIs
-			// under the devtool build's own directory.
-			return htmlContent.replace(/(?:src|href)="(\.?\/?static\/[^"]+)"/g, (match: string, relativePath: string): string => {
-				const cleanPath = relativePath.replace(/^\.?\//, '');
-				const resourceUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'webview', 'devtool', cleanPath));
-				return match.replace(relativePath, resourceUri.toString());
-			});
-		} catch (error) {
-			return `<!DOCTYPE html>
-            <html><body style="padding:20px;color:#f44336;">
-                <h3>Error Loading Dev Tool Page</h3>
-                <p>Could not load the dev-tool webview. Please try reloading the window.</p>
-                <pre>${error}</pre>
-            </body></html>`;
-		}
+		return renderWebviewHtml(this.context, webview, {
+			htmlFile: 'devtool/page-devtool.html',
+			stamps: { tool: appId, doc: docKey },
+			// Per-panel runtime CSP: SCRIPTS stay engine-only (code loading is
+			// the sensitive direction); DATA fetches open to any http(s) origin
+			// because file content rides presigned storage URLs on cloud
+			// connections (fsGetUrl -> S3/Azure blob origins).
+			transform: (html) =>
+				engineOrigin
+					? html
+							.replace(/script-src /, `script-src ${engineOrigin} `)
+							.replace(/style-src /, `style-src ${engineOrigin} `)
+							.replace(/connect-src /, 'connect-src http: https: ws: wss: blob: ')
+							.replace(/img-src /, 'img-src http: https: blob: ')
+							.replace(/font-src /, 'font-src http: https: ')
+							.replace(/default-src 'none';/, "default-src 'none'; media-src http: https: data: blob:;")
+					: html,
+		});
 	}
 
 	// =========================================================================
