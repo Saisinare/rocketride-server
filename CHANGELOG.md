@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — since 2026-10-16
 
+### Added
+- **nodes**: the vector-store tools gain `soft_delete` and `restore` on all nine store nodes (`rocketride_vector`, `store_astra`, `store_atlas`, `store_chroma`, `store_milvus`, `store_pinecone`, `store_postgres`, `store_qdrant`, `store_weaviate`): they move documents to the trash and back over the drivers' existing soft-delete support, are offered beside `upsert` and `delete` only while writes through tools are allowed, and report `matched_chunks` where the store counts the rows it marks (the two Postgres stores). `rocketride_vector` and `store_postgres` also offer `list_documents` (one entry per document with its parent path and chunk count, paged and ordered by object ID, active documents or the trash) and report `document_count` in `stats`; both come from an optional driver capability (`DocumentStoreBase.listDocuments`, `countDocuments`, `supports_document_listing`) any other driver can adopt (#2587)
+
+### Changed
+- **nodes**: on all nine vector-store nodes, `get` answers an object ID the store does not hold, or one in the trash, with `{"success": false, "error": ...}` instead of an empty page; `upsert` numbers the chunks sent for one object ID in the order given instead of storing them all as chunk 0, and rejects an explicit `chunkId` that repeats within a call; `upsert`, `delete`, `soft_delete`, `restore` and `get` refuse the reserved object ID `schema` (the store's control row); `delete` counts distinct IDs; `stats` carries `document_count`, null where the store cannot count documents; `delete` echoes the distinct IDs it was given. On the two Postgres stores `objdir` pages count parent paths rather than documents, so a page holds `limit` entries while more follow, and lists a document whatever chunk IDs it has (#2587, #2668)
+- **nodes**: clarification of the 3.5.0 entry, which named `rocketride_vector` only: the vector-store tool limits apply to every store node on the shared base, the nine named above (`get` returns at most 100 chunks per call, `objdir` at most 1000 paths, pagination values must be integers), and `StoreGlobalBase` reads the `expose_tools` and `allow_write` config keys on every one of them; only `rocketride_vector` declares them as settings, the other eight default both on (#2668)
+
 ## [3.5.0] - 2026-10-16
 
 ### Added

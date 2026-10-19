@@ -31,12 +31,18 @@ The configured tool-server name defaults to `postgres`.
 | Function | Description |
 | --- | --- |
 | `search` | Searches the store for a non-empty `query`; accepts optional `top_k` and metadata `filter`, and returns matching content, metadata, and scores. |
-| `upsert` | Adds or updates a non-empty `documents` array. Each document requires content and an object ID; it can provide an embedding and embedding model or use the bound embedding provider. |
-| `delete` | Deletes documents for a non-empty `object_ids` array and returns the deleted count. |
+| `objdir` | Lists the distinct parent paths in the table as a map of parent path to one object ID each; accepts optional `parent`, `offset`, and `limit` (default and cap 1000), and pages count paths. |
+| `list_documents` | Lists the documents one by one, ordered by object ID, each with `object_id`, `parent`, and `chunk_count`; accepts optional `parent` (exact match), `deleted` (true lists the trash), `offset`, and `limit` (default 100, cap 1000). The reply carries `total`, `offset`, and `has_more`. |
+| `get` | Returns up to `limit` chunks (default and cap 100) of one document by `object_id`, ordered by chunk ID, with `total`, `has_more`, and `truncated`; an object ID the table does not hold, or one in the trash, returns a failure object. |
+| `stats` | Returns the row (chunk) count of the table including its internal schema row and soft-deleted chunks, the number of active documents (`document_count`), the embedding model name, and the vector size. |
+| `upsert` | Adds or replaces a non-empty `documents` array. Each document requires content and an object ID; it can provide an embedding and embedding model or use the bound embedding provider. The chunks sent for one object ID are numbered in the order given unless each carries its own `chunkId`, which may not repeat within the call. |
+| `delete` | Deletes the chunks of a non-empty `object_ids` array for good; the reply echoes the distinct IDs and `deleted_count`, their number (not the documents found). |
+| `soft_delete` | Moves the documents of a non-empty `object_ids` array to the trash, keeping their chunks; the reply echoes the distinct IDs and `matched_chunks`, the chunk rows the table held for them. |
+| `restore` | Takes the documents of a non-empty `object_ids` array out of the trash, with the same reply as `soft_delete`. A document removed with `delete` cannot be restored. |
 
-`search` requires a bound embedding provider for semantic similarity search. The three functions return a failure object when their required input or an embedding cannot be obtained.
+`search` requires a bound embedding provider for semantic similarity search. The functions return a failure object when their required input or an embedding cannot be obtained, and refuse the object ID `schema`, which names the table's control row. The write functions (`upsert`, `delete`, `soft_delete`, `restore`) are offered only while the node's `allow_write` config key is on; it is on by default and not a declared setting on this node, so the whole table is offered unless a pipeline sets `allow_write: false` on the node.
 
-`search` accepts an optional `filter` object honoring only `objectId`, `nodeId` and `parent`; any other key is rejected. `upsert` accepts an optional `metadata` object storing `nodeId`, `parent` and `chunkId`, defaulting to `"vectordb_tool"`, `"/"` and `0` respectively.
+`search` accepts an optional `filter` object honoring only `objectId`, `nodeId` and `parent`; any other key is rejected. `upsert` accepts an optional `metadata` object storing `nodeId`, `parent` and `chunkId`; `nodeId` defaults to `"vectordb_tool"`, `parent` to `"/"`, and `chunkId` to the document's position among the chunks sent for its object ID in the call (0 for the first), and an explicit `chunkId` may not repeat within the call.
 
 ## Configuration
 
@@ -83,7 +89,7 @@ as an ordinary relevance-tuning issue.
 
 ### Tool Server Name
 
-The tool-server name defaults to `postgres` and prefixes the three agent functions. Change it when multiple PostgreSQL stores are connected to the same agent so their functions do not share a namespace.
+The tool-server name defaults to `postgres` and labels this node in the messages the tool functions return. Agents and apps address the functions by the node's pipeline id, which keeps several PostgreSQL stores apart.
 
 ## Authentication
 

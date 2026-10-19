@@ -544,6 +544,7 @@ def _vector_store_cls(monkeypatch):
     bases = store_base_stubs()
     store_mod.StoreGlobalBase = bases.StoreGlobalBase
     store_mod.StoreInstanceBase = bases.StoreInstanceBase
+    store_mod.CONTROL_OBJECT_ID = bases.CONTROL_OBJECT_ID
     config = types.ModuleType('ai.common.config')
     config.Config = types.SimpleNamespace(getNodeConfig=lambda provider, connConfig: dict(connConfig))
     transform = types.ModuleType('ai.common.transform')

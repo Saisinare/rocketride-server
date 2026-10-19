@@ -79,17 +79,33 @@ Semantic similarity search over the collection.
 
 Requires an embedding provider bound to the node (the embedding sub-block in the configuration). If semantic search fails, the tool falls back to keyword search. Returns `{"results": [{content, score, metadata}], "total": n}` on success or `{"success": false, "error": "..."}` on failure.
 
+### `objdir`
+
+List the distinct parent paths in the collection as a map of parent path to one object ID each. Takes optional `parent`, `offset` and `limit` (default and cap 1000); documents that share a parent path appear as one entry.
+
+### `get`
+
+Return the chunks of one document. Takes a required `object_id` and optional `offset` and `limit` (default and cap 100); chunks come ordered by chunk ID with `total`, `has_more` and `truncated`. An object ID the collection does not hold, or one in the trash, returns `{"success": false, "error": "..."}`.
+
+### `stats`
+
+Return the collection's point count as Qdrant reports it, `document_count` (null on this store, which does not list documents), the embedding model name and the vector size.
+
 ### `upsert`
 
 Add or update documents in the collection.
 
-Each item in the `documents` array requires `content` and `object_id` (used for deduplication) and may include `metadata` (keys `nodeId`/`parent`/`chunkId` are stored; defaults `"vectordb_tool"`, `"/"`, `0`), plus optional pre-computed `embedding` and `embedding_model` to skip automatic embedding. Without a pre-computed vector the node's bound embedding provider is used; if none is configured the call fails. Returns `{"success": true, "count": n, "skipped": n}`.
+Each item in the `documents` array requires `content` and `object_id` (used for deduplication) and may include `metadata` (keys `nodeId`/`parent`/`chunkId` are stored; `nodeId` defaults to `"vectordb_tool"`, `parent` to `"/"`, and `chunkId` to the position among the chunks sent for that object ID in the call, 0 for the first; an explicit `chunkId` may not repeat within the call), plus optional pre-computed `embedding` and `embedding_model` to skip automatic embedding. Without a pre-computed vector the node's bound embedding provider is used; if none is configured the call fails. Returns `{"success": true, "count": n, "skipped": n}`.
 
 ### `delete`
 
 Delete documents by ID.
 
 Takes a required `object_ids` string array and removes all points whose `meta.objectId` matches. Returns `{"success": true, "deleted_count": n}`.
+
+### `soft_delete` and `restore`
+
+Move documents to the trash and back by object ID. Both take a required `object_ids` string array; `soft_delete` marks every point whose `meta.objectId` matches as deleted, so it leaves search and the read tools until `restore` clears the mark. Both return `{"success": true, "object_ids": [...], "matched_chunks": null}`, since this store does not count the points it marks. A document removed with `delete` cannot be restored.
 
 ## Profiles
 

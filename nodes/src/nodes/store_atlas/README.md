@@ -30,12 +30,17 @@ The configured tool server name is the namespace for the functions below; it def
 | Function | Description |
 | --- | --- |
 | `search` | Search the collection for matching documents. |
+| `objdir` | Lists the distinct parent paths in the collection as a map of parent path to one object ID each; accepts optional `parent`, `offset`, and `limit` (default and cap 1000). Documents that share a parent path appear as one entry. |
+| `get` | Returns up to `limit` chunks (default and cap 100) of one document by `object_id`, ordered by chunk ID, with `total`, `has_more`, and `truncated`; an object ID the store does not hold, or one in the trash, returns a failure object. |
+| `stats` | Returns the collection's count as this store reports it, `document_count` (null on this store, which does not list documents), the embedding model name, and the vector size. |
 | `upsert` | Add or update documents in the collection. |
 | `delete` | Remove documents by object ID. |
+| `soft_delete` | Moves the documents of a non-empty `object_ids` array to the trash, keeping their chunks; the reply echoes the distinct IDs, and `matched_chunks` is null on this store. |
+| `restore` | Takes the documents of a non-empty `object_ids` array out of the trash. A document removed with `delete` cannot be restored. |
 
 `search` and an `upsert` without a supplied embedding use the node's bound embedding provider. Tool invocations do not flow through the pipeline's embedding lane, so bind that provider when agents should create or search vectors automatically. Choose a distinct tool server name for each Atlas node an agent can access.
 
-`search` accepts an optional `filter` object honoring only `objectId`, `nodeId` and `parent`; any other key is rejected. `upsert` accepts an optional `metadata` object storing `nodeId`, `parent` and `chunkId`, defaulting to `"vectordb_tool"`, `"/"` and `0` respectively.
+`search` accepts an optional `filter` object honoring only `objectId`, `nodeId` and `parent`; any other key is rejected. `upsert` accepts an optional `metadata` object storing `nodeId`, `parent` and `chunkId`; `nodeId` defaults to `"vectordb_tool"`, `parent` to `"/"`, and `chunkId` to the document's position among the chunks sent for its object ID in the call (0 for the first), and an explicit `chunkId` may not repeat within the call.
 
 ## Configuration
 
