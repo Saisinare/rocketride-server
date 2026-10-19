@@ -29,4 +29,16 @@ if(ROCKETRIDE_PLAT_LIN)
         COMMENT "Copying lib7-Zip-JBinding.so beside libparse.so")
     add_custom_target(parse_sevenzipjbinding ALL DEPENDS "${sevenZipCopy}")
     add_dependencies(parse parse_sevenzipjbinding)
+    # CMake-kit (IDE) builds stage node libraries into dist themselves (rocketride-node.cmake
+    # does it for libparse.so); nodes:sync is not part of that flow, so stage this one too.
+    if(ROCKETRIDE_CMAKE_KITS)
+        set(sevenZipDist "${ROCKETRIDE_DIST_DIR}/nodes/parse/lib7-Zip-JBinding.so")
+        add_custom_command(OUTPUT "${sevenZipDist}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${ROCKETRIDE_DIST_DIR}/nodes/parse"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${sevenZipCopy}" "${sevenZipDist}"
+            DEPENDS "${sevenZipCopy}"
+            COMMENT "Copying lib7-Zip-JBinding.so to dist/server/nodes/parse")
+        add_custom_target(parse_sevenzipjbinding_dist ALL DEPENDS "${sevenZipDist}")
+        add_dependencies(parse parse_sevenzipjbinding_dist)
+    endif()
 endif()

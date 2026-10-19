@@ -58,6 +58,7 @@ the ``stdcxx`` variant still exercises the whole sequence.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import struct
 import subprocess
@@ -327,20 +328,42 @@ def test_control_jar_binding_survives_with_the_node_py_guard(tmp_path, jar_prebu
     assert _survived(result), _tail(result)
 
 
+def _imports_ai(node: ast.AST) -> bool:
+    """True for ``import ai...`` or ``from ai... import`` other than the guard module itself."""
+    if isinstance(node, ast.Import):
+        return any(alias.name == 'ai' or alias.name.startswith('ai.') for alias in node.names)
+    if isinstance(node, ast.ImportFrom):
+        module = node.module or ''
+        return (module == 'ai' or module.startswith('ai.')) and module != 'ai.libstdcxx_guard'
+    return False
+
+
 def test_node_py_runs_the_guard_before_any_node_code():
     """
-    ``ai/node.py`` must call the guard before it imports anything that could load native code.
+    ``ai/node.py`` must call the guard, at module level, before any other ``ai`` import.
 
-    The probes exercise the function; this pins the call site, which no runtime test reaches.
+    Any ``ai`` module may load native code (``ai.common.torch`` imports torch at module scope,
+    ``ai.proc_privacy`` uses ctypes), so the guard has to come first. The probes exercise the
+    function; this pins the call site, which no runtime test reaches.
     """
     candidates = [_REPO_ROOT / 'packages' / 'ai' / 'src' / 'ai' / 'node.py', _ENGINE_DIR / 'ai' / 'node.py']
     node_py = next((p for p in candidates if p.is_file()), None)
     assert node_py is not None, f'node.py not found in {candidates}'
-    source = node_py.read_text(encoding='utf-8')
-    call = source.find('\npreload_system_libstdcxx()\n')
-    first_ai_import = source.find('from ai.proc_privacy import')
-    assert call != -1, 'node.py no longer calls preload_system_libstdcxx()'
-    assert first_ai_import != -1 and call < first_ai_import, 'the guard must run before the first ai import'
+    tree = ast.parse(node_py.read_text(encoding='utf-8'), filename=str(node_py))
+    calls = [
+        stmt.lineno
+        for stmt in tree.body  # module level only: a call inside a function would run too late
+        if isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Call)
+        and isinstance(stmt.value.func, ast.Name)
+        and stmt.value.func.id == 'preload_system_libstdcxx'
+    ]
+    ai_imports = sorted(node.lineno for node in ast.walk(tree) if _imports_ai(node))
+    assert calls, 'node.py no longer calls preload_system_libstdcxx() at module level'
+    assert ai_imports, 'node.py imports nothing from ai any more; re-check what this test should pin'
+    assert calls[0] < ai_imports[0], (
+        f'the guard runs at line {calls[0]} but node.py imports an ai module at line {ai_imports[0]} already'
+    )
 
 
 def test_jar_prebuilt_binding_exports_a_bundled_libstdcxx(jar_prebuilt_binding):
