@@ -31,6 +31,8 @@ export interface ChatMessage {
 	meta?: string;
 	/** When true, the message renders as an in-thread error Banner instead of a bubble. */
 	isError?: boolean;
+	/** Extra text behind a status row (e.g. the model's raw reply): shown in a small disclosure under the row, and saved with it. Absent on rows without any. */
+	detail?: string;
 }
 
 // =============================================================================
@@ -72,10 +74,24 @@ export interface UseChatMessagesOptions {
 	/**
 	 * Injected transport: when provided, sendMessage awaits this instead of the
 	 * built-in chat API (the `client`/`authToken` arguments are then unused).
-	 * Each returned TextResult renders as one bot message.
+	 * Each returned TextResult renders as one bot message. The hook passes a
+	 * status sink as the second argument: rows sent to it show up at once,
+	 * while the request is still pending (see {@link ChatStatusSink}).
 	 */
-	request?: (text: string) => Promise<TextResult[]>;
+	request?: (text: string, onStatus?: ChatStatusSink) => Promise<TextResult[]>;
 }
+
+/**
+ * Live status sink handed to an injected `request` transport. Each call
+ * appends a status row to the thread immediately, the same row the built-in
+ * chat path appends for a server-sent event. Rows with type `thinking` fold
+ * into the thread's collapsible "Thinking…" group.
+ *
+ * @param type - The row's event type (stored as `sseType`).
+ * @param text - The row's text; line breaks are kept.
+ * @param detail - Optional extra text for the row (stored as `detail`); it shows in a disclosure under the row.
+ */
+export type ChatStatusSink = (type: string, text: string, detail?: string) => void;
 
 // =============================================================================
 // PIPELINE RESULT (from rocketride SDK)
