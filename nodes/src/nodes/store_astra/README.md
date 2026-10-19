@@ -8,7 +8,7 @@ Astra DB is a database service with a Data API for application access. This node
 
 ## What it does
 
-The node writes embedded documents from the `documents` lane to an Astra collection and searches that collection for incoming questions. Semantic questions use the question embedding as the collection's vector sort; keyword questions use Astra's lexical sort. It can also bind `search`, `upsert`, and `delete` to an agent.
+The node writes embedded documents from the `documents` lane to an Astra collection and searches that collection for incoming questions. Semantic questions use the question embedding as the collection's vector sort; keyword questions use Astra's lexical sort. It also offers the eight agent tools listed below, including document retrieval, statistics, trash and restore, subject to the tool-exposure and write-permission settings.
 
 Choose it when the data must live behind an Astra Data API endpoint and you want Astra to provide both vector and lexical retrieval. Pick a sibling store instead when your existing collection lives in that sibling's database; this node creates and manages an Astra collection rather than adapting another store's protocol.
 
@@ -25,7 +25,7 @@ The collection is created only on the first write. Its vector dimension comes fr
 
 ## As a tool
 
-The configured tool server name is the namespace for the functions below; it defaults to `astra`.
+Pipeline agents address the functions below as `<node id>.<function>`. The configured tool server name (default `astra`) labels tool-response messages.
 
 | Function | Description |
 | --- | --- |
@@ -38,7 +38,7 @@ The configured tool server name is the namespace for the functions below; it def
 | `soft_delete` | Moves the documents of a non-empty `object_ids` array to the trash, keeping their chunks; the reply echoes the distinct IDs, and `matched_chunks` is null on this store. |
 | `restore` | Takes the documents of a non-empty `object_ids` array out of the trash. A document removed with `delete` cannot be restored. |
 
-`search` and an `upsert` without a supplied embedding use the node's bound embedding provider. These calls are on the agent tool channel, not the document lanes. Give each Astra node a distinct tool server name when an agent can reach more than one of them.
+`search` and an `upsert` without a supplied embedding use the node's bound embedding provider. These calls are on the agent tool channel, not the document lanes. Agents distinguish multiple Astra nodes by their pipeline node IDs.
 
 `search` accepts an optional `filter` object honoring only `objectId`, `nodeId` and `parent`; any other key is rejected. `upsert` accepts an optional `metadata` object storing `nodeId`, `parent` and `chunkId`; `nodeId` defaults to `"vectordb_tool"`, `parent` to `"/"`, and `chunkId` to the document's position among the chunks sent for its object ID in the call (0 for the first), and an explicit `chunkId` may not repeat within the call.
 
@@ -83,7 +83,7 @@ Soft deletion is a separate lifecycle action. It leaves the chunks in Astra and 
 
 ### Tool Server Name
 
-This is the namespace for agent functions, so the default exposes `astra.search`, `astra.upsert`, and `astra.delete`. Change it when multiple Astra nodes are connected to the same agent to prevent name collisions.
+The name defaults to `astra` and labels this store in tool-response messages. Pipeline agents address all eight functions listed above by node ID, for example `<node id>.search` or `<node id>.restore`; changing this label does not change those addresses.
 
 ## Authentication
 
@@ -123,7 +123,7 @@ Agent `search` needs an embedding for semantic retrieval, and agent `upsert` nee
 | `astra_db.api_endpoint` | `string` | **API Endpoint**<br/>Enter the server API endpoint e.g. <instance-name>.<region>.apps.astra.datastax.com |  |
 | `astra_db.application_token` | `string` | **Application Token**<br/>Enter the server API application token |  |
 | `astra_db.provider` | `string` |  | const: `"astra_db"` |
-| `astra_db.serverName` | `string` | **Tool Server Name**<br/>Namespace for agent-facing tool names, e.g. 'astra' exposes tools as astra.search / astra.upsert / astra.delete. Change this when running multiple Astra DB nodes in the same pipeline so their tool names do not collide. | `"astra"` |
+| `astra_db.serverName` | `string` | **Tool Server Name**<br/>Label for this store in tool-response messages (for example, a refused write names astra.delete). Pipeline agents address the available functions as node-id.function; apps use the function name and node ID. Changing this label does not change those addresses. See the node README for the available functions and their tool-exposure and write-permission settings. | `"astra"` |
 
 ## Dependencies
 

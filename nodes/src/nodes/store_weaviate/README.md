@@ -87,7 +87,7 @@ key instead of treating it as a retrieval-score problem.
 
 ### Tool Server Name
 
-The tool-server name defaults to `weaviate` and prefixes the three agent functions. Change it when multiple Weaviate stores are connected to the same agent so their functions do not share a namespace.
+The tool-server name defaults to `weaviate` and labels this store in tool-response messages. Pipeline agents address all eight functions listed above by node ID, for example `<node id>.search` or `<node id>.restore`; changing this label does not change those addresses.
 
 ## Authentication
 
@@ -137,7 +137,7 @@ transaction across the prior objects and the new batch.
 | `vector.local.port` |  |  | `8080` |
 | `weaviate.profile` | `string` | **Type of Weaviate host**<br/>Connect to... | `"local"` |
 | `weaviate.provider` | `string` |  | const: `"weaviate"` |
-| `weaviate.serverName` | `string` | **Tool Server Name**<br/>Namespace for agent-facing tool names, e.g. 'weaviate' exposes tools as weaviate.search / weaviate.upsert / weaviate.delete. Change this when running multiple Weaviate nodes in the same pipeline so their tool names do not collide. | `"weaviate"` |
+| `weaviate.serverName` | `string` | **Tool Server Name**<br/>Label for this store in tool-response messages (for example, a refused write names weaviate.delete). Pipeline agents address the available functions as node-id.function; apps use the function name and node ID. Changing this label does not change those addresses. See the node README for the available functions and their tool-exposure and write-permission settings. | `"weaviate"` |
 
 ## Dependencies
 

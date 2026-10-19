@@ -11,7 +11,7 @@ managed service (Qdrant Cloud).
 
 ## What it does
 
-Stores pre-embedded document chunks in a Qdrant collection and retrieves them by semantic (vector) similarity or full-text keyword search. Works with both self-hosted Qdrant and Qdrant Cloud. The node is also a tool node (`classType: ["store", "tool"]` with the `invoke` capability), so agents in the same pipeline can call its `search`, `upsert`, and `delete` tools directly.
+Stores pre-embedded document chunks in a Qdrant collection and retrieves them by semantic (vector) similarity or full-text keyword search. Works with both self-hosted Qdrant and Qdrant Cloud. The node is also a tool node (`classType: ["store", "tool"]` with the `invoke` capability), so agents in the same pipeline can use the eight functions documented under As a tool, including document retrieval, statistics, trash and restore, subject to the tool-exposure and write-permission settings.
 
 Uses the official **`qdrant_client`** Python SDK over REST (`prefer_grpc=False`, 60-second timeout). If the configured host has no scheme, `http://` is prepended automatically.
 
@@ -65,7 +65,7 @@ every question.
 
 ## As a tool
 
-Tools are exposed under the configured `serverName` namespace (default `qdrant`).
+Pipeline agents address the functions as `<node id>.<function>`. The configured `serverName` (default `qdrant`) labels tool-response messages. The available functions are `search`, `objdir`, `get`, `stats`, `upsert`, `delete`, `soft_delete`, and `restore`; write functions require `allow_write`, and all functions require `expose_tools`.
 
 ### `search`
 
@@ -124,10 +124,10 @@ API key, and collection fields.
 
 ### Tool Server Name
 
-Prefix for the tool names agents see: `qdrant` exposes `qdrant.search`,
-`qdrant.upsert`, `qdrant.delete`. Change it when running multiple Qdrant nodes
-in the same pipeline — give each a distinct name so their tool names do not
-collide and the agent can tell the stores apart.
+The name defaults to `qdrant` and labels this store in tool-response messages.
+Pipeline agents address all eight functions documented above by node ID, for
+example `<node id>.search` or `<node id>.restore`; changing this label does not
+change those addresses.
 
 ## Authentication
 
@@ -172,7 +172,7 @@ When the configuration is saved, the node validates it with a fast read-only pro
 |---|---|---|---|
 | `qdrant.profile` | `string` | **Type of Qdrant host**<br/>Connect to... | `"cloud"` |
 | `qdrant.provider` | `string` |  | const: `"qdrant"` |
-| `qdrant.serverName` | `string` | **Tool Server Name**<br/>Namespace for agent-facing tool names, e.g. 'qdrant' exposes tools as qdrant.search / qdrant.upsert / qdrant.delete. Change this when running multiple Qdrant nodes in the same pipeline so their tool names do not collide. | `"qdrant"` |
+| `qdrant.serverName` | `string` | **Tool Server Name**<br/>Label for this store in tool-response messages (for example, a refused write names qdrant.delete). Pipeline agents address the available functions as node-id.function; apps use the function name and node ID. Changing this label does not change those addresses. See the node README for the available functions and their tool-exposure and write-permission settings. | `"qdrant"` |
 | `vector.cloud.host` |  | Enter the server IP address e.g. <your-instance-name>.<region>.qdrant.io |  |
 | `vector.cloud.port` |  |  | `6333` |
 | `vector.local.host` |  |  | `"localhost"` |

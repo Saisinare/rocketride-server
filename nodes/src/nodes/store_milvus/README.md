@@ -88,7 +88,7 @@ using it to mask a host, port, or authentication mismatch.
 
 ### Tool Server Name
 
-The tool-server name defaults to `milvus` and prefixes the three agent functions. Change it when multiple Milvus stores are connected to the same agent so their functions do not share a namespace.
+The tool-server name defaults to `milvus` and labels this store in tool-response messages. Pipeline agents address all eight functions listed above by node ID, for example `<node id>.search` or `<node id>.restore`; changing this label does not change those addresses.
 
 ## Authentication
 
@@ -128,7 +128,7 @@ Rendering retrieves an object's chunks in `chunkId` order and sends joined text 
 |---|---|---|---|
 | `milvus.profile` | `string` | **Type of Milvus host**<br/>Connect to... | `"cloud"` |
 | `milvus.provider` | `string` |  | const: `"milvus"` |
-| `milvus.serverName` | `string` | **Tool Server Name**<br/>Namespace for agent-facing tool names, e.g. 'milvus' exposes tools as milvus.search / milvus.upsert / milvus.delete. Change this when running multiple Milvus nodes in the same pipeline so their tool names do not collide. | `"milvus"` |
+| `milvus.serverName` | `string` | **Tool Server Name**<br/>Label for this store in tool-response messages (for example, a refused write names milvus.delete). Pipeline agents address the available functions as node-id.function; apps use the function name and node ID. Changing this label does not change those addresses. See the node README for the available functions and their tool-exposure and write-permission settings. | `"milvus"` |
 | `vector.cloud.host` |  | Enter the server IP address e.g. <your-instance-name>.<region>.zillizcloud.com |  |
 | `vector.cloud.port` |  |  | `443` |
 | `vector.local.host` |  |  | `"localhost"` |

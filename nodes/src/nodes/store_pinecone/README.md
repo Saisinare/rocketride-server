@@ -87,7 +87,7 @@ not see every index available to a broader application credential.
 
 ### Tool Server Name
 
-The tool-server name defaults to `pinecone` and prefixes the three agent functions. Change it when multiple Pinecone stores are connected to the same agent so their functions do not share a namespace.
+The tool-server name defaults to `pinecone` and labels this store in tool-response messages. Pipeline agents address all eight functions listed above by node ID, for example `<node id>.search` or `<node id>.restore`; changing this label does not change those addresses.
 
 ## Authentication
 
@@ -134,7 +134,7 @@ separate caller choice rather than an accidental result of broad searching.
 | `pinecone.collection` | `string` | **Collection**<br/>Enter the name of the collection. Accepted are: Lower case, alphanumeric characters, hyphens | `"rocketride"` |
 | `pinecone.profile` | `string` | **Type of Pinecone Connection**<br/>Connect to... | `"pod-based"` |
 | `pinecone.provider` | `string` |  | const: `"pinecone"` |
-| `pinecone.serverName` | `string` | **Tool Server Name**<br/>Namespace for agent-facing tool names, e.g. 'pinecone' exposes tools as pinecone.search / pinecone.upsert / pinecone.delete. Change this when running multiple Pinecone nodes in the same pipeline so their tool names do not collide. | `"pinecone"` |
+| `pinecone.serverName` | `string` | **Tool Server Name**<br/>Label for this store in tool-response messages (for example, a refused write names pinecone.delete). Pipeline agents address the available functions as node-id.function; apps use the function name and node ID. Changing this label does not change those addresses. See the node README for the available functions and their tool-exposure and write-permission settings. | `"pinecone"` |
 
 ## Dependencies
 
