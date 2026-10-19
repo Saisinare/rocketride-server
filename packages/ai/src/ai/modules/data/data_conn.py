@@ -233,6 +233,14 @@ class DataConn(DAPConn):
         else:
             await super().on_receive(message)
 
+    async def on_disconnected(self, reason: Optional[str] = None, has_error: bool = False) -> None:
+        """Fail the questions still waiting for EaaS: no answer will come on this connection."""
+        for answer in self._asked.values():
+            if not answer.done():
+                answer.set_exception(ConnectionError(reason or 'EaaS disconnected'))
+        self._asked.clear()
+        await super().on_disconnected(reason, has_error)
+
     async def ask_spend(self) -> Optional[str]:
         """Ask EaaS whether this task's org may open a pipe: None, or the refusal."""
         request = self.build_request('rrext_check_spend')

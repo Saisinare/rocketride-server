@@ -67,15 +67,15 @@ async def test_eaas_answers_the_check_with_the_refusal_for_the_tasks_own_org(mon
 
 
 @pytest.mark.asyncio
-async def test_a_task_with_no_org_is_answered_without_asking(monkeypatch):
+async def test_a_task_with_no_org_leaves_the_answer_to_the_account(monkeypatch):
     check = AsyncMock(return_value=REFUSAL)
     monkeypatch.setattr(ai.account.account, 'check_spend', check)
     client = _data_client(_task(org_id=''))
 
     await client.on_receive(dict(ASK))
 
-    check.assert_not_awaited()
-    assert client._send.await_args.args[0]['body'] == {'refusal': None}
+    check.assert_awaited_once_with('')
+    assert client._send.await_args.args[0]['body'] == {'refusal': REFUSAL}
 
 
 @pytest.mark.asyncio

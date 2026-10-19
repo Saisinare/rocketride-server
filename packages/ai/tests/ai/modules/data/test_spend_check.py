@@ -150,9 +150,22 @@ def test_a_question_eaas_never_answers_times_out_and_is_dropped(eaas, monkeypatc
             raise
 
     eaas.ask_spend = never_answers
-    with pytest.raises(TimeoutError):
+    with pytest.raises(TimeoutError, match='EaaS did not answer in time'):
         data_server.require_credit()
     assert dropped.wait(1)
+
+
+@pytest.mark.asyncio
+async def test_a_question_in_flight_fails_at_once_when_eaas_disconnects():
+    conn = _conn()
+    asking = asyncio.ensure_future(conn.ask_spend())
+    await asyncio.sleep(0)
+
+    await conn.on_disconnected('EaaS went away')
+
+    with pytest.raises(ConnectionError, match='EaaS went away'):
+        await asyncio.wait_for(asking, 1)
+    assert conn._asked == {}
 
 
 @pytest.mark.asyncio

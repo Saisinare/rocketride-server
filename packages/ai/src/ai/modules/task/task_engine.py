@@ -505,7 +505,7 @@ class Task(DAPBase):
 
                 org_id = self._parent_task.org_id
                 try:
-                    refusal = await account.check_spend(org_id) if org_id else None
+                    refusal = await account.check_spend(org_id)
                 except Exception as e:
                     # The ledger's error stays in the server log; the client gets a fixed one
                     warning(f'Credit check failed for org {org_id}: {e}')

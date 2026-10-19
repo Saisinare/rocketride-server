@@ -168,7 +168,12 @@ _allowed_until = 0.0
 
 
 def require_credit() -> None:
-    """Engine pipe gate: raise OutOfCreditsError if this task's org may not open a pipe."""
+    """
+    Engine pipe gate: raise OutOfCreditsError if this task's org may not open a pipe.
+
+    It trusts the peer by position: whoever holds /task/data (loopback, the
+    run's token) answers, and only EaaS opens it.
+    """
     global _allowed_until
     if time.monotonic() < _allowed_until:
         return
@@ -181,6 +186,8 @@ def require_credit() -> None:
     asking = asyncio.run_coroutine_threadsafe(conn.ask_spend(), loop)
     try:
         refusal = asking.result(CONST_SPEND_CHECK_TIMEOUT)
+    except TimeoutError:
+        raise TimeoutError('No credit check answered: EaaS did not answer in time') from None
     finally:
         asking.cancel()  # no-op once answered; drops a question EaaS never answered
     if refusal:
