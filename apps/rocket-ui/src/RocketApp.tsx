@@ -61,6 +61,9 @@ import { ToolGlyph } from './surfaces/devtools/ToolGlyph';
 import { useDevToolPins } from './surfaces/devtools/devToolPins';
 import { CodiconExtensions } from 'shared/components/icons/Codicon';
 import { AgentSession } from 'shared/modules/agent/agent';
+import { setAgentHost } from 'shared/modules/agent/host';
+import { RECORD_MODEL_CALLS_SETTING } from 'shared/modules/agent/run';
+import { createRocketAgentHost } from './agent/agentHost';
 import { registerRocketHostOps } from './ops/hostOps';
 
 // This app IS the cloud host: its `host.*` implementations register once at
@@ -169,6 +172,14 @@ const RocketApp: React.FC<ShellAppProps> = (_props) => {
 	const [modeSwitchBlocked, setModeSwitchBlocked] = useState(false);
 	const [modeSwitchError, setModeSwitchError] = useState<string | null>(null);
 
+	// --- Agent: record each model call's raw reply (setting) -------------------
+
+	// The agent host is created once per workspace, so it reads this setting
+	// through a ref: the latest value at the start of each request, with no
+	// host re-created when the setting changes.
+	const recordModelCallsRef = useRef(false);
+	recordModelCallsRef.current = settings[RECORD_MODEL_CALLS_SETTING] === true;
+
 	/**
 	 * Resolves the blocked auto-commit switch: commit or discard everything
 	 * pending, then enter auto mode. Conflicts (base changed since staging)
@@ -264,6 +275,8 @@ const RocketApp: React.FC<ShellAppProps> = (_props) => {
 		void (async () => {
 		const ws = await createWorkspace({ hostAppId: activeAppId, autoCommit: autoCommitRef.current, scope: workspaceScope });
 		if (cancelled) return;
+		// step: hand the agent this workspace's view, guides, scaffold, packer and dev sessions, and the record-model-calls setting's latest value
+		setAgentHost(createRocketAgentHost(client, () => recordModelCallsRef.current));
 		// step: restored pending changes refuse auto mode — prompt the user
 		if (ws.pendingBlocksAuto) setModeSwitchBlocked(true);
 

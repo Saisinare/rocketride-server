@@ -91,6 +91,12 @@
 						"default": true,
 						"order": 6,
 						"description": "Write saved changes straight to your workspace on the server. Turn this off to review, diff, and commit changes yourself - saves (yours and the agent's) stay local until you commit them. Cloud workspaces only."
+					},
+					"rocketride.pipeBuilder.agentRecordModelCalls": {
+						"type": "boolean",
+						"default": false,
+						"order": 7,
+						"description": "Attach each agent model call's raw reply to its row in the Thinking group, and save it with the session."
 					}
 				}
 			}

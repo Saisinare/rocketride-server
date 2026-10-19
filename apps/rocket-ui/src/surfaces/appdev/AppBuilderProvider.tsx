@@ -56,6 +56,7 @@ import { getWorkspaceVfs } from '../workspace/vfs/workspace';
 import type { StoredApp } from './session/appStore';
 import { createWebAppBuilderHost } from './session/webHost';
 import { WebDevSession } from './session/devSession';
+import { registerDevSession } from './session/devSessionRegistry';
 
 // =============================================================================
 // STYLES
@@ -183,9 +184,11 @@ const AppBuilderProvider: React.FC<{
 	useEffect(() => {
 		if (!client || !storedFolder || storedName === undefined) return;
 		const next = new WebDevSession(client, appId, storedFolder, storedName);
+		const unregister = registerDevSession(next);
 		setSession(next);
 		void next.open();
 		return () => {
+			unregister();
 			next.dispose();
 			setSession(null);
 		};

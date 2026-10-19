@@ -226,7 +226,8 @@ export class WebDevSession {
 	}
 
 	private readonly client: RocketRideClient;
-	private readonly appId: string;
+	/** The app this session serves (the dev-session registry looks sessions up by it). */
+	public readonly appId: string;
 	private readonly folder: string;
 	private readonly appName: string;
 	private readonly moduleId: string;
@@ -384,6 +385,12 @@ export class WebDevSession {
 			this.pushConsole('warn', `[hmr] Fast Refresh unavailable — falling back to remounts: ${err instanceof Error ? err.message : String(err)}`);
 		}
 		await this.rebuild();
+	}
+
+	/** Whether a preview realm is attached to a live session, so builds inject and the console and errors feeds are live. */
+	get previewAttached(): boolean {
+		// step: previewWindow is never cleared, so a removed iframe or closed debug tab shows only as .closed
+		return this.previewWindow !== null && !this.previewWindow.closed && !this.disposed;
 	}
 
 	/**
